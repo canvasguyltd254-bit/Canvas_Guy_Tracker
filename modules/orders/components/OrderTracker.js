@@ -1,7 +1,7 @@
 "use client";
 import{useState,useEffect,useCallback,useRef}from"react";
 import{createClient}from"@/shared/supabase/client";
-import{STATUSES,REPAIR_STATUSES,DELIVERY_VISIBLE_FROM,ALL_STATUS_COLORS,PAY_COLORS,CATEGORIES,FINISH_TYPES,WOOD_TYPES,REPAIR_REASONS,CUSTOMER_TYPES,PAYMENT_TERMS,DOC_TYPES,DOC_ICONS,ROLES_CAN_CREATE,ROLES_CAN_EDIT,ROLES_CAN_ADVANCE,ROLES_CAN_ADD_NOTES,ROLES_CAN_UPLOAD,ROLES_CAN_DELIVER,ROLES_CAN_PAY,ROLES_CAN_REPAIR,SALES_MAX_ADVANCE_TO,STATUS_BORDER_CLASS,ss,getPayStatus,getStatusList,genId}from"./constants";
+import{STATUSES,REPAIR_STATUSES,DELIVERY_VISIBLE_FROM,ALL_STATUS_COLORS,PAY_COLORS,CATEGORIES,FINISH_TYPES,WOOD_TYPES,REPAIR_REASONS,CUSTOMER_TYPES,PAYMENT_TERMS,DOC_TYPES,DOC_ICONS,ROLES_CAN_CREATE,ROLES_CAN_EDIT,ROLES_CAN_ADVANCE,ROLES_CAN_ADD_NOTES,ROLES_CAN_UPLOAD,ROLES_CAN_DELIVER,ROLES_CAN_PAY,ROLES_CAN_REPAIR,ROLES_CAN_REWORK,CREDIT_TERMS,REWORK_TARGETS,REWORK_REASONS,SALES_MAX_ADVANCE_TO,STATUS_BORDER_CLASS,ss,getPayStatus,getStatusList,genId}from"./constants";
 
 async function logAct(sb,oid,t,d,o,n){await sb.from("order_activities").insert({order_id:oid,activity_type:t,description:d,old_value:o||null,new_value:n||null})}
 function Badge({status,type}){const c=(type==="payment"?PAY_COLORS:ALL_STATUS_COLORS)[status]||{bg:"#eee",text:"#333",border:"#ccc"};return <span style={{display:"inline-block",padding:"3px 8px",borderRadius:"4px",fontSize:"10px",fontWeight:700,letterSpacing:"0.3px",textTransform:"uppercase",background:c.bg,color:c.text,border:`1.5px solid ${c.border}`}}>{status}</span>}
@@ -86,6 +86,46 @@ function QuotePrompt({onConfirm,onCancel}){const[n,setN]=useState("");return(<di
 function DepositPrompt({onConfirm,onCancel}){const[amt,setAmt]=useState("");const[desc,setDesc]=useState("Deposit");const[dt,setDt]=useState(new Date().toISOString().split("T")[0]);const[inv,setInv]=useState("");const v=parseFloat(amt)>0&&desc.trim();return(<div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.5)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:"16px"}}><div style={{background:"#fff",borderRadius:"12px",padding:"24px",maxWidth:"420px",width:"100%",boxShadow:"0 8px 40px rgba(0,0,0,0.2)"}}><h3 style={{fontSize:"16px",fontWeight:700,marginBottom:"16px"}}>Record Deposit and Invoice</h3><div style={{display:"flex",flexDirection:"column",gap:"10px"}}><div><label style={ss.label}>Invoice Number</label><input type="text" value={inv} onChange={e=>setInv(e.target.value)} placeholder="INV-001234" style={ss.input}/></div><div><label style={ss.label}>Amount (KES) *</label><input type="number" value={amt} onChange={e=>setAmt(e.target.value)} style={ss.input} autoFocus/></div><div><label style={ss.label}>Description *</label><input type="text" value={desc} onChange={e=>setDesc(e.target.value)} style={ss.input}/></div><div><label style={ss.label}>Date</label><input type="date" value={dt} onChange={e=>setDt(e.target.value)} style={ss.input}/></div></div><div style={{display:"flex",gap:"10px",marginTop:"18px"}}><button onClick={()=>v&&onConfirm({amount:parseFloat(amt),description:desc.trim(),payment_date:dt,invoice_number:inv.trim()})} disabled={!v} style={{...ss.btn,background:v?"#2E7D32":"#ccc",color:"#fff",flex:1}}>Record</button><button onClick={onCancel} style={{...ss.btn,background:"#f5f5f5",color:"#666"}}>Cancel</button></div></div></div>)}
 function RepairForm({parentOrder,onConfirm,onCancel}){const[reason,setReason]=useState(REPAIR_REASONS[0]);const[type,setType]=useState("repair");const[desc,setDesc]=useState("");const[val,setVal]=useState("");return(<div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.5)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:"16px"}}><div style={{background:"#fff",borderRadius:"12px",padding:"24px",maxWidth:"460px",width:"100%",boxShadow:"0 8px 40px rgba(0,0,0,0.2)",maxHeight:"90vh",overflowY:"auto"}}><h3 style={{fontSize:"16px",fontWeight:700,marginBottom:"16px"}}>Create Return / Repair</h3><div style={{display:"flex",flexDirection:"column",gap:"10px"}}><div><label style={ss.label}>Type</label><select value={type} onChange={e=>setType(e.target.value)} style={ss.input}><option value="repair">Repair</option><option value="return">Return</option></select></div><div><label style={ss.label}>Reason</label><select value={reason} onChange={e=>setReason(e.target.value)} style={ss.input}>{REPAIR_REASONS.map(r=><option key={r}>{r}</option>)}</select></div><div><label style={ss.label}>Description *</label><textarea value={desc} onChange={e=>setDesc(e.target.value)} rows={3} style={{...ss.input,resize:"vertical"}} placeholder="What needs repair"/></div><div><label style={ss.label}>Cost (KES)</label><input type="number" value={val} onChange={e=>setVal(e.target.value)} style={ss.input}/></div></div><div style={{display:"flex",gap:"10px",marginTop:"18px"}}><button onClick={()=>desc.trim()&&onConfirm({type,reason,description:desc.trim(),value:parseFloat(val)||0})} disabled={!desc.trim()} style={{...ss.btn,background:desc.trim()?"#C62828":"#ccc",color:"#fff",flex:1}}>Create</button><button onClick={onCancel} style={{...ss.btn,background:"#f5f5f5",color:"#666"}}>Cancel</button></div></div></div>)}
 
+/* === CREDIT APPROVAL PROMPT === */
+function CreditApprovalPrompt({order,creditLimit,exposure,userRole,onConfirm,onCancel}){
+  const[note,setNote]=useState("");const[approver,setApprover]=useState("");
+  const orderVal=parseFloat(order.total_value)||0;const newExposure=exposure+orderVal;
+  const overLimit=creditLimit>0&&newExposure>creditLimit;const isAdmin=userRole==="admin";
+  const canApprove=!overLimit||(overLimit&&isAdmin);
+  const fmt=n=>`KES ${Math.round(n).toLocaleString("en-KE")}`;
+  return(<div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.5)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:"16px"}}><div style={{background:"#fff",borderRadius:"12px",padding:"24px",maxWidth:"480px",width:"100%",boxShadow:"0 8px 40px rgba(0,0,0,0.2)",maxHeight:"90vh",overflowY:"auto"}}><h3 style={{fontSize:"16px",fontWeight:700,marginBottom:"4px"}}>Credit Approval</h3><p style={{fontSize:"13px",color:"#888",marginBottom:"16px"}}>Reseller credit order — deposit gate bypass</p>
+    <div style={{background:"#F7F7F5",borderRadius:"8px",padding:"14px",marginBottom:"16px",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",fontSize:"13px"}}>
+      <div><span style={{color:"#888",fontSize:"11px",display:"block",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:"2px"}}>Client</span><strong>{order.client}</strong></div>
+      <div><span style={{color:"#888",fontSize:"11px",display:"block",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:"2px"}}>Order</span><strong style={{fontFamily:"'DM Mono',monospace"}}>{order.order_num}</strong></div>
+      <div><span style={{color:"#888",fontSize:"11px",display:"block",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:"2px"}}>Payment Terms</span><strong>{PAYMENT_TERMS.find(p=>p.id===order.payment_terms)?.label||order.payment_terms}</strong></div>
+      <div><span style={{color:"#888",fontSize:"11px",display:"block",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:"2px"}}>Order Value</span><strong style={{fontFamily:"'DM Mono',monospace"}}>{fmt(orderVal)}</strong></div>
+      <div><span style={{color:"#888",fontSize:"11px",display:"block",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:"2px"}}>Credit Limit</span><strong style={{fontFamily:"'DM Mono',monospace"}}>{creditLimit>0?fmt(creditLimit):"Not set"}</strong></div>
+      <div><span style={{color:"#888",fontSize:"11px",display:"block",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:"2px"}}>Current Exposure</span><strong style={{fontFamily:"'DM Mono',monospace"}}>{fmt(exposure)}</strong></div>
+      <div style={{gridColumn:"1/-1"}}><span style={{color:"#888",fontSize:"11px",display:"block",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:"2px"}}>New Exposure After Approval</span><strong style={{fontFamily:"'DM Mono',monospace",color:overLimit?"#C62828":"#2E7D32"}}>{fmt(newExposure)}{overLimit?" — OVER LIMIT":""}</strong></div>
+    </div>
+    {overLimit&&<div style={{background:"#FFF5F5",border:"1.5px solid #FFCDD2",borderRadius:"8px",padding:"12px",marginBottom:"16px",fontSize:"13px",color:"#C62828"}}>{isAdmin?"⚠️ Credit limit exceeded. As Admin you can override and approve.":"🚫 Credit limit exceeded. Only an Admin can approve this order."}</div>}
+    {canApprove&&<div style={{display:"flex",flexDirection:"column",gap:"10px",marginBottom:"16px"}}>
+      <div><label style={ss.label}>Approved By *</label><input value={approver} onChange={e=>setApprover(e.target.value)} style={ss.input} placeholder="Your name"/></div>
+      <div><label style={ss.label}>Approval Note</label><input value={note} onChange={e=>setNote(e.target.value)} style={ss.input} placeholder="e.g. Approved per standing agreement"/></div>
+    </div>}
+    <div style={{display:"flex",gap:"10px"}}>{canApprove&&<button onClick={()=>approver.trim()&&onConfirm({approver:approver.trim(),note:note.trim(),creditLimit,exposure,newExposure,overLimit})} disabled={!approver.trim()} style={{...ss.btn,background:approver.trim()?"#2E7D32":"#ccc",color:"#fff",flex:1}}>Approve Credit</button>}<button onClick={onCancel} style={{...ss.btn,background:"#f5f5f5",color:"#666",flex:canApprove?0:1}}>Cancel</button></div>
+  </div></div>)
+}
+
+/* === REWORK / SEND BACK PROMPT === */
+function ReworkPrompt({order,targetStatus,onConfirm,onCancel}){
+  const[reason,setReason]=useState(REWORK_REASONS[0]);const[notes,setNotes]=useState("");const[approver,setApprover]=useState("");
+  const v=reason&&approver.trim();
+  return(<div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.5)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:"16px"}}><div style={{background:"#fff",borderRadius:"12px",padding:"24px",maxWidth:"440px",width:"100%",boxShadow:"0 8px 40px rgba(0,0,0,0.2)"}}><h3 style={{fontSize:"16px",fontWeight:700,marginBottom:"4px"}}>Send Back to {targetStatus}</h3><p style={{fontSize:"13px",color:"#888",marginBottom:"16px"}}>{order.order_num} — {order.client}</p>
+    <div style={{display:"flex",flexDirection:"column",gap:"10px"}}>
+      <div><label style={ss.label}>Reason *</label><select value={reason} onChange={e=>setReason(e.target.value)} style={ss.input}>{REWORK_REASONS.map(r=><option key={r} value={r}>{r}</option>)}</select></div>
+      <div><label style={ss.label}>Authorized By *</label><input value={approver} onChange={e=>setApprover(e.target.value)} style={ss.input} placeholder="Your name"/></div>
+      <div><label style={ss.label}>Additional Notes</label><textarea value={notes} onChange={e=>setNotes(e.target.value)} rows={2} style={{...ss.input,resize:"vertical"}} placeholder="Optional details"/></div>
+    </div>
+    <div style={{display:"flex",gap:"10px",marginTop:"18px"}}><button onClick={()=>v&&onConfirm({reason,approver:approver.trim(),notes:notes.trim()})} disabled={!v} style={{...ss.btn,background:v?"#E65100":"#ccc",color:"#fff",flex:1}}>Confirm Send Back</button><button onClick={onCancel} style={{...ss.btn,background:"#f5f5f5",color:"#666"}}>Cancel</button></div>
+  </div></div>)
+}
+
 /* === ORDER FORM === */
 function OrderForm({onSave,onCancel,initial,userRole}){
   const FIELDS=["client","contact_person","author","items","due_date","assigned_to","notes","total_value","quote_number","invoice_number","customer_type","payment_terms","batch_delivery"];
@@ -117,6 +157,7 @@ export default function OrderTracker(){
   const[expandedId,setExpandedId]=useState(null);const[itemSums,setItemSums]=useState({});const[docCounts,setDocCounts]=useState({});const[payTotals,setPayTotals]=useState({});const[delTotals,setDelTotals]=useState({});
   const[expItems,setExpItems]=useState([]);const[expTotalQty,setExpTotalQty]=useState(0);
   const[depositPrompt,setDepositPrompt]=useState(null);const[quotePrompt,setQuotePrompt]=useState(null);const[repairForm,setRepairForm]=useState(null);const[batchPrompt,setBatchPrompt]=useState(null);
+  const[creditPrompt,setCreditPrompt]=useState(null);const[reworkPrompt,setReworkPrompt]=useState(null);
   const[userRole,setUserRole]=useState("viewer");const[userName,setUserName]=useState("");const[adminSettings,setAdminSettings]=useState({});
   const sb=createClient();
 
@@ -159,12 +200,41 @@ export default function OrderTracker(){
     const totalQty=itemSums[id]?.qty||order?.deliverable_units||0;const totalDel=delTotals[id]||0;
     const sList=getStatusList(order?.order_type);
     if(userRole==="sales"&&sList.indexOf(newSt)>sList.indexOf(SALES_MAX_ADVANCE_TO)){alert("Sales users can only advance orders up to Deposit Paid.");return}
+    // Credit reseller bypass: Quote Approved → Material Check (skip Deposit Paid)
+    const isCreditReseller=order?.customer_type==="reseller"&&CREDIT_TERMS.includes(order?.payment_terms);
+    if(oldSt==="Quote Approved"&&isCreditReseller){
+      // Fetch credit limit and exposure
+      const{data:profile}=await sb.from("client_profiles").select("credit_limit").eq("client_name",order.client).single();
+      const creditLimit=parseFloat(profile?.credit_limit)||0;
+      // Exposure = sum of total_value - paid for all active credit orders for this client
+      const{data:clientOrders}=await sb.from("orders").select("id,total_value").eq("client",order.client).not("status","in","(Delivered,Closed)").neq("id",id);
+      let exposure=0;
+      if(clientOrders){for(const co of clientOrders){const coPaid=payTotals[co.id]||0;exposure+=Math.max((parseFloat(co.total_value)||0)-coPaid,0)}}
+      setCreditPrompt({orderId:id,order,creditLimit,exposure});return
+    }
     if(newSt==="Quote Approved"&&!order.quote_number){setQuotePrompt({orderId:id,oldStatus:oldSt});return}
     if(newSt==="Deposit Paid"&&tp<=0){setDepositPrompt({orderId:id,oldStatus:oldSt});return}
     if(newSt==="Delivered"&&order?.batch_delivery&&totalQty>0&&totalDel<totalQty){alert(`Delivery not complete.\nDelivered: ${totalDel} of ${totalQty}\nRemaining: ${totalQty-totalDel}`);return}
     if(newSt==="Closed"){if(order?.batch_delivery&&totalQty>0&&totalDel<totalQty){alert(`Cannot close. Delivery: ${totalDel}/${totalQty}`);return}if(tv>0&&tp<tv){alert(`Cannot close. Balance: KES ${(tv-tp).toLocaleString()}`);return}}
     await sb.from("orders").update({status:newSt}).eq("id",id);await logAct(sb,id,"status_change",`Status: ${oldSt} -> ${newSt}`,oldSt,newSt);
     setOrders(p=>p.map(o=>o.id===id?{...o,status:newSt}:o));
+  };
+
+  const handleCreditApproval=async(d)=>{
+    const{orderId,order,creditLimit,exposure}=creditPrompt;
+    const oldSt=order.status;const newSt="Material Check";
+    await sb.from("orders").update({status:newSt}).eq("id",orderId);
+    await logAct(sb,orderId,"credit_approved",`Credit approved by ${d.approver}. Terms: ${PAYMENT_TERMS.find(p=>p.id===order.payment_terms)?.label}. Limit: KES ${Math.round(creditLimit).toLocaleString()}. Exposure: KES ${Math.round(d.newExposure).toLocaleString()}${d.overLimit?" (OVER LIMIT — Admin override)":""}${d.note?" — "+d.note:""}`);
+    await logAct(sb,orderId,"status_change",`Status: ${oldSt} -> ${newSt} (credit bypass)`,oldSt,newSt);
+    setCreditPrompt(null);await loadOrders();
+  };
+
+  const handleRework=async(d)=>{
+    const{orderId,order,targetStatus}=reworkPrompt;const oldSt=order.status;
+    await sb.from("orders").update({status:targetStatus}).eq("id",orderId);
+    await logAct(sb,orderId,"rework",`Sent back: ${oldSt} -> ${targetStatus} by ${d.approver}. Reason: ${d.reason}${d.notes?" — "+d.notes:""}`);
+    await logAct(sb,orderId,"status_change",`Status: ${oldSt} -> ${targetStatus} (rework)`,oldSt,targetStatus);
+    setReworkPrompt(null);await loadOrders();
   };
 
   const handleQuoteConfirm=async(q)=>{const{orderId,oldStatus}=quotePrompt;if(q)await sb.from("orders").update({quote_number:q}).eq("id",orderId);await sb.from("orders").update({status:"Quote Approved"}).eq("id",orderId);await logAct(sb,orderId,"status_change",`${oldStatus} -> Quote Approved${q?" (Q: "+q+")":""}`,oldStatus,"Quote Approved");setQuotePrompt(null);await loadOrders()};
@@ -182,6 +252,8 @@ export default function OrderTracker(){
     {quotePrompt&&<QuotePrompt onConfirm={handleQuoteConfirm} onCancel={()=>setQuotePrompt(null)}/>}
     {depositPrompt&&<DepositPrompt onConfirm={handleDepositConfirm} onCancel={()=>setDepositPrompt(null)}/>}
     {repairForm&&<RepairForm parentOrder={repairForm} onConfirm={handleRepairConfirm} onCancel={()=>setRepairForm(null)}/>}
+    {creditPrompt&&<CreditApprovalPrompt order={creditPrompt.order} creditLimit={creditPrompt.creditLimit} exposure={creditPrompt.exposure} userRole={userRole} onConfirm={handleCreditApproval} onCancel={()=>setCreditPrompt(null)}/>}
+    {reworkPrompt&&<ReworkPrompt order={reworkPrompt.order} targetStatus={reworkPrompt.targetStatus} onConfirm={handleRework} onCancel={()=>setReworkPrompt(null)}/>}
     {batchPrompt&&<div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.5)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:"16px"}}><div style={{background:"#fff",borderRadius:"12px",padding:"24px",maxWidth:"400px",width:"100%",boxShadow:"0 8px 40px rgba(0,0,0,0.2)"}}><h3 style={{fontSize:"16px",fontWeight:700,marginBottom:"16px"}}>Enable Batch Delivery?</h3><p style={{fontSize:"12px",color:"#888",marginBottom:"16px"}}>This order exceeds the threshold. Enable batch delivery for hotel, bulk, or multi-phase projects.</p><div style={{display:"flex",gap:"10px"}}><button onClick={async()=>{await sb.from("orders").update({batch_delivery:true}).eq("id",batchPrompt);await loadOrders();setBatchPrompt(null)}} style={{...ss.btn,background:"#2E7D32",color:"#fff",flex:1}}>Yes, Enable</button><button onClick={()=>setBatchPrompt(null)} style={{...ss.btn,background:"#f5f5f5",color:"#666",flex:1}}>No</button></div></div></div>}
 
     <div style={{padding:"20px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:"10px"}}><div><div style={{fontSize:"24px",fontWeight:800,letterSpacing:"-0.5px"}}>Orders</div><div style={{fontSize:"12px",color:"#999"}}>{orders.length} total - {orders.filter(o=>!["Delivered","Closed","Redelivered"].includes(o.status)).length} active</div></div>{canCreate&&<button onClick={()=>{setShowForm(true);setEditId(null)}} style={{...ss.btn,background:"#E8512A",color:"#fff",padding:"11px 24px",fontWeight:700,borderRadius:"8px",fontSize:"14px",boxShadow:"0 2px 8px rgba(232,81,42,0.3)"}}>+ New Order</button>}</div>
@@ -201,7 +273,13 @@ export default function OrderTracker(){
             const overdue=days!==null&&days<0&&!["Delivered","Closed","Redelivered"].includes(order.status);
             const tp=payTotals[order.id]||0;const tv=parseFloat(order.total_value)||0;const ps=getPayStatus(tp,tv);const pct=tv>0?Math.round((tp/tv)*100):0;const bal=tv-tp;
             const iS=itemSums[order.id];const totalQty=iS?.qty||order.deliverable_units||0;const totalDel=delTotals[order.id]||0;const delPct=totalQty>0?Math.round((totalDel/totalQty)*100):0;
-            const sList=getStatusList(order.order_type);const cIdx=sList.indexOf(order.status);const nextSt=cIdx<sList.length-1?sList[cIdx+1]:null;
+            const sList=getStatusList(order.order_type);const cIdx=sList.indexOf(order.status);
+            const isCreditOrder=order.customer_type==="reseller"&&CREDIT_TERMS.includes(order.payment_terms);
+            let nextSt=cIdx<sList.length-1?sList[cIdx+1]:null;
+            if(isCreditOrder&&order.status==="Quote Approved"&&nextSt==="Deposit Paid")nextSt="Material Check";
+            const displayList=isCreditOrder?sList.filter(s=>s!=="Deposit Paid"):sList;const displayIdx=displayList.indexOf(order.status);
+            const isCreditAdvance=isCreditOrder&&order.status==="Quote Approved"&&nextSt==="Material Check";
+            const reworkTarget=REWORK_TARGETS[order.status];const canRework=reworkTarget&&ROLES_CAN_REWORK.includes(userRole);
             const isRepair=order.order_type==="repair"||order.order_type==="return";
             const showDelivery=DELIVERY_VISIBLE_FROM.includes(order.status)&&!isRepair&&order.batch_delivery;
             const children=orders.filter(o=>o.parent_order_id===order.id);const parentOrd=order.parent_order_id?orders.find(o=>o.id===order.parent_order_id):null;
@@ -227,9 +305,9 @@ export default function OrderTracker(){
                 {order.items&&!expItems.length&&<div style={{marginTop:"14px"}}><div style={ss.label}>Items</div><TruncText text={order.items} lines={3}/></div>}
                 {order.notes&&<div style={{marginTop:"12px"}}><div style={ss.label}>Special Requests</div><TruncText text={order.notes} lines={3}/></div>}
 
-                <div style={{marginTop:"16px"}}><div style={ss.label}>Workflow{isRepair?" (Repair)":""}</div>
-                  <div style={{display:"flex",gap:"2px",marginTop:"6px",marginBottom:"10px"}}>{sList.map((s,i)=><div key={s} style={{flex:1,height:"6px",borderRadius:"3px",background:i<=cIdx?(ALL_STATUS_COLORS[s]?.text||"#333"):"#e8e8e5"}} title={s}/>)}</div>
-                  <div style={{display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap"}}><Badge status={order.status}/>{canAdvance&&nextSt&&order.status!=="Closed"&&!(userRole==="sales"&&sList.indexOf(nextSt)>sList.indexOf(SALES_MAX_ADVANCE_TO))?<button onClick={()=>advanceStatus(order.id,order.status,nextSt)} style={{...ss.btn,background:"#1a1a1a",color:"#fff",fontSize:"12px",padding:"7px 14px"}}>Next: {nextSt}</button>:!nextSt&&<span style={{fontSize:"12px",color:"#2E7D32",fontWeight:600}}>Complete</span>}</div>
+                <div style={{marginTop:"16px"}}><div style={ss.label}>Workflow{isRepair?" (Repair)":""}{isCreditOrder&&<span style={{color:"#7B1FA2",marginLeft:"6px"}}>(Credit)</span>}</div>
+                  <div style={{display:"flex",gap:"2px",marginTop:"6px",marginBottom:"10px"}}>{displayList.map((s,i)=><div key={s} style={{flex:1,height:"6px",borderRadius:"3px",background:i<=displayIdx?(ALL_STATUS_COLORS[s]?.text||"#333"):"#e8e8e5"}} title={s}/>)}</div>
+                  <div style={{display:"flex",alignItems:"center",gap:"8px",flexWrap:"wrap"}}><Badge status={order.status}/>{canAdvance&&nextSt&&order.status!=="Closed"&&!(userRole==="sales"&&sList.indexOf(nextSt)>sList.indexOf(SALES_MAX_ADVANCE_TO))?<button onClick={()=>advanceStatus(order.id,order.status,nextSt)} style={{...ss.btn,background:isCreditAdvance?"#7B1FA2":"#1a1a1a",color:"#fff",fontSize:"12px",padding:"7px 14px"}}>{isCreditAdvance?"Credit Approve":"Next: "+nextSt}</button>:!nextSt&&<span style={{fontSize:"12px",color:"#2E7D32",fontWeight:600}}>Complete</span>}{canRework&&<button onClick={()=>setReworkPrompt({orderId:order.id,order,targetStatus:reworkTarget})} style={{...ss.btn,background:"#FFF3E0",color:"#E65100",fontSize:"12px",padding:"7px 14px",border:"1.5px solid #FFB74D"}}>↩ Send Back</button>}</div>
                 </div>
 
                 {showDelivery&&<DeliveryPanel orderId={order.id} totalQty={expTotalQty||order.deliverable_units||0} userRole={userRole} payBalance={Math.max(bal,0)} onDeliveryChange={(d)=>setDelTotals(p=>({...p,[order.id]:d}))} orderStatus={order.status} onAutoAdvance={async(newSt)=>{await sb.from("orders").update({status:newSt}).eq("id",order.id);await logAct(sb,order.id,"status_change",`${order.status} -> ${newSt} (auto)`,order.status,newSt);setOrders(p=>p.map(o=>o.id===order.id?{...o,status:newSt}:o))}}/>}

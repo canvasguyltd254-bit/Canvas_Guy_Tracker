@@ -28,8 +28,14 @@ export const ROLES_CAN_UPLOAD = ["admin","production_manager","sales","productio
 export const ROLES_CAN_DELIVER = ["admin","production_manager","production_staff"];
 export const ROLES_CAN_PAY = ["admin","production_manager","sales"];
 export const ROLES_CAN_REPAIR = ["admin","production_manager"];
+export const ROLES_CAN_REWORK = ["admin","production_manager"];
 // Sales can only advance orders up to and including Deposit Paid
 export const SALES_MAX_ADVANCE_TO = "Deposit Paid";
+// Credit bypass: reseller + these payment terms can skip Deposit Paid
+export const CREDIT_TERMS = ["30_day","60_day","custom"];
+// Backward movement: source → target
+export const REWORK_TARGETS = {"Material Check":"Quote Approved","Production":"Material Check","Quality Control":"Production"};
+export const REWORK_REASONS = ["QC Failed","Client Change","Wrong Specs","Damaged Item","Repair / Rework","Material Issue","Other"];
 
 export const ss = {
   input:{width:"100%",padding:"9px 12px",border:"1.5px solid #e0e0e0",borderRadius:"6px",fontSize:"14px",background:"#fafafa",outline:"none",boxSizing:"border-box"},
