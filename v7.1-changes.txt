@@ -1,0 +1,119 @@
+CANVAS GUY TRACKER — V7.1 CHANGES
+===================================
+Date: 27 June 2026
+
+
+NEW FILES
+---------
+
+1. app/api/orders/[id]/drawings/route.js
+   - Dynamic API route for drawings (upload, download, delete)
+   - Two-client auth pattern:
+       - createServerSupabase() reads cookies for user session
+       - Service role client used for storage/DB after user is verified
+   - GET: returns a signed URL (1-hour expiry) for a drawing file
+   - POST: validates and uploads file to Supabase Storage bucket "order-drawings",
+           inserts metadata into drawings table
+   - DELETE: soft-delete only (sets deleted_at), admin/production_manager only
+   - Upload allowed roles: admin, production_manager, head_of_sales, sales, production_staff
+   - Max file size: 70MB. Allowed types: DXF, PDF, PNG, JPG
+   - Storage path format: orders/{orderId}/drawings/{timestamp-filename}
+
+2. app/orders/[id]/page.js
+   - Dedicated order detail page with 5 tabs: Info, Payments, Delivery, Drawings, Activity
+   - Loads all data in parallel (orders, order_items, order_payments, order_deliveries, drawings)
+   - Passes drawings state and setDrawings to DrawingsUpload component
+   - "Full Form" button links to /orders/{id}/form
+   - Uses correct DB field names: order_num, client, order_payments.payment_date,
+     order_deliveries.delivery_location, order_items.category, etc.
+
+3. modules/orders/components/DrawingsUpload.js  (replaced)
+   - Props: { orderId, drawings, onDrawingsUpdated, readOnly }
+   - No internal Supabase fetching — parent manages state
+   - Calls /api/orders/{orderId}/drawings for upload (POST), download (GET), delete (DELETE)
+   - Groups files by extension, sorts newest first
+   - Drag & drop upload zone, progress bar, error messages
+
+4. shared/pdf/pdf-generator.js
+   - Dual PDF generation: internal (shows costs/notes/supplier) and customer (totals only)
+   - Function: generateOrderPDF({ order, items, payments, deliveries, totalValue,
+     totalPaid, balanceDue, type })
+
+5. app/orders/[id]/form/page.js  (new/replaced)
+   - Full-page order form (client component)
+   - Fetches real data from Supabase
+   - Edit mode: update quantity per item, order notes, due date
+   - Shows DrawingsUpload when not in edit mode
+   - Print CSS included via <style> tag
+
+
+MODIFIED FILES
+--------------
+
+6. modules/orders/components/OrderTracker.js
+   - Removed old DrawingsUpload import and usage (it fetched internally, now incompatible)
+   - Added "Full Form" link button per order: links to /orders/{id}/form
+   - Added comment noting DrawingsUpload now lives in /orders/[id] detail page
+
+7. supabase/schema.sql
+   - Appended V7.1 migration (lines 422–514):
+       - CREATE TABLE public.drawings (id, order_id, file_name, file_path,
+         file_size, mime_type, drawing_type, notes, uploaded_by, uploaded_at,
+         deleted_at, created_at, updated_at)
+       - 5 indexes (order_id, order_id+deleted_at, uploaded_by, uploaded_at, deleted_at)
+       - RLS enabled with 4 policies (select/insert/update/delete)
+       - updated_at trigger
+       - get_order_drawing_count(p_order_id) helper function
+
+8. app/api/drawings/route.js  (stubbed)
+   - Old route location replaced with 410 Gone stub
+   - Redirects callers to new route: /api/orders/[id]/drawings
+
+
+BUG FIXES
+---------
+
+9. Auth bug in drawings API route
+   - Original used createClient(url, serviceKey) + auth.getSession()
+     which cannot read request cookies in Next.js App Router
+   - Fixed with two-client pattern: createServerSupabase().auth.getUser()
+     for cookie-based session, service client only after user is verified
+
+10. Wrong Supabase client in form/page.js and orders/[id]/page.js
+    - Both pages used createClient from @supabase/supabase-js (reads localStorage)
+    - App stores auth in cookies via @supabase/ssr, so RLS blocked all queries
+      (seen as 0 rows from .single() → "Cannot coerce the result to a single JSON object")
+    - Fixed: both pages now import createClient from @/shared/supabase/client
+      which uses createBrowserClient from @supabase/ssr (reads cookies)
+
+
+ENVIRONMENT
+-----------
+
+11. .env.local
+    - Added NEXT_PUBLIC_SUPABASE_URL
+    - Added NEXT_PUBLIC_SUPABASE_ANON_KEY
+    - Added SUPABASE_SERVICE_KEY (server-side only)
+
+
+DATABASE MIGRATION (run in Supabase SQL Editor)
+-----------------------------------------------
+
+- CREATE TABLE public.drawings (with all columns above)
+- RLS policies for select, insert, update, delete
+- Trigger: drawings_updated_at → calls update_updated_at()
+- Function: get_order_drawing_count(p_order_id UUID) RETURNS INTEGER
+
+
+MANUAL SUPABASE SETUP REQUIRED
+-------------------------------
+
+- Storage bucket: create "order-drawings" as a Private bucket
+  (Dashboard → Storage → New bucket → name: order-drawings → Private)
+
+
+STORAGE BUCKET POLICY (applied via SQL or Dashboard)
+-----------------------------------------------------
+
+- Authenticated users can read via signed URLs (generated server-side)
+- Uploads go through the API route using the service role client

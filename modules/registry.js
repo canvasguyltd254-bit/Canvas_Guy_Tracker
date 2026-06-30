@@ -1,0 +1,6 @@
+export { default as dashboard } from "./dashboard/config";
+export { default as orders } from "./orders/config";
+export { default as production } from "./production/config";
+export { default as reports } from "./reports/config";
+export { default as contacts } from "./contacts/config";
+export { default as admin } from "./admin/config";
