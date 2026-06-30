@@ -6,7 +6,7 @@
  * DELETE /api/orders/:id/payments?payment_id — delete payment (admin only)
  */
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';

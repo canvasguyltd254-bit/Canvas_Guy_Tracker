@@ -18,7 +18,7 @@
  *   - payment_terms is always hardcoded to 'cash_before'
  */
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';

@@ -6,7 +6,7 @@
  * Roles: admin, production_manager, head_of_sales, sales
  */
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';

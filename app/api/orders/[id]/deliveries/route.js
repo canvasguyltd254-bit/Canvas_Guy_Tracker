@@ -13,7 +13,7 @@
  *  - order_id is always injected from URL params, never from body.
  */
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';

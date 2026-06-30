@@ -9,7 +9,7 @@
  * If no profile exists for this client, creates one with credit_limit set.
  */
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
