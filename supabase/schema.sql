@@ -358,6 +358,8 @@ WHERE id = (SELECT id FROM auth.users ORDER BY created_at ASC LIMIT 1);
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS batch_delivery boolean NOT NULL DEFAULT false;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS customer_type text NOT NULL DEFAULT 'retail';
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS payment_terms text NOT NULL DEFAULT 'cash_before';
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS refund_reference text;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS credit_approval_ref text;
 
 CREATE TABLE IF NOT EXISTS public.client_profiles (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

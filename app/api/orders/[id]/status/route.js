@@ -69,7 +69,7 @@ export async function POST(request, { params }) {
     // 4. Fetch current order
     const { data: order, error: fetchErr } = await serviceClient
       .from('orders')
-      .select('id, status, order_num, client')
+      .select('id, status, order_num, client, total_value')
       .eq('id', orderId)
       .single();
 
@@ -90,14 +90,40 @@ export async function POST(request, { params }) {
       if (authError) return authError;
     }
 
-    // 6. Build DB update — only whitelisted fields, server-injected where needed
-    const dbUpdateRaw = {
-      status: newStatus,
-      refund_reference: refundReference || null,
-      credit_approval_ref: creditApprovalRef || null,
-    };
+    // 5a. Balance gate — block closing/completing with outstanding balance
+    //     Admin can always override; all other roles are blocked.
+    const CLOSE_STATUSES = new Set(['Closed', 'Redelivered']);
+    if (CLOSE_STATUSES.has(newStatus)) {
+      const totalValue = parseFloat(order.total_value) || 0;
 
-    // pick() only allows: status, refund_reference, credit_approval_ref
+      if (totalValue > 0) {
+        const { data: payments } = await serviceClient
+          .from('order_payments')
+          .select('amount')
+          .eq('order_id', orderId);
+
+        const totalPaid = (payments || []).reduce(
+          (sum, p) => sum + (parseFloat(p.amount) || 0), 0
+        );
+        const balance = Math.round((totalValue - totalPaid) * 100) / 100;
+
+        if (balance > 0.01 && role !== 'admin') {
+          return NextResponse.json(
+            {
+              error: `Cannot close: KES ${Math.round(balance).toLocaleString('en-KE')} still outstanding. Record the payment first, or ask an admin to override.`,
+            },
+            { status: 422 },
+          );
+        }
+      }
+    }
+
+    // 6. Build DB update — only include optional fields when they have a value
+    //    (sending null for a column that doesn't exist yet would cause a 500)
+    const dbUpdateRaw = { status: newStatus };
+    if (refundReference) dbUpdateRaw.refund_reference = refundReference;
+    if (creditApprovalRef) dbUpdateRaw.credit_approval_ref = creditApprovalRef;
+
     const STATUS_UPDATE_FIELDS = ['status', 'refund_reference', 'credit_approval_ref'];
     const safeUpdate = pick(dbUpdateRaw, STATUS_UPDATE_FIELDS);
 
