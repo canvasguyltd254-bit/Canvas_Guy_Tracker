@@ -314,7 +314,14 @@ export default function DeliveryTab({ orderId, order, userRole, onUpdate }) {
           target="_blank"
           style={{ padding: '4px 10px', borderRadius: 5, fontSize: 11, fontWeight: 600, border: '1px solid #d1d5db', background: '#fff', color: '#374151', textDecoration: 'none' }}
         >
-          🖨 Note
+          🖨 Delivery Note
+        </a>
+        <a
+          href={`/orders/${orderId}/delivery-note?batch=${batch.id}&show=amounts`}
+          target="_blank"
+          style={{ padding: '4px 10px', borderRadius: 5, fontSize: 11, fontWeight: 600, border: '1px solid #d1d5db', background: '#fff', color: '#374151', textDecoration: 'none' }}
+        >
+          🖨 Internal Copy
         </a>
         {primaryNext && canUpdate && (
           primaryNext === 'Delivered'
@@ -472,6 +479,14 @@ export default function DeliveryTab({ orderId, order, userRole, onUpdate }) {
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '8px 16px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, color: '#374151', textDecoration: 'none' }}
               >
                 🖨 Generate Delivery Note
+              </a>
+
+                <a
+                href={`/orders/${orderId}/delivery-note?show=amounts`}
+                target="_blank"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '8px 16px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, color: '#374151', textDecoration: 'none' }}
+              >
+                🖨 Internal Copy
               </a>
 
               {canAct && !simpleConfirm && (
