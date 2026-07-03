@@ -63,6 +63,63 @@ export function getStatusList(type){return type==="repair"||type==="return"?REPA
 export function genId(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6)}
 
 
+// ── Delivery Batch ────────────────────────────────────────────────────────────
+
+export const BATCH_STATUSES = [
+  'Planned',
+  'Picking',
+  'Loaded',
+  'Out for Delivery',
+  'Delivered',
+  'Signed',
+];
+
+export const BATCH_EXCEPTION_STATUSES = ['Cancelled', 'Rejected', 'Returned'];
+
+export const ALL_BATCH_STATUSES = [...BATCH_STATUSES, ...BATCH_EXCEPTION_STATUSES];
+
+// Active = counts quantity_planned against Batched Qty
+export const BATCH_ACTIVE_STATUSES = new Set([
+  'Planned', 'Picking', 'Loaded', 'Out for Delivery', 'Delivered', 'Signed',
+]);
+
+// Fulfilled = counts quantity_delivered toward Delivered Qty
+export const BATCH_FULFILLED_STATUSES = new Set(['Delivered', 'Signed']);
+
+// Roles that can CREATE a batch and add batch_items
+export const ROLES_CAN_CREATE_BATCH = ['admin', 'production_manager', 'head_of_sales'];
+
+// Roles that can advance batch status and update logistics fields
+export const ROLES_CAN_UPDATE_BATCH = ['admin', 'production_manager', 'head_of_sales'];
+
+// Colour map: { bg, text, border } — matches ALL_STATUS_COLORS pattern
+export const BATCH_STATUS_COLORS = {
+  'Planned':           { bg: '#f3f4f6', text: '#374151', border: '#d1d5db' },
+  'Picking':           { bg: '#eff6ff', text: '#1d4ed8', border: '#bfdbfe' },
+  'Loaded':            { bg: '#faf5ff', text: '#7c3aed', border: '#ddd6fe' },
+  'Out for Delivery':  { bg: '#fff7ed', text: '#c2410c', border: '#fed7aa' },
+  'Delivered':         { bg: '#f0fdf4', text: '#15803d', border: '#bbf7d0' },
+  'Signed':            { bg: '#ecfdf5', text: '#065f46', border: '#6ee7b7' },
+  'Cancelled':         { bg: '#f9fafb', text: '#9ca3af', border: '#e5e7eb' },
+  'Rejected':          { bg: '#fef2f2', text: '#dc2626', border: '#fecaca' },
+  'Returned':          { bg: '#fefce8', text: '#b45309', border: '#fde68a' },
+};
+
+// Valid forward transitions per batch status
+export const BATCH_STATUS_TRANSITIONS = {
+  'Planned':          ['Picking', 'Cancelled'],
+  'Picking':          ['Loaded', 'Cancelled'],
+  'Loaded':           ['Out for Delivery', 'Cancelled'],
+  'Out for Delivery': ['Delivered', 'Rejected', 'Returned'],
+  'Delivered':        ['Signed'],
+  'Signed':           [],
+  'Cancelled':        [],
+  'Rejected':         [],
+  'Returned':         [],
+};
+
+// ── End Delivery Batch ────────────────────────────────────────────────────────
+
 export const STATUS_BORDER_CLASS = {
   "Inquiry":"status-border-inquiry","Quote Approved":"status-border-quote",
   "Deposit Paid":"status-border-deposit","Material Check":"status-border-material",

@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/shared/supabase/client';
 import { DrawingsUpload } from '@/modules/orders/components/DrawingsUpload';
+import DeliveryTab from '@/modules/orders/components/DeliveryTab';
 import {
   STATUSES, REPAIR_STATUSES, ALL_STATUS_COLORS,
   ROLES_CAN_ADVANCE, ROLES_CAN_REWORK, ROLES_CAN_REFUND,
@@ -295,13 +296,14 @@ function AttachmentsPanel({ orderId, userRole }) {
 const CAN_ADD_PAYMENT    = ['admin', 'production_manager', 'head_of_sales', 'sales'];
 const CAN_DELETE_PAYMENT = ['admin'];
 
-function PaymentPanel({ orderId, contractTotal, itemsSubtotal, userRole, orderStatus }) {
-  const [payments, setPayments] = useState([]);
-  const [loading, setLoading]   = useState(true);
-  const [amt, setAmt]           = useState('');
-  const [desc, setDesc]         = useState('');
-  const [payDate, setPayDate]   = useState(new Date().toISOString().split('T')[0]);
-  const [adding, setAdding]     = useState(false);
+function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, userRole, orderStatus }) {
+  const [payments, setPayments]   = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [amt, setAmt]             = useState('');
+  const [desc, setDesc]           = useState('');
+  const [payDate, setPayDate]     = useState(new Date().toISOString().split('T')[0]);
+  const [adding, setAdding]       = useState(false);
+  const [addError, setAddError]   = useState('');
 
   const loadPayments = useCallback(async () => {
     const { data } = await supabase.from('order_payments').select('*').eq('order_id', orderId).order('payment_date');
@@ -311,21 +313,32 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, userRole, orderSt
 
   useEffect(() => { loadPayments(); }, [loadPayments]);
 
-  const totalPaid = payments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
-  const balance   = Math.max((contractTotal || 0) - totalPaid, 0);
-  const pct       = contractTotal > 0 ? Math.min(Math.round((totalPaid / contractTotal) * 100), 100) : 0;
-  const canAdd    = CAN_ADD_PAYMENT.includes(userRole) && orderStatus !== 'Closed';
-  const canDelete = CAN_DELETE_PAYMENT.includes(userRole);
-
-  // Additional charges = contract total minus items subtotal (delivery fees, design fees, etc.)
-  const additionalCharges = contractTotal > 0 && itemsSubtotal > 0 ? Math.max(contractTotal - itemsSubtotal, 0) : 0;
+  const totalPaid      = payments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+  const rawBalance     = (contractTotal || 0) - totalPaid;
+  const balance        = Math.max(rawBalance, 0);
+  const isOverpaid     = rawBalance < -0.01;
+  const pct            = contractTotal > 0 ? Math.min(Math.round((totalPaid / contractTotal) * 100), 100) : 0;
+  const canAdd         = CAN_ADD_PAYMENT.includes(userRole) && orderStatus !== 'Closed';
+  const canDelete      = CAN_DELETE_PAYMENT.includes(userRole);
+  const chargesSubtotal = (chargeItems || []).reduce((s, i) => s + (parseFloat(i.unit_price) || 0), 0);
+  const barColor       = pct >= 100 ? '#16a34a' : pct >= 50 ? '#2563eb' : '#E8512A';
 
   const addPayment = async () => {
+    setAddError('');
     const a = parseFloat(amt);
     if (!a || a <= 0 || !desc.trim()) return;
-    setAdding(true);
 
-    // Optimistic update
+    // Block payment that would exceed contract total
+    if (contractTotal > 0 && (totalPaid + a) > contractTotal + 0.01) {
+      const remaining = contractTotal - totalPaid;
+      setAddError(
+        `Payment of KES ${a.toLocaleString()} would exceed the contract total. ` +
+        `Remaining balance is KES ${Math.round(remaining).toLocaleString('en-KE')}.`
+      );
+      return;
+    }
+
+    setAdding(true);
     const tempPayment = { id: `temp-${Date.now()}`, amount: a, description: desc.trim(), payment_date: payDate };
     setPayments(prev => [...prev, tempPayment]);
     setAmt(''); setDesc(''); setPayDate(new Date().toISOString().split('T')[0]);
@@ -340,38 +353,40 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, userRole, orderSt
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || 'Failed to add payment');
       }
-      await loadPayments(); // replace temp with real record
-    } catch {
+      await loadPayments();
+    } catch (e) {
       setPayments(prev => prev.filter(p => p.id !== tempPayment.id));
+      setAddError(e.message);
     }
     setAdding(false);
   };
 
   const deletePayment = async (p) => {
     if (!confirm(`Delete payment of KES ${parseFloat(p.amount).toLocaleString()}?`)) return;
-
-    // Optimistic remove
     setPayments(prev => prev.filter(x => x.id !== p.id));
-
     try {
-      const res = await fetch(`/api/orders/${orderId}/payments?payment_id=${p.id}`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'Failed to delete payment');
-      }
+      const res = await fetch(`/api/orders/${orderId}/payments?payment_id=${p.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Failed to delete payment');
     } catch {
-      // Roll back
       await loadPayments();
     }
   };
 
-  const barColor = pct >= 100 ? '#16a34a' : pct >= 50 ? '#2563eb' : '#E8512A';
-
   return (
     <div>
-      {/* Summary */}
+      {/* Data-error banner — shown only when overpayment already exists in DB */}
+      {isOverpaid && (
+        <div style={{ background: '#fef2f2', border: '1.5px solid #fca5a5', borderRadius: '8px', padding: '10px 14px', marginBottom: '14px', fontSize: '12px', color: '#dc2626', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: '16px' }}>⚠️</span>
+          <span>
+            <strong>Data error:</strong> payments recorded (KES {Math.round(totalPaid).toLocaleString('en-KE')}) exceed the contract total by{' '}
+            <strong>KES {Math.round(Math.abs(rawBalance)).toLocaleString('en-KE')}</strong>.
+            Check for duplicate or incorrect payment entries and delete the excess.
+          </span>
+        </div>
+      )}
+
+      {/* Summary card */}
       <div style={{ background: '#fff7ed', border: '2px solid #E8512A', borderRadius: '10px', padding: '20px 24px', marginBottom: '16px' }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', textAlign: 'center', marginBottom: '16px' }}>
           <div>
@@ -384,13 +399,17 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, userRole, orderSt
           </div>
           <div>
             <div style={{ fontSize: '10px', color: '#E8512A', fontWeight: 700, textTransform: 'uppercase', marginBottom: '6px' }}>Balance Due</div>
-            <div style={{ fontSize: '22px', fontWeight: 800, fontFamily: 'monospace', color: balance > 0 ? '#E8512A' : '#16a34a' }}>{fmtKES(balance)}</div>
+            <div style={{ fontSize: '22px', fontWeight: 800, fontFamily: 'monospace', color: balance > 0 ? '#E8512A' : '#16a34a' }}>
+              {fmtKES(balance)}
+            </div>
           </div>
         </div>
+
+        {/* Progress bar */}
         {contractTotal > 0 && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#6b7280', marginBottom: '5px' }}>
-              <span>KES {totalPaid.toLocaleString()} of KES {contractTotal.toLocaleString()}</span>
+              <span>KES {Math.round(totalPaid).toLocaleString('en-KE')} of KES {Math.round(contractTotal).toLocaleString('en-KE')}</span>
               <span style={{ fontWeight: 700, color: barColor }}>{pct}%</span>
             </div>
             <div style={{ height: '8px', background: '#e5e7eb', borderRadius: '4px', overflow: 'hidden' }}>
@@ -399,33 +418,39 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, userRole, orderSt
           </div>
         )}
 
-        {/* Reconciliation breakdown */}
-        {contractTotal > 0 && itemsSubtotal > 0 && (
+        {/* Reconciliation breakdown — items + each charge line */}
+        {contractTotal > 0 && (itemsSubtotal > 0 || chargesSubtotal > 0) && (
           <div style={{ marginTop: '14px', paddingTop: '12px', borderTop: '1px solid #fbd5b0', fontSize: '11px', color: '#92400e' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-              <span>Items subtotal</span>
-              <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>KES {itemsSubtotal.toLocaleString()}</span>
-            </div>
-            {additionalCharges > 0 && (
+            {itemsSubtotal > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
-                <span>Additional charges (delivery / design / etc.)</span>
-                <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>KES {additionalCharges.toLocaleString()}</span>
+                <span>Items subtotal</span>
+                <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>KES {Math.round(itemsSubtotal).toLocaleString('en-KE')}</span>
               </div>
             )}
+            {(chargeItems || []).map((ci, idx) => (
+              <div key={ci.id || idx} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
+                <span>{ci.category}</span>
+                <span style={{ fontFamily: 'monospace', fontWeight: 700 }}>KES {Math.round(parseFloat(ci.unit_price) || 0).toLocaleString('en-KE')}</span>
+              </div>
+            ))}
             <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, borderTop: '1px solid #fbd5b0', paddingTop: '4px', marginTop: '4px' }}>
               <span>Contract Total</span>
-              <span style={{ fontFamily: 'monospace' }}>KES {contractTotal.toLocaleString()}</span>
+              <span style={{ fontFamily: 'monospace' }}>KES {Math.round(contractTotal).toLocaleString('en-KE')}</span>
             </div>
           </div>
         )}
       </div>
 
       {/* Payment list */}
+      {loading && <p style={{ fontSize: '12px', color: '#bbb', marginBottom: '12px' }}>Loading payments...</p>}
+      {!loading && payments.length === 0 && (
+        <p style={{ fontSize: '13px', color: '#9ca3af', fontStyle: 'italic', marginBottom: '14px' }}>No payments recorded yet.</p>
+      )}
       {!loading && payments.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '14px' }}>
           {payments.map(p => (
             <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 14px', background: '#fff', border: '1px solid #e8e8e5', borderRadius: '8px', flexWrap: 'wrap' }}>
-              <span style={{ fontWeight: 700, color: '#16a34a', fontFamily: 'monospace', minWidth: '100px' }}>KES {parseFloat(p.amount).toLocaleString()}</span>
+              <span style={{ fontWeight: 700, color: '#16a34a', fontFamily: 'monospace', minWidth: '100px' }}>KES {parseFloat(p.amount).toLocaleString('en-KE')}</span>
               <span style={{ flex: 1, fontSize: '13px', color: '#374151', minWidth: '80px' }}>{p.description}</span>
               <span style={{ fontSize: '11px', color: '#9ca3af' }}>{fmtDate(p.payment_date)}</span>
               {canDelete && (
@@ -435,33 +460,44 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, userRole, orderSt
           ))}
         </div>
       )}
-      {loading && <p style={{ fontSize: '12px', color: '#bbb', marginBottom: '12px' }}>Loading payments...</p>}
-      {!loading && payments.length === 0 && <p style={{ fontSize: '13px', color: '#9ca3af', fontStyle: 'italic', marginBottom: '14px' }}>No payments recorded yet.</p>}
 
       {/* Add payment */}
       {canAdd && (
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'flex-end', paddingTop: '12px', borderTop: '1px solid #f3f4f6' }}>
-          <div style={{ flex: '0 0 110px' }}>
-            <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '4px' }}>Amount (KES)</div>
-            <input type="number" placeholder="0" value={amt} onChange={e => setAmt(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }} />
+        <div style={{ paddingTop: '12px', borderTop: '1px solid #f3f4f6' }}>
+          {addError && (
+            <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '6px', padding: '8px 12px', marginBottom: '10px', fontSize: '12px', color: '#dc2626' }}>
+              ⚠ {addError}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div style={{ flex: '0 0 110px' }}>
+              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '4px' }}>Amount (KES)</div>
+              <input type="number" placeholder="0" value={amt}
+                onChange={e => { setAmt(e.target.value); setAddError(''); }}
+                style={{ width: '100%', padding: '8px 10px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ flex: '1 1 140px' }}>
+              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '4px' }}>Description</div>
+              <input type="text" placeholder="e.g. Deposit, Balance" value={desc}
+                onChange={e => setDesc(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') addPayment(); }}
+                style={{ width: '100%', padding: '8px 10px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ flex: '0 0 140px' }}>
+              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '4px' }}>Date</div>
+              <input type="date" value={payDate} onChange={e => setPayDate(e.target.value)}
+                style={{ width: '100%', padding: '8px 10px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+            <button onClick={addPayment} disabled={!amt || !desc.trim() || adding} style={{
+              padding: '9px 18px', borderRadius: '7px', border: 'none',
+              background: amt && desc.trim() && !adding ? '#16a34a' : '#e0e0e0',
+              color: amt && desc.trim() && !adding ? '#fff' : '#aaa',
+              fontWeight: 700, fontSize: '13px', cursor: amt && desc.trim() ? 'pointer' : 'default',
+              whiteSpace: 'nowrap', flex: '0 0 auto',
+            }}>
+              {adding ? '...' : '+ Add'}
+            </button>
           </div>
-          <div style={{ flex: '1 1 140px' }}>
-            <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '4px' }}>Description</div>
-            <input type="text" placeholder="e.g. Deposit, Balance" value={desc} onChange={e => setDesc(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') addPayment(); }} style={{ width: '100%', padding: '8px 10px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }} />
-          </div>
-          <div style={{ flex: '0 0 140px' }}>
-            <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '4px' }}>Date</div>
-            <input type="date" value={payDate} onChange={e => setPayDate(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }} />
-          </div>
-          <button onClick={addPayment} disabled={!amt || !desc.trim() || adding} style={{
-            padding: '9px 18px', borderRadius: '7px', border: 'none',
-            background: amt && desc.trim() && !adding ? '#16a34a' : '#e0e0e0',
-            color: amt && desc.trim() && !adding ? '#fff' : '#aaa',
-            fontWeight: 700, fontSize: '13px', cursor: amt && desc.trim() ? 'pointer' : 'default',
-            whiteSpace: 'nowrap', flex: '0 0 auto',
-          }}>
-            {adding ? '...' : '+ Add'}
-          </button>
         </div>
       )}
     </div>
@@ -530,6 +566,9 @@ export default function OrderFormPage() {
   const [editedItems, setEditedItems] = useState([]);
   const [editedNotes, setEditedNotes] = useState('');
   const [editedDueDate, setEditedDueDate] = useState('');
+  const [editedDeliveryAddress, setEditedDeliveryAddress]           = useState('');
+  const [editedDeliveryContact, setEditedDeliveryContact]           = useState('');
+  const [editedDeliveryInstructions, setEditedDeliveryInstructions] = useState('');
   const [saving, setSaving]           = useState(false);
 
   // Modal state
@@ -563,6 +602,10 @@ export default function OrderFormPage() {
   // Full item editing (admin + head_of_sales)
   const [deletedItemIds, setDeletedItemIds] = useState([]);
 
+  // Increment to force order data refresh (used by DeliveryTab)
+  const [refreshKey, setRefreshKey] = useState(0);
+  const refreshOrder = useCallback(() => setRefreshKey(k => k + 1), []);
+
   useEffect(() => {
     async function load() {
       try {
@@ -587,6 +630,9 @@ export default function OrderFormPage() {
         setOrder(ord);
         setEditedNotes(ord.notes || '');
         setEditedDueDate(ord.due_date || '');
+        setEditedDeliveryAddress(ord.delivery_address || '');
+        setEditedDeliveryContact(ord.delivery_contact || '');
+        setEditedDeliveryInstructions(ord.delivery_instructions || '');
         const loadedItems = itemsRes.data || [];
         setItems(loadedItems);
         setEditedItems(loadedItems.map(i => ({ ...i })));
@@ -599,7 +645,7 @@ export default function OrderFormPage() {
       }
     }
     load();
-  }, [id]);
+  }, [id, refreshKey]);
 
   if (loading) {
     return (
@@ -672,7 +718,13 @@ export default function OrderFormPage() {
         .reduce((s, i) => s + (parseFloat(i.unit_price) || 0) * (parseInt(i.quantity) || 1), 0);
 
       // Update order metadata
-      const orderUpdate = { notes: editedNotes, due_date: editedDueDate || null };
+      const orderUpdate = {
+        notes: editedNotes,
+        due_date: editedDueDate || null,
+        delivery_address: editedDeliveryAddress || null,
+        delivery_contact: editedDeliveryContact || null,
+        delivery_instructions: editedDeliveryInstructions || null,
+      };
       if (canEditItems) orderUpdate.total_value = newTotal;
       await supabase.from('orders').update(orderUpdate).eq('id', id);
 
@@ -750,6 +802,9 @@ export default function OrderFormPage() {
     setEditedItems(items.map(i => ({ ...i })));
     setEditedNotes(order.notes || '');
     setEditedDueDate(order.due_date || '');
+    setEditedDeliveryAddress(order.delivery_address || '');
+    setEditedDeliveryContact(order.delivery_contact || '');
+    setEditedDeliveryInstructions(order.delivery_instructions || '');
     setDeletedItemIds([]);
     setEditMode(false);
   };
@@ -1259,6 +1314,7 @@ export default function OrderFormPage() {
               orderId={id}
               contractTotal={contractTotal}
               itemsSubtotal={itemsSubtotal}
+              chargeItems={displayItems.filter(i => isChargeItem(i))}
               userRole={userRole}
               orderStatus={order.status}
             />
@@ -1270,35 +1326,14 @@ export default function OrderFormPage() {
         {/* ═══════════════════════════════════════════════════
             TAB: DELIVERY
             ═══════════════════════════════════════════════════ */}
-        {activeTab === 'delivery' && (<>
-          <div style={sectionLabel}>🚚 Delivery batches</div>
-          {deliveries.length === 0 ? (
-            <div style={{ ...card, textAlign: 'center', padding: '48px 20px' }}>
-              <div style={{ fontSize: '32px', marginBottom: '10px' }}>📦</div>
-              <p style={{ fontSize: '13px', color: '#9ca3af', margin: 0 }}>No delivery batches recorded yet.</p>
-            </div>
-          ) : (
-            <div style={card}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {deliveries.map(d => (
-                  <div key={d.id} style={{ padding: '12px 16px', background: '#f9fafb', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
-                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px' }}>
-                      <div>
-                        <div style={{ fontWeight: 700, fontSize: '13px', color: '#111' }}>Batch {d.batch_number} — {d.quantity} units</div>
-                        {d.delivery_location && <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '3px' }}>{d.delivery_location}</div>}
-                        <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '3px' }}>{fmtDate(d.delivery_date)}</div>
-                      </div>
-                      {d.payment_status_at_delivery && (
-                        <span style={{ background: '#ffedd5', color: '#c2410c', fontSize: '10px', fontWeight: 700, padding: '3px 8px', borderRadius: '4px', flexShrink: 0 }}>{d.payment_status_at_delivery}</span>
-                      )}
-                    </div>
-                    {d.notes && <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '6px' }}>{d.notes}</div>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </>)}
+        {activeTab === 'delivery' && (
+          <DeliveryTab
+            orderId={id}
+            order={order}
+            userRole={userRole}
+            onUpdate={refreshOrder}
+          />
+        )}
 
         {/* ═══════════════════════════════════════════════════
             TAB: FILES (drawings)

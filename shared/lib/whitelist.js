@@ -82,6 +82,9 @@ export const ALLOWED_FIELDS = {
       'batch_delivery',
       'notes',
       'items',
+      'delivery_address',
+      'delivery_contact',
+      'delivery_instructions',
       // Workflow fields — only set via applyStatus or specific modal actions
       'status',
       'credit_approval_ref',
@@ -153,10 +156,12 @@ export const ALLOWED_FIELDS = {
     ],
   },
 
+  // Superseded by delivery_batches + delivery_batch_items (V8).
+  // Kept for backward compatibility — do not write new code against this table.
   order_deliveries: {
     insert: [
-      'order_id',           // injected server-side from URL
-      'batch_number',       // computed server-side (max + 1)
+      'order_id',
+      'batch_number',
       'quantity',
       'description',
       'delivery_date',
@@ -164,8 +169,7 @@ export const ALLOWED_FIELDS = {
       'delivered_by',
       'received_by',
       'notes',
-      'payment_status_at_delivery', // computed server-side from DB payments
-      // admin_authorized / admin_auth_reason — server-injected, never from body
+      'payment_status_at_delivery',
     ],
     update: [
       'quantity',
@@ -176,6 +180,55 @@ export const ALLOWED_FIELDS = {
       'received_by',
       'notes',
       'payment_status_at_delivery',
+    ],
+  },
+
+  // ── Delivery Batch (V8) ───────────────────────────────────────────────────
+  //
+  // Role rules enforced in API routes (not just RLS):
+  //   insert              → production_manager / admin
+  //   update logistics    → any authenticated user (driver, vehicle, status advances)
+  //   update admin fields → admin only (cancelled_at, signed_copy_path)
+
+  delivery_batches: {
+    insert: [
+      'order_id',          // injected from URL param server-side
+      'batch_number',      // set by DB trigger — pass null or omit from client
+      'status',            // defaults to 'Planned'
+      'planned_date',
+      'driver',
+      'vehicle',
+      'delivery_location',
+      'notes',
+      'created_by',        // injected from session server-side
+    ],
+    update: [
+      'status',
+      'planned_date',
+      'actual_delivery_date',
+      'driver',
+      'vehicle',
+      'delivery_location',
+      'notes',
+      // Admin-only — API route must check role before allowing:
+      'cancelled_at',
+      'cancelled_reason',
+      'signed_copy_path',
+    ],
+  },
+
+  delivery_batch_items: {
+    insert: [
+      'batch_id',
+      'order_item_id',
+      'quantity_planned',
+      // quantity_delivered + quantity_rejected default to 0
+    ],
+    update: [
+      'quantity_delivered',
+      'quantity_rejected',
+      'rejection_reason',
+      'quantity_planned',   // PM / Admin can correct before batch leaves
     ],
   },
 

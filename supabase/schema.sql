@@ -360,6 +360,9 @@ ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS customer_type text NOT NULL D
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS payment_terms text NOT NULL DEFAULT 'cash_before';
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS refund_reference text;
 ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS credit_approval_ref text;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS delivery_address text;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS delivery_contact text;
+ALTER TABLE public.orders ADD COLUMN IF NOT EXISTS delivery_instructions text;
 
 CREATE TABLE IF NOT EXISTS public.client_profiles (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -506,6 +509,264 @@ LANGUAGE sql SECURITY DEFINER AS $$
   WHERE order_id = p_order_id
     AND deleted_at IS NULL;
 $$;
+
+-- ══════════════════════════════════════════════════════════════
+-- DELIVERY BATCH SCHEMA
+-- Phase 1: Tables, constraints, triggers, fulfillment views
+-- ══════════════════════════════════════════════════════════════
+
+-- ── 1. delivery_batches ───────────────────────────────────────
+--
+-- Represents a single physical shipment (one truck, one trip).
+-- An order can have 1..N batches. The order remains one financial
+-- contract regardless of how many batches fulfil it.
+--
+-- Status lifecycle:
+--   Active:    Planned → Picking → Loaded → Out for Delivery → Delivered → Signed
+--   Exception: Cancelled | Rejected | Returned
+--
+-- Role rules (enforced in API routes, not RLS):
+--   Production Manager / Admin  — create batches, advance to Picking/Loaded
+--   Logistics (any auth user)   — update driver/vehicle, advance Loaded → Delivered
+--   Sales / CS                  — read only
+
+CREATE TABLE IF NOT EXISTS public.delivery_batches (
+  id                   uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  order_id             uuid        NOT NULL REFERENCES public.orders(id) ON DELETE CASCADE,
+  batch_number         integer     NOT NULL,
+
+  status               text        NOT NULL DEFAULT 'Planned'
+                                   CHECK (status IN (
+                                     'Planned', 'Picking', 'Loaded',
+                                     'Out for Delivery', 'Delivered', 'Signed',
+                                     'Cancelled', 'Rejected', 'Returned'
+                                   )),
+
+  planned_date         date,
+  actual_delivery_date date,
+
+  driver               text,
+  vehicle              text,
+  delivery_location    text,
+  notes                text,
+
+  -- Path in Supabase Storage after the signed paper copy is uploaded
+  signed_copy_path     text,
+
+  -- Exception tracking
+  cancelled_at         timestamptz,
+  cancelled_reason     text,
+
+  created_by           uuid        REFERENCES auth.users(id),
+  created_at           timestamptz NOT NULL DEFAULT now(),
+  updated_at           timestamptz NOT NULL DEFAULT now(),
+
+  -- batch_number is unique per order (auto-set by trigger below)
+  UNIQUE (order_id, batch_number)
+);
+
+-- ── 2. delivery_batch_items ───────────────────────────────────
+--
+-- Links specific quantities of order_items to a batch.
+-- One order_item can appear in multiple batches (across different batches),
+-- but only once per batch.
+--
+-- Quantity rules:
+--   quantity_delivered + quantity_rejected <= quantity_planned
+--   quantity_planned > 0
+--
+-- When a batch is Cancelled:          none of its quantity_planned counts as Batched.
+-- When a batch is Rejected/Returned:  quantity_planned stops counting as Batched;
+--                                     quantity_delivered (if any partial acceptance) counts as Delivered.
+
+CREATE TABLE IF NOT EXISTS public.delivery_batch_items (
+  id                 uuid    PRIMARY KEY DEFAULT gen_random_uuid(),
+  batch_id           uuid    NOT NULL REFERENCES public.delivery_batches(id) ON DELETE CASCADE,
+  order_item_id      uuid    NOT NULL REFERENCES public.order_items(id),
+
+  quantity_planned   integer NOT NULL CHECK (quantity_planned > 0),
+  quantity_delivered integer NOT NULL DEFAULT 0 CHECK (quantity_delivered >= 0),
+  quantity_rejected  integer NOT NULL DEFAULT 0 CHECK (quantity_rejected >= 0),
+  rejection_reason   text,
+
+  created_at         timestamptz NOT NULL DEFAULT now(),
+
+  -- Delivered + rejected cannot exceed what was planned for this batch
+  CONSTRAINT chk_batch_item_quantities
+    CHECK (quantity_delivered + quantity_rejected <= quantity_planned),
+
+  -- Each order_item appears at most once per batch
+  UNIQUE (batch_id, order_item_id)
+);
+
+-- ── 3. Indexes ────────────────────────────────────────────────
+
+CREATE INDEX IF NOT EXISTS idx_delivery_batches_order_id
+  ON public.delivery_batches(order_id);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_batches_status
+  ON public.delivery_batches(status);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_batch_items_batch
+  ON public.delivery_batch_items(batch_id);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_batch_items_order_item
+  ON public.delivery_batch_items(order_item_id);
+
+-- ── 4. Auto-increment batch_number per order ──────────────────
+--
+-- batch_number = MAX(batch_number) + 1 within the same order_id.
+-- Caller can pass NULL and the trigger fills it in.
+-- Prevents gaps caused by concurrent inserts using a row-level lock.
+
+CREATE OR REPLACE FUNCTION public.set_delivery_batch_number()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.batch_number IS NULL THEN
+    SELECT COALESCE(MAX(batch_number), 0) + 1
+      INTO NEW.batch_number
+      FROM public.delivery_batches
+     WHERE order_id = NEW.order_id;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_set_delivery_batch_number ON public.delivery_batches;
+CREATE TRIGGER trg_set_delivery_batch_number
+  BEFORE INSERT ON public.delivery_batches
+  FOR EACH ROW EXECUTE FUNCTION public.set_delivery_batch_number();
+
+-- ── 5. updated_at trigger for delivery_batches ────────────────
+
+DROP TRIGGER IF EXISTS trg_delivery_batches_updated_at ON public.delivery_batches;
+CREATE TRIGGER trg_delivery_batches_updated_at
+  BEFORE UPDATE ON public.delivery_batches
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+-- ── 6. RLS ────────────────────────────────────────────────────
+
+ALTER TABLE public.delivery_batches      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.delivery_batch_items  ENABLE ROW LEVEL SECURITY;
+
+-- All authenticated users can read batches and batch items
+CREATE POLICY "batches_read" ON public.delivery_batches
+  FOR SELECT USING (auth.role() = 'authenticated');
+
+CREATE POLICY "batch_items_read" ON public.delivery_batch_items
+  FOR SELECT USING (auth.role() = 'authenticated');
+
+-- Only Production Manager / Admin can create batches
+CREATE POLICY "batches_insert" ON public.delivery_batches
+  FOR INSERT WITH CHECK (public.get_user_role() IN ('admin', 'production_manager'));
+
+-- Production Manager / Admin can insert batch items
+CREATE POLICY "batch_items_insert" ON public.delivery_batch_items
+  FOR INSERT WITH CHECK (public.get_user_role() IN ('admin', 'production_manager'));
+
+-- All authenticated users can update batches
+-- (fine-grained role enforcement happens in the API route)
+CREATE POLICY "batches_update" ON public.delivery_batches
+  FOR UPDATE USING (auth.role() = 'authenticated');
+
+-- Batch items can be updated by PM / Admin only (quantity corrections)
+CREATE POLICY "batch_items_update" ON public.delivery_batch_items
+  FOR UPDATE USING (public.get_user_role() IN ('admin', 'production_manager'));
+
+-- Hard delete: admin only (prefer cancelled_at for soft cancel)
+CREATE POLICY "batches_delete" ON public.delivery_batches
+  FOR DELETE USING (public.get_user_role() = 'admin');
+
+CREATE POLICY "batch_items_delete" ON public.delivery_batch_items
+  FOR DELETE USING (public.get_user_role() = 'admin');
+
+-- ══════════════════════════════════════════════════════════════
+-- FULFILLMENT VIEWS
+-- ══════════════════════════════════════════════════════════════
+
+-- ── 7. order_item_fulfillment ─────────────────────────────────
+--
+-- One row per order_item (charge lines excluded).
+-- Columns:
+--   ordered_qty   — from order_items.quantity
+--   batched_qty   — sum(quantity_planned) where batch NOT IN (Cancelled, Rejected, Returned)
+--   delivered_qty — sum(quantity_delivered) where batch IN (Delivered, Signed)
+--   remaining_qty — ordered_qty - batched_qty  (available to assign to a new batch)
+--
+-- Key invariant: remaining_qty < 0 means data error (over-allocated).
+
+CREATE OR REPLACE VIEW public.order_item_fulfillment AS
+SELECT
+  oi.id                                                          AS order_item_id,
+  oi.order_id,
+  oi.category,
+  oi.description,
+  oi.size,
+  COALESCE(oi.quantity, 1)                                       AS ordered_qty,
+
+  COALESCE(SUM(
+    CASE
+      WHEN db.status NOT IN ('Cancelled', 'Rejected', 'Returned')
+      THEN dbi.quantity_planned
+      ELSE 0
+    END
+  ), 0)                                                          AS batched_qty,
+
+  COALESCE(SUM(
+    CASE
+      WHEN db.status IN ('Delivered', 'Signed')
+      THEN dbi.quantity_delivered
+      ELSE 0
+    END
+  ), 0)                                                          AS delivered_qty,
+
+  -- remaining = what is still available to assign to a future batch
+  COALESCE(oi.quantity, 1) - COALESCE(SUM(
+    CASE
+      WHEN db.status NOT IN ('Cancelled', 'Rejected', 'Returned')
+      THEN dbi.quantity_planned
+      ELSE 0
+    END
+  ), 0)                                                          AS remaining_qty
+
+FROM public.order_items oi
+LEFT JOIN public.delivery_batch_items dbi ON dbi.order_item_id = oi.id
+LEFT JOIN public.delivery_batches     db  ON db.id = dbi.batch_id
+-- Exclude charge lines — they are financial, not physical goods
+WHERE oi.category NOT IN (
+  'Delivery Fee', 'Installation Fee', 'Design Fee', 'Rush Fee', 'Discount'
+)
+GROUP BY
+  oi.id, oi.order_id, oi.category, oi.description, oi.size, oi.quantity;
+
+-- ── 8. order_fulfillment_summary ─────────────────────────────
+--
+-- One row per order — rolled-up totals.
+-- Used by:
+--   • Order status auto-advance logic (all_delivered flag)
+--   • Dashboard batch metrics
+--   • Order list "Partially Delivered" badge
+
+CREATE OR REPLACE VIEW public.order_fulfillment_summary AS
+SELECT
+  f.order_id,
+  SUM(f.ordered_qty)                                    AS total_ordered_qty,
+  SUM(f.batched_qty)                                    AS total_batched_qty,
+  SUM(f.delivered_qty)                                  AS total_delivered_qty,
+  SUM(f.remaining_qty)                                  AS total_remaining_qty,
+
+  -- True only when every item is fully delivered (remaining = 0)
+  -- AND at least one item has been batched (guards against empty orders)
+  BOOL_AND(f.remaining_qty = 0) AND SUM(f.batched_qty) > 0
+                                                        AS all_items_delivered,
+
+  -- True when some but not all items are delivered
+  SUM(f.delivered_qty) > 0 AND NOT (
+    BOOL_AND(f.remaining_qty = 0) AND SUM(f.batched_qty) > 0
+  )                                                     AS partially_delivered
+
+FROM public.order_item_fulfillment f
+GROUP BY f.order_id;
 
 -- ══════════════════════════════════════════════════════════════
 -- MANUAL STEPS (Supabase Dashboard — cannot be done via SQL)
