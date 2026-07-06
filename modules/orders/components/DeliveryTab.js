@@ -73,6 +73,8 @@ export default function DeliveryTab({ orderId, order, userRole, onUpdate }) {
   const isActive  = ACTIVE_STATUSES.has(order?.status);
   const isBatch   = !!order?.batch_delivery;
   const canAct    = ROLES_CAN_CREATE_BATCH.includes(userRole);
+  // Sales can edit delivery details + mark delivered in simple flow, but cannot create/manage batches
+  const canDeliveryAct = canAct || userRole === 'sales';
   const isAlreadyDelivered = ['Delivered', 'Closed'].includes(order?.status);
 
   // ── Batch data (only needed for batch flow) ──────────────────────────────────
@@ -377,7 +379,7 @@ export default function DeliveryTab({ orderId, order, userRole, onUpdate }) {
       <div style={card}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <div style={sectionLabel}>Delivery Details</div>
-          {!editingDetails && canAct && (
+          {!editingDetails && canDeliveryAct && (
             <button
               onClick={() => {
                 setDetailsForm({
@@ -472,48 +474,53 @@ export default function DeliveryTab({ orderId, order, userRole, onUpdate }) {
               </div>
             </div>
           ) : (
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-              <a
-                href={`/orders/${orderId}/delivery-note`}
-                target="_blank"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '8px 16px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, color: '#374151', textDecoration: 'none' }}
-              >
-                🖨 Generate Delivery Note
-              </a>
-
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {/* Print buttons — side by side */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <a
-                href={`/orders/${orderId}/delivery-note?show=amounts`}
-                target="_blank"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '8px 16px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, color: '#374151', textDecoration: 'none' }}
-              >
-                🖨 Internal Copy
-              </a>
+                  href={`/orders/${orderId}/delivery-note`}
+                  target="_blank"
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '9px 12px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, color: '#374151', textDecoration: 'none', textAlign: 'center' }}
+                >
+                  🖨 Delivery Note
+                </a>
+                <a
+                  href={`/orders/${orderId}/delivery-note?show=amounts`}
+                  target="_blank"
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '9px 12px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, color: '#374151', textDecoration: 'none', textAlign: 'center' }}
+                >
+                  🖨 Internal Copy
+                </a>
+              </div>
 
-              {canAct && !simpleConfirm && (
+              {/* Mark Delivered — full width */}
+              {canDeliveryAct && !simpleConfirm && (
                 <button
                   onClick={() => setSimpleConfirm(true)}
-                  style={{ padding: '8px 18px', background: '#15803d', color: '#fff', border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+                  style={{ width: '100%', padding: '11px', background: '#15803d', color: '#fff', border: 'none', borderRadius: 6, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
                 >
                   ✓ Mark Delivered
                 </button>
               )}
 
-              {canAct && simpleConfirm && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 6, padding: '8px 12px' }}>
-                  <span style={{ fontSize: 12, color: '#374151' }}>Confirm delivery?</span>
-                  <button
-                    onClick={markDelivered}
-                    disabled={simpleSaving}
-                    style={{ padding: '5px 12px', background: '#15803d', color: '#fff', border: 'none', borderRadius: 5, fontSize: 12, fontWeight: 700, cursor: 'pointer', opacity: simpleSaving ? 0.6 : 1 }}
-                  >
-                    {simpleSaving ? 'Saving…' : 'Confirm'}
-                  </button>
-                  <button
-                    onClick={() => setSimpleConfirm(false)}
-                    style={{ padding: '5px 10px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 5, fontSize: 12, cursor: 'pointer', color: '#374151' }}
-                  >
-                    Cancel
-                  </button>
+              {canDeliveryAct && simpleConfirm && (
+                <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 6, padding: '12px' }}>
+                  <div style={{ fontSize: 12, color: '#374151', marginBottom: 8, fontWeight: 600 }}>Confirm this order has been delivered?</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                    <button
+                      onClick={markDelivered}
+                      disabled={simpleSaving}
+                      style={{ padding: '9px', background: '#15803d', color: '#fff', border: 'none', borderRadius: 5, fontSize: 13, fontWeight: 700, cursor: 'pointer', opacity: simpleSaving ? 0.6 : 1 }}
+                    >
+                      {simpleSaving ? 'Saving…' : 'Confirm'}
+                    </button>
+                    <button
+                      onClick={() => setSimpleConfirm(false)}
+                      style={{ padding: '9px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 5, fontSize: 13, cursor: 'pointer', color: '#374151' }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

@@ -364,15 +364,15 @@ export default function NewOrderPage() {
 
         {/* Header */}
         <div style={{ background: '#111827', color: '#fff' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 24px', borderBottom: '1px solid #374151' }}>
-            <Link href="/orders" style={{ color: '#9ca3af', fontSize: '13px', fontWeight: 600, textDecoration: 'none' }}>
-              ← Back to Orders
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid #374151', gap: '8px' }}>
+            <Link href="/orders" style={{ color: '#9ca3af', fontSize: '12px', fontWeight: 600, textDecoration: 'none', flexShrink: 0 }}>
+              ← Orders
             </Link>
-            <div style={{ display: 'flex', gap: '8px' }}>
+            <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
               <Link href="/orders" style={{
-                padding: '8px 16px', borderRadius: '7px',
+                padding: '7px 12px', borderRadius: '7px',
                 border: '1px solid #4b5563', color: '#d1d5db',
-                fontSize: '13px', fontWeight: 600, textDecoration: 'none',
+                fontSize: '12px', fontWeight: 600, textDecoration: 'none',
               }}>
                 Cancel
               </Link>
@@ -380,9 +380,9 @@ export default function NewOrderPage() {
                 onClick={handleSave}
                 disabled={!canSubmit}
                 style={{
-                  padding: '8px 20px', borderRadius: '7px', border: 'none',
+                  padding: '7px 16px', borderRadius: '7px', border: 'none',
                   background: canSubmit ? '#E8512A' : '#6b7280',
-                  color: '#fff', fontWeight: 700, fontSize: '13px',
+                  color: '#fff', fontWeight: 700, fontSize: '12px',
                   cursor: canSubmit ? 'pointer' : 'default',
                 }}
               >
@@ -390,8 +390,8 @@ export default function NewOrderPage() {
               </button>
             </div>
           </div>
-          <div style={{ padding: '20px 24px 24px' }}>
-            <div style={{ fontSize: '28px', fontWeight: 800 }}>New Order</div>
+          <div style={{ padding: '16px 16px 20px' }}>
+            <div style={{ fontSize: '24px', fontWeight: 800 }}>New Order</div>
             <div style={{ fontSize: '13px', color: '#9ca3af', marginTop: '4px' }}>
               Starts at Inquiry — advance through the workflow once saved
             </div>

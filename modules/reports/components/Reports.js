@@ -93,6 +93,11 @@ export default function Reports() {
   const [dateFrom, setDateFrom] = useState(() => getPresetRange("this-month")[0]);
   const [dateTo, setDateTo]     = useState(() => getPresetRange("this-month")[1]);
 
+  // Mobile layout
+  const [isMobile, setIsMobile] = useState(false);
+  const [mobileTableView, setMobileTableView] = useState(false);
+  const [dateChipOpen, setDateChipOpen] = useState(false);
+
   const sb = createClient();
 
   // ── Load all data once ──
@@ -119,6 +124,14 @@ export default function Reports() {
       }
       setLoaded(true);
     })();
+  }, []);
+
+  // ── Mobile detection ──
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 640);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
   }, []);
 
   // ── Date helpers ──
@@ -223,6 +236,25 @@ export default function Reports() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtered, payTotals, reportType]);
 
+  // ── Flat card rows (mobile) ──
+  const cardItems = useMemo(() => {
+    const rows = [];
+    filtered.forEach((order) => {
+      const items   = allItems[order.id] || [];
+      const paid    = payTotals[order.id] || 0;
+      const tv      = parseFloat(order.total_value) || 0;
+      const balance = Math.max(tv - paid, 0);
+      const payBadge = balance <= 0 ? "paid" : paid > 0 ? "partial" : "outstanding";
+      if (items.length === 0) {
+        rows.push({ order, item: null, paid, tv, balance, payBadge });
+      } else {
+        items.forEach((item) => rows.push({ order, item, paid, tv, balance, payBadge }));
+      }
+    });
+    return rows;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, allItems, payTotals]);
+
   // ── Report metadata ──
   const reportMeta  = REPORT_TYPES.find((r) => r.id === reportType) || REPORT_TYPES[0];
   const isFinancial = FINANCIAL_REPORTS.includes(reportType);
@@ -283,10 +315,279 @@ export default function Reports() {
 
   const daySpan = Math.round((dateTo - dateFrom) / (1000 * 60 * 60 * 24));
 
-  return (
-    <div style={{ padding: "20px 16px" }}>
+  // ── Preset label for date chip ──
+  const presetLabel = DATE_PRESETS.find((p) => p.id === datePreset)?.label || "Custom";
 
-      {/* ── Header ── */}
+  // ── Shared sub-sections ──────────────────────────────────────────────────────
+
+  // Scrollable tab bar (shared mobile + desktop)
+  const TabBar = () => (
+    <div style={{ position: "relative", marginBottom: "14px" }}>
+      <div style={{ display: "flex", gap: isMobile ? "8px" : "4px", overflowX: "auto", padding: isMobile ? "0 16px 4px" : "0 0 4px", scrollbarWidth: "none" }}>
+        {REPORT_TYPES.map((r) => (
+          <button key={r.id}
+            onClick={() => { setReportType(r.id); setClientFilter("All"); setSearch(""); setSortField(null); setMobileTableView(false); }}
+            style={{
+              padding: isMobile ? "10px 16px" : "7px 14px",
+              borderRadius: isMobile ? "12px" : "6px",
+              flexShrink: 0,
+              border: "1.5px solid " + (reportType === r.id ? "#1a1a1a" : "#e0e0e0"),
+              background: reportType === r.id ? "#1a1a1a" : "#fff",
+              color: reportType === r.id ? "#fff" : "#666",
+              fontSize: isMobile ? "13px" : "12px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
+            }}>
+            {r.icon} {r.label}
+          </button>
+        ))}
+      </div>
+      {/* Right fade + chevron on mobile */}
+      {isMobile && (
+        <div style={{ position: "absolute", right: 0, top: 0, bottom: 4, width: "36px", background: "linear-gradient(to left, #F8F7F5, transparent)", display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: "4px", pointerEvents: "none" }}>
+          <span style={{ fontSize: "12px", color: "#aaa" }}>›</span>
+        </div>
+      )}
+    </div>
+  );
+
+  // Date range panel (full inline block)
+  const DatePanel = () => showDateRange ? (
+    <div style={{ background: "#fff", border: "1.5px solid #e0e0e0", borderRadius: "8px", padding: "12px 14px", marginBottom: "12px" }}>
+      <div style={{ fontSize: "10px", fontWeight: 700, color: "#888", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: "8px" }}>
+        Date range — {reportMeta.dateField === "due_date" ? "due date" : "order created"}
+      </div>
+      <div style={{ display: "flex", gap: "5px", marginBottom: "10px", flexWrap: "wrap" }}>
+        {DATE_PRESETS.map((p) => (
+          <button key={p.id} onClick={() => applyPreset(p.id)} style={{
+            padding: "4px 11px", borderRadius: "5px", fontSize: "11px", cursor: "pointer", fontWeight: 500,
+            border: "1.5px solid " + (datePreset === p.id ? "#1a1a1a" : "#e0e0e0"),
+            background: datePreset === p.id ? "#1a1a1a" : "#f8f8f8",
+            color: datePreset === p.id ? "#fff" : "#555",
+          }}>{p.label}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+        <input type="date" value={toInputDate(dateFrom)}
+          onChange={(e) => { setDatePreset("custom"); setDateFrom(new Date(e.target.value + "T00:00:00")); }}
+          style={{ padding: "6px 10px", borderRadius: "6px", border: "1.5px solid #e0e0e0", fontSize: "12px", background: "#f8f8f8" }} />
+        <span style={{ color: "#aaa", fontSize: "13px" }}>→</span>
+        <input type="date" value={toInputDate(dateTo)}
+          onChange={(e) => { setDatePreset("custom"); setDateTo(new Date(e.target.value + "T23:59:59")); }}
+          style={{ padding: "6px 10px", borderRadius: "6px", border: "1.5px solid #e0e0e0", fontSize: "12px", background: "#f8f8f8" }} />
+        <span style={{ fontSize: "11px", color: "#aaa" }}>{daySpan} day{daySpan !== 1 ? "s" : ""}</span>
+      </div>
+    </div>
+  ) : null;
+
+  // KPI stat grid
+  const KpiGrid = () => summaryKpis ? (
+    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: "8px", marginBottom: "14px" }}>
+      {[
+        { label: "Orders",           val: filtered.length,              color: "#1a1a1a", mono: false },
+        { label: "Total Value (KES)", val: fmtK(summaryKpis.totalValue), color: "#1565C0", mono: true },
+        { label: "Collected (KES)",   val: fmtK(summaryKpis.totalPaid),  color: "#2E7D32", mono: true },
+        {
+          label: "Outstanding (KES)",
+          val: summaryKpis.totalBalance > 0 ? fmtK(summaryKpis.totalBalance) : "✓ Cleared",
+          color: summaryKpis.totalBalance > 0 ? "#C62828" : "#2E7D32",
+          mono: summaryKpis.totalBalance > 0,
+        },
+      ].map((k) => (
+        <div key={k.label} style={{ background: "#fff", border: "1.5px solid #e0e0e0", borderRadius: isMobile ? "12px" : "8px", padding: isMobile ? "16px 12px" : "12px 14px", textAlign: isMobile ? "center" : "left" }}>
+          <div style={{ fontSize: isMobile ? "22px" : "22px", fontWeight: 700, color: k.color, fontFamily: k.mono ? "'DM Mono',monospace" : undefined, letterSpacing: k.mono ? "-0.5px" : undefined, lineHeight: 1 }}>{k.val}</div>
+          <div style={{ fontSize: "10px", color: "#888", marginTop: "5px" }}>{k.label}</div>
+        </div>
+      ))}
+    </div>
+  ) : null;
+
+  // ── Footer totals (shared) ────────────────────────────────────────────────────
+  const FooterTotals = () => filtered.length > 0 ? (
+    <div style={{ display: "flex", gap: "20px", marginTop: "16px", padding: "14px 16px", background: "#fff", borderRadius: "8px", border: "1px solid #e8e8e5", flexWrap: "wrap", fontSize: "13px" }}>
+      <div><span style={{ color: "#888" }}>Orders:</span> <strong>{filtered.length}</strong></div>
+      <div><span style={{ color: "#888" }}>Units:</span> <strong>{totalUnits}</strong></div>
+      {(isFinancial || reportType === "sales-week" || reportType === "completed") && (() => {
+        const tv  = filtered.reduce((s, o) => s + (parseFloat(o.total_value) || 0), 0);
+        const col = filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0);
+        const bal = filtered.reduce((s, o) => s + getBalance(o), 0);
+        return (
+          <>
+            <div><span style={{ color: "#888" }}>Total Value:</span> <strong style={{ fontFamily: "'DM Mono',monospace" }}>{fmtKES(tv)}</strong></div>
+            {isFinancial
+              ? <div><span style={{ color: "#888" }}>Outstanding:</span> <strong style={{ color: "#C62828", fontFamily: "'DM Mono',monospace" }}>{fmtKES(bal)}</strong></div>
+              : <div><span style={{ color: "#888" }}>Collected:</span> <strong style={{ color: "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(col)}</strong></div>
+            }
+          </>
+        );
+      })()}
+    </div>
+  ) : null;
+
+  // ── Mobile card layout ────────────────────────────────────────────────────────
+  const MobileLayout = () => (
+    <div>
+      {/* Title */}
+      <div style={{ padding: "20px 16px 12px" }}>
+        <h1 style={{ fontSize: "22px", fontWeight: 900, marginBottom: "4px" }}>{reportMeta.icon} {reportMeta.label} Report</h1>
+        <p style={{ color: "#9a9a9a", fontSize: "13px" }}>
+          {filtered.length} order{filtered.length !== 1 ? "s" : ""} · {totalUnits} units
+          {showDateRange && <> · {fmtDisplay(dateFrom)} – {fmtDisplay(dateTo)}</>}
+        </p>
+      </div>
+
+      {/* PDF button — full width */}
+      <div style={{ padding: "0 16px 16px" }}>
+        <button onClick={handleExport} disabled={exporting || filtered.length === 0} style={{
+          width: "100%", padding: "13px", borderRadius: "12px", border: "none",
+          background: filtered.length === 0 ? "#e0e0e0" : "#1a1a1a", color: "#fff",
+          fontSize: "14px", fontWeight: 600, cursor: filtered.length === 0 ? "not-allowed" : "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
+          opacity: exporting ? 0.6 : 1,
+        }}>
+          📄 {exporting ? "Generating..." : "Download PDF"}
+        </button>
+      </div>
+
+      {/* Tab bar */}
+      <TabBar />
+
+      {/* Date chip (collapsed → expands inline) */}
+      {showDateRange && (
+        <div style={{ margin: "0 16px 12px" }}>
+          <button onClick={() => setDateChipOpen((v) => !v)} style={{
+            width: "100%", background: "#fff", border: "1px solid #e5e5e5", borderRadius: "12px",
+            padding: "12px 14px", display: "flex", alignItems: "center", justifyContent: "space-between",
+            cursor: "pointer", textAlign: "left",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <div style={{ width: "32px", height: "32px", borderRadius: "8px", background: "#f5f5f5", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "15px", flexShrink: 0 }}>📅</div>
+              <div>
+                <div style={{ fontSize: "13px", fontWeight: 700 }}>{presetLabel}</div>
+                <div style={{ fontSize: "11px", color: "#9a9a9a", marginTop: "1px" }}>{fmtDisplay(dateFrom)} – {fmtDisplay(dateTo)} · {daySpan} days</div>
+              </div>
+            </div>
+            <span style={{ fontSize: "16px", color: "#9a9a9a" }}>{dateChipOpen ? "▲" : "▼"}</span>
+          </button>
+          {dateChipOpen && (
+            <div style={{ marginTop: "8px" }}>
+              <DatePanel />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Filters */}
+      <div style={{ padding: "0 16px 14px", display: "flex", flexDirection: "column", gap: "8px" }}>
+        <input type="text" placeholder="Search…" value={search} onChange={(e) => setSearch(e.target.value)}
+          style={{ border: "1px solid #e5e5e5", borderRadius: "10px", padding: "10px 12px", fontSize: "13px", background: "#fff" }} />
+        <select value={clientFilter} onChange={(e) => setClientFilter(e.target.value)}
+          style={{ border: "1px solid #e5e5e5", borderRadius: "10px", padding: "10px 12px", fontSize: "13px", background: "#fff", fontWeight: 500 }}>
+          <option value="All">All Clients ({clients.length})</option>
+          {clients.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+
+      {/* KPI stat cards */}
+      <div style={{ padding: "0 16px 16px" }}>
+        <KpiGrid />
+      </div>
+
+      {/* Workload summary */}
+      {workloadSummary && workloadSummary.length > 0 && (
+        <div style={{ display: "flex", gap: "10px", marginBottom: "16px", flexWrap: "wrap", padding: "0 16px" }}>
+          {workloadSummary.map((cat) => (
+            <div key={cat.label} style={{ padding: "12px 16px", borderRadius: "12px", background: "#fff", border: "1px solid #e5e5e5", flex: "1 1 120px", minWidth: "110px" }}>
+              <div style={{ fontSize: "24px", fontWeight: 800, color: "#E8512A", fontFamily: "'DM Mono',monospace" }}>{cat.qty}</div>
+              <div style={{ fontSize: "11px", color: "#888", fontWeight: 500 }}>{cat.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Toggle: Full Table */}
+      <div style={{ padding: "0 16px 8px", display: "flex", justifyContent: "flex-end" }}>
+        <button onClick={() => setMobileTableView(true)} style={{ fontSize: "12px", color: "#666", background: "none", border: "1px solid #e0e0e0", borderRadius: "6px", padding: "5px 12px", cursor: "pointer" }}>
+          Full Table ↗
+        </button>
+      </div>
+
+      {/* Line item cards */}
+      {cardItems.length === 0 ? (
+        <div style={{ margin: "0 16px 24px", padding: "40px 20px", textAlign: "center", background: "#fff", borderRadius: "12px", border: "1px solid #e5e5e5" }}>
+          <div style={{ fontSize: "32px", marginBottom: "10px" }}>📊</div>
+          <div style={{ fontSize: "14px", color: "#999" }}>No orders match this report.</div>
+        </div>
+      ) : (
+        <div style={{ padding: "0 16px 24px" }}>
+          <div style={{ fontSize: "11px", fontWeight: 700, color: "#9a9a9a", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>
+            Line Items ({cardItems.length})
+          </div>
+          {cardItems.map(({ order, item, paid, tv, balance, payBadge }, idx) => {
+            const sc = ALL_STATUS_COLORS[order.status] || {};
+            const name = item ? (item.description || item.category || "Item") : (order.items || order.client);
+            const spec = item ? [item.size, item.finish_type !== "None" && item.finish_type, item.wood_type].filter(Boolean).join(" · ") : "";
+            const payColors = { paid: { bg: "#dcfce7", color: "#16a34a" }, partial: { bg: "#fef9c3", color: "#ca8a04" }, outstanding: { bg: "#fee2e2", color: "#dc2626" } };
+            const pClr = payColors[payBadge] || payColors.outstanding;
+            return (
+              <div key={`${order.id}-${item?.id || idx}`} style={{ background: "#fff", border: "1px solid #e5e5e5", borderRadius: "12px", padding: "14px", marginBottom: "10px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: "14px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
+                    <div style={{ fontSize: "11px", color: "#9a9a9a", marginTop: "2px" }}>
+                      {order.client} · {order.order_num}
+                      {order.due_date && <> · Due {fmtDate(order.due_date)}</>}
+                    </div>
+                  </div>
+                  {isFinancial ? (
+                    <span style={{ fontSize: "10px", fontWeight: 700, padding: "3px 8px", borderRadius: "6px", whiteSpace: "nowrap", background: pClr.bg, color: pClr.color }}>
+                      {payBadge === "paid" ? "Paid" : payBadge === "partial" ? "Partial" : "Outstanding"}
+                    </span>
+                  ) : (
+                    <StatusBadge status={order.status} colors={sc} />
+                  )}
+                </div>
+                {/* Numbers row */}
+                {isFinancial ? (
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #f0f0f0" }}>
+                    <div>
+                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase", letterSpacing: "0.5px" }}>Total</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, marginTop: "1px", fontFamily: "'DM Mono',monospace" }}>{fmtKES(tv)}</div>
+                    </div>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase", letterSpacing: "0.5px" }}>Paid</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, marginTop: "1px", color: "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(paid)}</div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase", letterSpacing: "0.5px" }}>Balance</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, marginTop: "1px", color: balance > 0 ? "#C62828" : "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(balance)}</div>
+                    </div>
+                  </div>
+                ) : item ? (
+                  <div style={{ display: "flex", gap: "16px", marginTop: "8px", flexWrap: "wrap" }}>
+                    <div style={{ fontSize: "12px", color: "#555" }}>
+                      <span style={{ color: "#aaa", fontSize: "11px" }}>Qty </span>
+                      <strong>{item.quantity || 1}</strong>
+                    </div>
+                    {spec && <div style={{ fontSize: "11px", color: "#888" }}>{spec}</div>}
+                    {item.notes && <div style={{ fontSize: "11px", color: "#999", fontStyle: "italic" }}>{item.notes}</div>}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Footer */}
+      <div style={{ padding: "0 16px 8px" }}>
+        <FooterTotals />
+      </div>
+    </div>
+  );
+
+  // ── Desktop layout ────────────────────────────────────────────────────────────
+  const DesktopLayout = () => (
+    <div style={{ padding: "20px 16px" }}>
+      {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
         <div>
           <h1 style={{ fontSize: "20px", fontWeight: 700, marginBottom: "4px" }}>{reportMeta.icon} {reportMeta.label} Report</h1>
@@ -305,53 +606,10 @@ export default function Reports() {
         </button>
       </div>
 
-      {/* ── Report type tabs ── */}
-      <div style={{ display: "flex", gap: "4px", marginBottom: "14px", overflowX: "auto", paddingBottom: "4px" }}>
-        {REPORT_TYPES.map((r) => (
-          <button key={r.id}
-            onClick={() => { setReportType(r.id); setClientFilter("All"); setSearch(""); setSortField(null); }}
-            style={{
-              padding: "7px 14px", borderRadius: "6px", flexShrink: 0,
-              border: "1.5px solid " + (reportType === r.id ? "#1a1a1a" : "#e0e0e0"),
-              background: reportType === r.id ? "#1a1a1a" : "#fff",
-              color: reportType === r.id ? "#fff" : "#666",
-              fontSize: "12px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
-            }}>
-            {r.icon} {r.label}
-          </button>
-        ))}
-      </div>
+      <TabBar />
+      <DatePanel />
 
-      {/* ── Date range bar ── */}
-      {showDateRange && (
-        <div style={{ background: "#fff", border: "1.5px solid #e0e0e0", borderRadius: "8px", padding: "12px 14px", marginBottom: "12px" }}>
-          <div style={{ fontSize: "10px", fontWeight: 700, color: "#888", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: "8px" }}>
-            Date range — {reportMeta.dateField === "due_date" ? "due date" : "order created"}
-          </div>
-          <div style={{ display: "flex", gap: "5px", marginBottom: "10px", flexWrap: "wrap" }}>
-            {DATE_PRESETS.map((p) => (
-              <button key={p.id} onClick={() => applyPreset(p.id)} style={{
-                padding: "4px 11px", borderRadius: "5px", fontSize: "11px", cursor: "pointer", fontWeight: 500,
-                border: "1.5px solid " + (datePreset === p.id ? "#1a1a1a" : "#e0e0e0"),
-                background: datePreset === p.id ? "#1a1a1a" : "#f8f8f8",
-                color: datePreset === p.id ? "#fff" : "#555",
-              }}>{p.label}</button>
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-            <input type="date" value={toInputDate(dateFrom)}
-              onChange={(e) => { setDatePreset("custom"); setDateFrom(new Date(e.target.value + "T00:00:00")); }}
-              style={{ padding: "6px 10px", borderRadius: "6px", border: "1.5px solid #e0e0e0", fontSize: "12px", background: "#f8f8f8" }} />
-            <span style={{ color: "#aaa", fontSize: "13px" }}>→</span>
-            <input type="date" value={toInputDate(dateTo)}
-              onChange={(e) => { setDatePreset("custom"); setDateTo(new Date(e.target.value + "T23:59:59")); }}
-              style={{ padding: "6px 10px", borderRadius: "6px", border: "1.5px solid #e0e0e0", fontSize: "12px", background: "#f8f8f8" }} />
-            <span style={{ fontSize: "11px", color: "#aaa" }}>{daySpan} day{daySpan !== 1 ? "s" : ""}</span>
-          </div>
-        </div>
-      )}
-
-      {/* ── Filters ── */}
+      {/* Filters */}
       <div style={{ display: "flex", gap: "10px", marginBottom: "14px", flexWrap: "wrap" }}>
         <input type="text" placeholder="Search..." value={search} onChange={(e) => setSearch(e.target.value)}
           style={{ flex: "1 1 180px", padding: "8px 12px", borderRadius: "6px", border: "1.5px solid #e0e0e0", fontSize: "13px", background: "#fff", minWidth: "140px" }} />
@@ -362,29 +620,9 @@ export default function Reports() {
         </select>
       </div>
 
-      {/* ── Summary KPI strip (financial + sales + completed) ── */}
-      {summaryKpis && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "8px", marginBottom: "14px" }}>
-          {[
-            { label: "Orders",          val: filtered.length,             color: "#1a1a1a", mono: false },
-            { label: "Total Value (KES)", val: fmtK(summaryKpis.totalValue), color: "#1565C0", mono: true },
-            { label: "Collected (KES)",  val: fmtK(summaryKpis.totalPaid),  color: "#2E7D32", mono: true },
-            {
-              label: "Outstanding (KES)",
-              val: summaryKpis.totalBalance > 0 ? fmtK(summaryKpis.totalBalance) : "✓ Cleared",
-              color: summaryKpis.totalBalance > 0 ? "#C62828" : "#2E7D32",
-              mono: summaryKpis.totalBalance > 0,
-            },
-          ].map((k) => (
-            <div key={k.label} style={{ background: "#fff", border: "1.5px solid #e0e0e0", borderRadius: "8px", padding: "12px 14px" }}>
-              <div style={{ fontSize: "22px", fontWeight: 700, color: k.color, fontFamily: k.mono ? "'DM Mono',monospace" : undefined, letterSpacing: k.mono ? "-0.5px" : undefined, lineHeight: 1 }}>{k.val}</div>
-              <div style={{ fontSize: "10px", color: "#888", marginTop: "5px" }}>{k.label}</div>
-            </div>
-          ))}
-        </div>
-      )}
+      <KpiGrid />
 
-      {/* ── Workload summary strip ── */}
+      {/* Workload summary */}
       {workloadSummary && workloadSummary.length > 0 && (
         <div style={{ display: "flex", gap: "10px", marginBottom: "16px", flexWrap: "wrap" }}>
           {workloadSummary.map((cat) => (
@@ -396,7 +634,7 @@ export default function Reports() {
         </div>
       )}
 
-      {/* ── Data table ── */}
+      {/* Table */}
       {filtered.length === 0 ? (
         <div style={{ padding: "60px 20px", textAlign: "center", background: "#fff", borderRadius: "10px", border: "1px solid #e8e8e5" }}>
           <div style={{ fontSize: "36px", marginBottom: "12px" }}>📊</div>
@@ -483,39 +721,32 @@ export default function Reports() {
         </div>
       )}
 
-      {/* ── Footer totals ── */}
-      {filtered.length > 0 && (
-        <div style={{ display: "flex", gap: "20px", marginTop: "16px", padding: "14px 16px", background: "#fff", borderRadius: "8px", border: "1px solid #e8e8e5", flexWrap: "wrap", fontSize: "13px" }}>
-          <div><span style={{ color: "#888" }}>Orders:</span> <strong>{filtered.length}</strong></div>
-          <div><span style={{ color: "#888" }}>Units:</span> <strong>{totalUnits}</strong></div>
-          {(isFinancial || reportType === "sales-week" || reportType === "completed") && (() => {
-            const tv  = filtered.reduce((s, o) => s + (parseFloat(o.total_value) || 0), 0);
-            const col = filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0);
-            const bal = filtered.reduce((s, o) => s + getBalance(o), 0);
-            return (
-              <>
-                <div><span style={{ color: "#888" }}>Total Value:</span> <strong style={{ fontFamily: "'DM Mono',monospace" }}>{fmtKES(tv)}</strong></div>
-                {isFinancial
-                  ? <div><span style={{ color: "#888" }}>Outstanding:</span> <strong style={{ color: "#C62828", fontFamily: "'DM Mono',monospace" }}>{fmtKES(bal)}</strong></div>
-                  : <div><span style={{ color: "#888" }}>Collected:</span> <strong style={{ color: "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(col)}</strong></div>
-                }
-              </>
-            );
-          })()}
-        </div>
-      )}
-
-      <style>{`
-        @media (max-width: 768px) {
-          table { font-size: 11px !important; }
-          th, td { padding: 6px 8px !important; }
-        }
-        @media (max-width: 560px) {
-          [data-kpi-grid] { grid-template-columns: repeat(2, 1fr) !important; }
-        }
-      `}</style>
+      <FooterTotals />
     </div>
   );
+
+  // ── Render ────────────────────────────────────────────────────────────────────
+  // Mobile: card layout (with "Full Table" toggle to switch back to table)
+  // Desktop: existing table layout
+  if (isMobile && !mobileTableView) {
+    return <MobileLayout />;
+  }
+
+  // Mobile table view: wrap with a "← Card View" back button
+  if (isMobile && mobileTableView) {
+    return (
+      <div>
+        <div style={{ padding: "12px 16px", borderBottom: "1px solid #e5e7eb" }}>
+          <button onClick={() => setMobileTableView(false)} style={{ fontSize: "13px", color: "#E8512A", fontWeight: 600, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+            ← Card View
+          </button>
+        </div>
+        <DesktopLayout />
+      </div>
+    );
+  }
+
+  return <DesktopLayout />;
 }
 
 // ── Shared styles ──

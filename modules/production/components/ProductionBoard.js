@@ -113,18 +113,24 @@ export default function ProductionBoard(){
     </div></div>}
 
     {/* Header */}
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"8px",flexWrap:"wrap",gap:"10px"}}>
-      <div>
-        <h1 style={{fontSize:"24px",fontWeight:800,letterSpacing:"-0.5px",margin:0}}>Production</h1>
-        <div style={{fontSize:"12px",color:"#999",marginTop:"2px"}}>{orders.length} orders · {totalUnits} units in pipeline</div>
+    <div style={{marginBottom:"8px"}}>
+      {/* Row 1: Title + View toggle — always one line */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"8px",gap:"10px"}}>
+        <div>
+          <h1 style={{fontSize:"22px",fontWeight:800,letterSpacing:"-0.5px",margin:0}}>Production</h1>
+          <div style={{fontSize:"12px",color:"#999",marginTop:"2px"}}>{orders.length} orders · {totalUnits} units in pipeline</div>
+        </div>
+        {/* View toggle — compact, always fits */}
+        <div style={{display:"flex",gap:"4px",flexShrink:0}}>
+          <button onClick={()=>setViewMode("board")} style={{padding:"6px 14px",borderRadius:"6px",border:"1.5px solid "+(viewMode==="board"?"#111":"#E0DDD8"),background:viewMode==="board"?"#111":"#fff",color:viewMode==="board"?"#fff":"#888",fontSize:"12px",fontWeight:600,cursor:"pointer"}}>Board</button>
+          <button onClick={()=>setViewMode("list")} style={{padding:"6px 14px",borderRadius:"6px",border:"1.5px solid "+(viewMode==="list"?"#111":"#E0DDD8"),background:viewMode==="list"?"#111":"#fff",color:viewMode==="list"?"#fff":"#888",fontSize:"12px",fontWeight:600,cursor:"pointer"}}>List</button>
+        </div>
       </div>
-      <div style={{display:"flex",gap:"4px",flexWrap:"wrap"}}>
-        <button onClick={()=>handleProdExport("weekly")} disabled={exporting} style={{padding:"6px 12px",borderRadius:"6px",border:"1.5px solid #E0DDD8",background:"#fff",color:"#666",fontSize:"12px",fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>{exporting?"...":"📄 Weekly PDF"}</button>
-        <button onClick={()=>setExportMode("client")} style={{padding:"6px 12px",borderRadius:"6px",border:"1.5px solid #E0DDD8",background:"#fff",color:"#666",fontSize:"12px",fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>📄 Client PDF</button>
-        <button onClick={()=>setExportMode("order")} style={{padding:"6px 12px",borderRadius:"6px",border:"1.5px solid #E0DDD8",background:"#fff",color:"#666",fontSize:"12px",fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>📄 Order PDF</button>
-        <div style={{width:"1px",background:"#E0DDD8",margin:"0 2px"}}/>
-        <button onClick={()=>setViewMode("board")} style={{padding:"6px 12px",borderRadius:"6px",border:"1.5px solid "+(viewMode==="board"?"#111":"#E0DDD8"),background:viewMode==="board"?"#111":"#fff",color:viewMode==="board"?"#fff":"#888",fontSize:"12px",fontWeight:600,cursor:"pointer"}}>Board</button>
-        <button onClick={()=>setViewMode("list")} style={{padding:"6px 12px",borderRadius:"6px",border:"1.5px solid "+(viewMode==="list"?"#111":"#E0DDD8"),background:viewMode==="list"?"#111":"#fff",color:viewMode==="list"?"#fff":"#888",fontSize:"12px",fontWeight:600,cursor:"pointer"}}>List</button>
+      {/* Row 2: PDF exports — wraps gracefully on mobile */}
+      <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
+        <button onClick={()=>handleProdExport("weekly")} disabled={exporting} style={{padding:"5px 10px",borderRadius:"6px",border:"1.5px solid #E0DDD8",background:"#fff",color:"#666",fontSize:"11px",fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>{exporting?"...":"📄 Weekly"}</button>
+        <button onClick={()=>setExportMode("client")} style={{padding:"5px 10px",borderRadius:"6px",border:"1.5px solid #E0DDD8",background:"#fff",color:"#666",fontSize:"11px",fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>📄 Client</button>
+        <button onClick={()=>setExportMode("order")} style={{padding:"5px 10px",borderRadius:"6px",border:"1.5px solid #E0DDD8",background:"#fff",color:"#666",fontSize:"11px",fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}}>📄 Order</button>
       </div>
     </div>
 

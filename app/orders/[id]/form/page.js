@@ -209,8 +209,14 @@ function AttachmentsPanel({ orderId, userRole }) {
   };
 
   const viewDocument = async (doc) => {
-    const { data } = await supabase.storage.from('order-documents').createSignedUrl(doc.file_path, 3600);
-    if (data?.signedUrl) window.open(data.signedUrl, '_blank');
+    try {
+      const res = await fetch(`/api/orders/${orderId}/documents?doc_id=${doc.id}`);
+      const json = await res.json();
+      if (json.signed_url) window.open(json.signed_url, '_blank');
+      else alert('Could not open document: ' + (json.error || 'Unknown error'));
+    } catch (err) {
+      alert('Error opening document: ' + err.message);
+    }
   };
 
   const deleteDocument = async (doc) => {
@@ -671,7 +677,9 @@ export default function OrderFormPage() {
   }
 
   // ── Derived values ───────────────────────────────────────────────────────────
-  const canEditItems    = ['admin', 'head_of_sales'].includes(userRole);
+  const PRE_PRODUCTION_STATUSES = ['Inquiry', 'Quote Approved', 'Deposit Paid', 'Material Check'];
+  const canEditItems = ['admin', 'head_of_sales'].includes(userRole) ||
+    (userRole === 'sales' && PRE_PRODUCTION_STATUSES.includes(order?.status));
   const displayItems    = editMode ? editedItems : items;
   const itemsSubtotal   = displayItems.filter(i => !isChargeItem(i)).reduce((s, i) => s + (parseFloat(i.unit_price) || 0) * (parseInt(i.quantity) || 1), 0);
   const chargesSubtotal = displayItems.filter(i => isChargeItem(i)).reduce((s, i) => s + (parseFloat(i.unit_price) || 0), 0);
@@ -1023,12 +1031,11 @@ export default function OrderFormPage() {
 
         {/* Row 1: Back | Order num · Client · Status | Edit/Save */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 20px', borderBottom: '1px solid #374151' }} className="print-hidden">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: 1, overflow: 'hidden' }}>
             <Link href="/orders" style={{ color: '#9ca3af', fontSize: '12px', fontWeight: 600, textDecoration: 'none', flexShrink: 0 }}>← Orders</Link>
             <div style={{ width: '1px', height: '14px', background: '#374151', flexShrink: 0 }} />
             <span style={{ fontSize: '13px', fontWeight: 700, color: '#fff', fontFamily: 'monospace', letterSpacing: '-0.3px', flexShrink: 0 }}>{order.order_num}</span>
             <span style={{ fontSize: '12px', color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{order.client}</span>
-            <span style={{ background: sc.bg, color: sc.text, fontSize: '9px', fontWeight: 700, padding: '2px 8px', borderRadius: '3px', textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 }}>{order.status}</span>
           </div>
           <div style={{ display: 'flex', gap: '8px', flexShrink: 0, marginLeft: '12px' }}>
             {editMode ? (

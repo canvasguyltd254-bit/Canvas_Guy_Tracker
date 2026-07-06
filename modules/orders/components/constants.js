@@ -46,8 +46,8 @@ export const REWORK_TARGETS = {
   "Ready for Delivery":"Production",
   "Partially Delivered":"Ready for Delivery",
 };
-// Full refund: from Quote Approved only, admin + head_of_sales
-export const ROLES_CAN_REFUND = ["admin","head_of_sales"];
+// Full refund: from Quote Approved only; sales can also cancel wrongful early-stage orders
+export const ROLES_CAN_REFUND = ["admin","head_of_sales","sales"];
 export const REWORK_REASONS = ["QC Failed","Client Change","Wrong Specs","Damaged Item","Repair / Rework","Material Issue","Other"];
 
 export const ss = {

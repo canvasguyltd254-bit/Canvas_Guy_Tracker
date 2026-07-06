@@ -289,10 +289,10 @@ export default function Dashboard() {
     <div style={{ padding: '20px 16px' }}>
 
       {/* Page header */}
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '20px' }}>
-        <h1 style={{ fontSize: '22px', fontWeight: 800, letterSpacing: '-0.5px' }}>Dashboard</h1>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '20px', gap: '8px', flexWrap: 'wrap' }}>
+        <h1 style={{ fontSize: '22px', fontWeight: 800, letterSpacing: '-0.5px', flexShrink: 0 }}>Dashboard</h1>
         <span style={{ fontSize: '12px', color: '#aaa' }}>
-          {now.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+          {now.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
         </span>
       </div>
 
