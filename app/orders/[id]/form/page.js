@@ -1191,7 +1191,7 @@ export default function OrderFormPage() {
                   <thead>
                     <tr style={{ borderBottom: '2px solid #e5e7eb', background: '#f9fafb' }}>
                       <th style={{ textAlign: 'left', padding: '10px 14px', fontSize: '10px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', width: '22%' }}>Category</th>
-                      <th style={{ textAlign: 'left', padding: '10px 14px', fontSize: '10px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase' }}>Description / size</th>
+                      <th style={{ textAlign: 'left', padding: '10px 14px', fontSize: '10px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase' }}>Size / Spec</th>
                       <th style={{ textAlign: 'right', padding: '10px 14px', fontSize: '10px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', width: '60px' }}>Qty</th>
                       <th style={{ textAlign: 'right', padding: '10px 14px', fontSize: '10px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', width: '120px' }}>Unit price</th>
                       <th style={{ textAlign: 'right', padding: '10px 14px', fontSize: '10px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', width: '110px' }}>Total</th>
@@ -1226,7 +1226,30 @@ export default function OrderFormPage() {
                           <td style={{ padding: '10px 14px' }}>
                             {isCharge ? <span style={{ fontSize: '12px', color: '#9ca3af' }}>—</span>
                               : editMode && canEditItems ? (
-                                <input type="text" value={item.size || ''} placeholder="e.g. 60×90cm" onChange={e => updItem(key, 'size', e.target.value)} style={{ width: '100%', padding: '5px 7px', border: '1.5px solid #e0e0e0', borderRadius: '6px', fontSize: '12px', boxSizing: 'border-box' }} />
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                                  <input type="text" value={item.size || ''} placeholder="Size (e.g. 60×90cm)"
+                                    onChange={e => updItem(key, 'size', e.target.value)}
+                                    style={{ width: '100%', padding: '5px 7px', border: '1.5px solid #e0e0e0', borderRadius: '6px', fontSize: '12px', boxSizing: 'border-box' }} />
+                                  <div style={{ display: 'flex', gap: '5px' }}>
+                                    <select value={item.finish_type || 'None'}
+                                      onChange={e => updItem(key, 'finish_type', e.target.value)}
+                                      style={{ flex: 1, padding: '5px 6px', border: '1.5px solid #e0e0e0', borderRadius: '6px', fontSize: '11px', background: '#fff' }}>
+                                      {FINISH_TYPES.map(f => <option key={f}>{f}</option>)}
+                                    </select>
+                                    <input type="text" value={item.finish_color || ''} placeholder="Color"
+                                      onChange={e => updItem(key, 'finish_color', e.target.value)}
+                                      style={{ flex: 1, padding: '5px 7px', border: '1.5px solid #e0e0e0', borderRadius: '6px', fontSize: '11px', boxSizing: 'border-box' }} />
+                                  </div>
+                                  <select value={item.wood_type || ''}
+                                    onChange={e => updItem(key, 'wood_type', e.target.value)}
+                                    style={{ width: '100%', padding: '5px 6px', border: '1.5px solid #e0e0e0', borderRadius: '6px', fontSize: '11px', background: '#fff' }}>
+                                    <option value="">— Wood type —</option>
+                                    {WOOD_TYPES.map(w => <option key={w}>{w}</option>)}
+                                  </select>
+                                  <input type="text" value={item.description || ''} placeholder="Description / notes"
+                                    onChange={e => updItem(key, 'description', e.target.value)}
+                                    style={{ width: '100%', padding: '5px 7px', border: '1.5px solid #e0e0e0', borderRadius: '6px', fontSize: '11px', boxSizing: 'border-box' }} />
+                                </div>
                               ) : (
                                 <span style={{ color: '#6b7280', fontSize: '12px' }}>{itemSpec(item)}</span>
                               )}
