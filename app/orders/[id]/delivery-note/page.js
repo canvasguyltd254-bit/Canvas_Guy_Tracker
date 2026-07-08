@@ -383,7 +383,7 @@ export default function DeliveryNotePage() {
         {/* ── Footer ── */}
         <div style={{ marginTop: 28, textAlign: 'center', fontSize: 10, color: '#d1d5db', borderTop: '1px solid #f3f4f6', paddingTop: 12 }}>
           Canvas Guy Limited · Nairobi, Kenya · {order.order_num}
-          {showAmounts && <span style={{ color: '#fca5a5' }}> · INTERNAL COPY — DO NOT SHARE WITH CLIENT</span>}
+          {showAmounts && <span style={{ color: '#fca5a5' }}> · CONFIDENTIAL — FOR AUTHORISED RECIPIENTS ONLY</span>}
         </div>
 
       </div>
