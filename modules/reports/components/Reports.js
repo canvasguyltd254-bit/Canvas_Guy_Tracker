@@ -3,25 +3,29 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import { createClient } from "@/shared/supabase/client";
 import { ALL_STATUS_COLORS, CATEGORIES } from "@/modules/orders/components/constants";
-import { generateReportPDF } from "@/shared/pdf/generateReport";
+// PDF generation handled server-side via /api/reports/pdf (build_report.py)
 
 // ── Report type definitions ──
 const REPORT_TYPES = [
-  { id: "overdue",     label: "Overdue",            icon: "🔴", dateField: null },
-  { id: "due-week",    label: "Due Orders",          icon: "📅", dateField: "due_date" },
-  { id: "production",  label: "In Production",       icon: "🔨", dateField: null },
-  { id: "ready",       label: "Ready for Delivery",  icon: "✅", dateField: null },
-  { id: "receivables", label: "Receivables",         icon: "💰", dateField: null },
-  { id: "collections", label: "Collections Due",     icon: "📋", dateField: "due_date" },
-  { id: "sales-week",  label: "Sales by Period",     icon: "📈", dateField: "created_at" },
-  { id: "completed",   label: "Completed",           icon: "🏁", dateField: "created_at" },
-  { id: "workload",    label: "Workload",             icon: "⚙️", dateField: null },
+  { id: "overdue",              label: "Overdue",             icon: "🔴", dateField: null },
+  { id: "due-week",             label: "Due Orders",          icon: "📅", dateField: "due_date" },
+  { id: "production",           label: "In Production",       icon: "🔨", dateField: null },
+  { id: "ready",                label: "Ready for Delivery",  icon: "✅", dateField: null },
+  { id: "receivables",          label: "Receivables",         icon: "💰", dateField: null },
+  { id: "collections",          label: "Collections Due",     icon: "📋", dateField: "due_date" },
+  { id: "sales-week",           label: "Sales by Period",     icon: "📈", dateField: "created_at" },
+  { id: "completed",            label: "Completed",           icon: "🏁", dateField: "created_at" },
+  { id: "workload",             label: "Workload",            icon: "⚙️", dateField: null },
+  { id: "supplier-payables",    label: "Supplier Payables",   icon: "🏭", dateField: null },
+  { id: "supplier-purchases",   label: "Supplier Purchases",  icon: "📦", dateField: "purchase_date" },
 ];
 
-const PROD_STATUSES = ["Material Check", "Production", "Quality Control", "Ready for Delivery"];
-const FINANCIAL_REPORTS = ["receivables", "collections"];
-const DATE_RANGE_REPORTS = ["due-week", "sales-week", "collections", "completed"];
-const SUMMARY_KPI_REPORTS = ["receivables", "collections", "sales-week", "completed"];
+const PROD_STATUSES        = ["Material Check", "Production", "Quality Control", "Ready for Delivery"];
+const FINANCIAL_REPORTS    = ["receivables", "collections"];
+const DATE_RANGE_REPORTS   = ["due-week", "sales-week", "collections", "completed"];
+const SUMMARY_KPI_REPORTS  = ["receivables", "collections", "sales-week", "completed"];
+const SUPPLIER_REPORTS     = ["supplier-payables", "supplier-purchases"];
+const SUPPLIER_DATE_RANGE  = ["supplier-purchases"];
 
 const DATE_PRESETS = [
   { id: "this-week",    label: "This week" },
@@ -82,7 +86,8 @@ export default function Reports() {
   const [userName, setUserName] = useState("");
   const [search, setSearch] = useState("");
   const [clientFilter, setClientFilter] = useState("All");
-  const [exporting, setExporting] = useState(false);
+  const [exporting, setExporting]               = useState(false);
+  const [supplierPurchases, setSupplierPurchases] = useState([]);
 
   // Sorting
   const [sortField, setSortField] = useState(null);
@@ -122,6 +127,17 @@ export default function Reports() {
         pays.forEach((p) => { t[p.order_id] = (t[p.order_id] || 0) + parseFloat(p.amount); });
         setPayTotals(t);
       }
+      const { data: spData } = await sb
+        .from("supplier_purchases")
+        .select("*, suppliers(name)")
+        .order("purchase_date", { ascending: false });
+      if (spData) {
+        setSupplierPurchases(spData.map((p) => ({
+          ...p,
+          supplier_name: p.suppliers?.name || "Unknown",
+        })));
+      }
+
       setLoaded(true);
     })();
   }, []);
@@ -159,12 +175,27 @@ export default function Reports() {
     "sales-week":(o) => inRange(o.created_at),
     completed:   (o) => ["Delivered", "Closed"].includes(o.status) && inRange(o.created_at),
     workload:    (o) => PROD_STATUSES.includes(o.status),
+    // Supplier report filters
+    "supplier-payables":  (p) => ["Unpaid", "Part Paid"].includes(p.payment_status),
+    "supplier-purchases": (p) => inRange(p.purchase_date + "T12:00:00"),
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [orders, payTotals, inRange]);
 
   // ── Apply filters + sorting ──
   const filtered = useMemo(() => {
     const fn = filterFn[reportType] || (() => true);
+
+    // Supplier reports operate on a different dataset
+    if (SUPPLIER_REPORTS.includes(reportType)) {
+      const q = search.toLowerCase();
+      return supplierPurchases.filter((p) => {
+        if (!fn(p)) return false;
+        if (clientFilter !== "All" && p.supplier_name !== clientFilter) return false;
+        if (search) return [p.supplier_name, p.items_bought, p.payment_status].filter(Boolean).join(" ").toLowerCase().includes(q);
+        return true;
+      });
+    }
+
     let res = orders.filter((o) => {
       if (!fn(o)) return false;
       if (clientFilter !== "All" && o.client !== clientFilter) return false;
@@ -194,14 +225,18 @@ export default function Reports() {
     }
     return res;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orders, reportType, clientFilter, search, filterFn, sortField, sortDir]);
+  }, [orders, supplierPurchases, reportType, clientFilter, search, filterFn, sortField, sortDir]);
 
-  // ── Unique clients for filter dropdown ──
+  // ── Unique clients / suppliers for filter dropdown ──
   const clients = useMemo(() => {
     const fn = filterFn[reportType] || (() => true);
+    if (SUPPLIER_REPORTS.includes(reportType)) {
+      const set = new Set(supplierPurchases.filter(fn).map((p) => p.supplier_name));
+      return Array.from(set).sort();
+    }
     const set = new Set(orders.filter(fn).map((o) => o.client));
     return Array.from(set).sort();
-  }, [orders, reportType, filterFn]);
+  }, [orders, supplierPurchases, reportType, filterFn]);
 
   // ── Workload summary (category breakdown) ──
   const workloadSummary = useMemo(() => {
@@ -228,6 +263,12 @@ export default function Reports() {
 
   // ── Financial / Sales KPI summary ──
   const summaryKpis = useMemo(() => {
+    if (SUPPLIER_REPORTS.includes(reportType) && filtered.length > 0) {
+      const totalValue   = filtered.reduce((s, p) => s + (parseFloat(p.total_amount) || 0), 0);
+      const totalPaid    = filtered.reduce((s, p) => s + (parseFloat(p.amount_paid)  || 0), 0);
+      const totalBalance = Math.max(totalValue - totalPaid, 0);
+      return { totalValue, totalPaid, totalBalance };
+    }
     if (!SUMMARY_KPI_REPORTS.includes(reportType) || filtered.length === 0) return null;
     const totalValue   = filtered.reduce((s, o) => s + (parseFloat(o.total_value) || 0), 0);
     const totalPaid    = filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0);
@@ -256,9 +297,10 @@ export default function Reports() {
   }, [filtered, allItems, payTotals]);
 
   // ── Report metadata ──
-  const reportMeta  = REPORT_TYPES.find((r) => r.id === reportType) || REPORT_TYPES[0];
-  const isFinancial = FINANCIAL_REPORTS.includes(reportType);
-  const showDateRange = DATE_RANGE_REPORTS.includes(reportType);
+  const reportMeta       = REPORT_TYPES.find((r) => r.id === reportType) || REPORT_TYPES[0];
+  const isFinancial      = FINANCIAL_REPORTS.includes(reportType);
+  const isSupplierReport = SUPPLIER_REPORTS.includes(reportType);
+  const showDateRange    = DATE_RANGE_REPORTS.includes(reportType) || SUPPLIER_DATE_RANGE.includes(reportType);
 
   // ── Date range preset handler ──
   const applyPreset = (preset) => {
@@ -280,20 +322,45 @@ export default function Reports() {
   // ── PDF Export ──
   const handleExport = async () => {
     setExporting(true);
-    const parts = [];
-    if (clientFilter !== "All") parts.push(`Client: ${clientFilter}`);
-    if (showDateRange) parts.push(`${fmtDisplay(dateFrom)} – ${fmtDisplay(dateTo)}`);
     try {
-      await generateReportPDF({
-        title: reportMeta.label + " Report",
-        subtitle: parts.join("  ·  ") || null,
-        orders: filtered,
-        allItems,
-        payTotals,
-        userName,
-        showFinancials: isFinancial,
-        workloadSummary: reportType === "workload" ? workloadSummary : null,
+      const res = await fetch("/api/reports/pdf", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(isSupplierReport ? {
+          reportLabel:       reportMeta.label,
+          supplierPurchases: filtered,
+          dateFrom:          showDateRange ? dateFrom.toISOString() : null,
+          dateTo:            showDateRange ? dateTo.toISOString()   : null,
+          userName,
+        } : {
+          reportLabel:     reportMeta.label,
+          orders:          filtered,
+          allItems,
+          payTotals,
+          dateFrom:        showDateRange ? dateFrom.toISOString() : null,
+          dateTo:          showDateRange ? dateTo.toISOString()   : null,
+          userName,
+          showFinancials:  isFinancial,
+          workloadSummary: reportType === "workload" ? workloadSummary : null,
+        }),
       });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Unknown error" }));
+        throw new Error(err.detail || err.error || "PDF generation failed");
+      }
+
+      const blob      = await res.blob();
+      const url       = URL.createObjectURL(blob);
+      const a         = document.createElement("a");
+      a.href          = url;
+      const safeLabel = (reportMeta.label || "Report").replace(/\s+/g, "_");
+      const dateStr   = new Date().toISOString().split("T")[0];
+      a.download      = `${safeLabel}_${dateStr}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     } catch (err) {
       alert("PDF error: " + err.message);
     }
@@ -403,22 +470,38 @@ export default function Reports() {
   // ── Footer totals (shared) ────────────────────────────────────────────────────
   const FooterTotals = () => filtered.length > 0 ? (
     <div style={{ display: "flex", gap: "20px", marginTop: "16px", padding: "14px 16px", background: "#fff", borderRadius: "8px", border: "1px solid #e8e8e5", flexWrap: "wrap", fontSize: "13px" }}>
-      <div><span style={{ color: "#888" }}>Orders:</span> <strong>{filtered.length}</strong></div>
-      <div><span style={{ color: "#888" }}>Units:</span> <strong>{totalUnits}</strong></div>
-      {(isFinancial || reportType === "sales-week" || reportType === "completed") && (() => {
-        const tv  = filtered.reduce((s, o) => s + (parseFloat(o.total_value) || 0), 0);
-        const col = filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0);
-        const bal = filtered.reduce((s, o) => s + getBalance(o), 0);
+      {isSupplierReport ? (() => {
+        const tv  = filtered.reduce((s, p) => s + (parseFloat(p.total_amount) || 0), 0);
+        const col = filtered.reduce((s, p) => s + (parseFloat(p.amount_paid)  || 0), 0);
+        const bal = Math.max(tv - col, 0);
         return (
           <>
-            <div><span style={{ color: "#888" }}>Total Value:</span> <strong style={{ fontFamily: "'DM Mono',monospace" }}>{fmtKES(tv)}</strong></div>
-            {isFinancial
-              ? <div><span style={{ color: "#888" }}>Outstanding:</span> <strong style={{ color: "#C62828", fontFamily: "'DM Mono',monospace" }}>{fmtKES(bal)}</strong></div>
-              : <div><span style={{ color: "#888" }}>Collected:</span> <strong style={{ color: "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(col)}</strong></div>
-            }
+            <div><span style={{ color: "#888" }}>Purchases:</span> <strong>{filtered.length}</strong></div>
+            <div><span style={{ color: "#888" }}>Total:</span> <strong style={{ fontFamily: "'DM Mono',monospace" }}>{fmtKES(tv)}</strong></div>
+            <div><span style={{ color: "#888" }}>Paid:</span> <strong style={{ color: "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(col)}</strong></div>
+            <div><span style={{ color: "#888" }}>Outstanding:</span> <strong style={{ color: bal > 0 ? "#C62828" : "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(bal)}</strong></div>
           </>
         );
-      })()}
+      })() : (
+        <>
+          <div><span style={{ color: "#888" }}>Orders:</span> <strong>{filtered.length}</strong></div>
+          <div><span style={{ color: "#888" }}>Units:</span> <strong>{totalUnits}</strong></div>
+          {(isFinancial || reportType === "sales-week" || reportType === "completed") && (() => {
+            const tv  = filtered.reduce((s, o) => s + (parseFloat(o.total_value) || 0), 0);
+            const col = filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0);
+            const bal = filtered.reduce((s, o) => s + getBalance(o), 0);
+            return (
+              <>
+                <div><span style={{ color: "#888" }}>Total Value:</span> <strong style={{ fontFamily: "'DM Mono',monospace" }}>{fmtKES(tv)}</strong></div>
+                {isFinancial
+                  ? <div><span style={{ color: "#888" }}>Outstanding:</span> <strong style={{ color: "#C62828", fontFamily: "'DM Mono',monospace" }}>{fmtKES(bal)}</strong></div>
+                  : <div><span style={{ color: "#888" }}>Collected:</span> <strong style={{ color: "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(col)}</strong></div>
+                }
+              </>
+            );
+          })()}
+        </>
+      )}
     </div>
   ) : null;
 
@@ -511,7 +594,50 @@ export default function Reports() {
       </div>
 
       {/* Line item cards */}
-      {cardItems.length === 0 ? (
+      {isSupplierReport ? (
+        filtered.length === 0 ? (
+          <div style={{ margin: "0 16px 24px", padding: "40px 20px", textAlign: "center", background: "#fff", borderRadius: "12px", border: "1px solid #e5e5e5" }}>
+            <div style={{ fontSize: "32px", marginBottom: "10px" }}>📊</div>
+            <div style={{ fontSize: "14px", color: "#999" }}>No purchases match this report.</div>
+          </div>
+        ) : (
+          <div style={{ padding: "0 16px 24px" }}>
+            <div style={{ fontSize: "11px", fontWeight: 700, color: "#9a9a9a", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>
+              Purchases ({filtered.length})
+            </div>
+            {filtered.map((p) => {
+              const bal  = Math.max((parseFloat(p.total_amount) || 0) - (parseFloat(p.amount_paid) || 0), 0);
+              const sClr = p.payment_status === "Paid" ? { bg: "#dcfce7", color: "#16a34a" } : p.payment_status === "Part Paid" ? { bg: "#fef9c3", color: "#ca8a04" } : { bg: "#fee2e2", color: "#dc2626" };
+              const dStr = p.purchase_date ? new Date(p.purchase_date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—";
+              return (
+                <div key={p.id} style={{ background: "#fff", border: "1px solid #e5e5e5", borderRadius: "12px", padding: "14px", marginBottom: "10px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: "14px" }}>{p.supplier_name}</div>
+                      <div style={{ fontSize: "11px", color: "#9a9a9a", marginTop: "2px" }}>{dStr} · {p.items_bought || "—"}</div>
+                    </div>
+                    <span style={{ fontSize: "10px", fontWeight: 700, padding: "3px 8px", borderRadius: "6px", whiteSpace: "nowrap", background: sClr.bg, color: sClr.color }}>{p.payment_status}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #f0f0f0" }}>
+                    <div>
+                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase" }}>Total</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>{fmtKES(parseFloat(p.total_amount) || 0)}</div>
+                    </div>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase" }}>Paid</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, color: "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(parseFloat(p.amount_paid) || 0)}</div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase" }}>Balance</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, color: bal > 0 ? "#C62828" : "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(bal)}</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )
+      ) : cardItems.length === 0 ? (
         <div style={{ margin: "0 16px 24px", padding: "40px 20px", textAlign: "center", background: "#fff", borderRadius: "12px", border: "1px solid #e5e5e5" }}>
           <div style={{ fontSize: "32px", marginBottom: "10px" }}>📊</div>
           <div style={{ fontSize: "14px", color: "#999" }}>No orders match this report.</div>
@@ -638,7 +764,41 @@ export default function Reports() {
       {filtered.length === 0 ? (
         <div style={{ padding: "60px 20px", textAlign: "center", background: "#fff", borderRadius: "10px", border: "1px solid #e8e8e5" }}>
           <div style={{ fontSize: "36px", marginBottom: "12px" }}>📊</div>
-          <div style={{ fontSize: "14px", color: "#999" }}>No orders match this report.</div>
+          <div style={{ fontSize: "14px", color: "#999" }}>{isSupplierReport ? "No supplier purchases match this report." : "No orders match this report."}</div>
+        </div>
+      ) : isSupplierReport ? (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", background: "#fff", borderRadius: "10px", overflow: "hidden", border: "1px solid #e8e8e5" }}>
+            <thead>
+              <tr style={{ background: "#1a1a1a", color: "#fff", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                <th style={th}>Supplier</th>
+                <th style={th}>Date</th>
+                <th style={th}>Items Bought</th>
+                <th style={{ ...th, textAlign: "right" }}>Total (KES)</th>
+                <th style={{ ...th, textAlign: "right" }}>Paid (KES)</th>
+                <th style={{ ...th, textAlign: "right" }}>Balance (KES)</th>
+                <th style={th}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((p, idx) => {
+                const bal = Math.max((parseFloat(p.total_amount) || 0) - (parseFloat(p.amount_paid) || 0), 0);
+                const sClr = p.payment_status === "Paid" ? { bg: "#dcfce7", text: "#16a34a" } : p.payment_status === "Part Paid" ? { bg: "#fef9c3", text: "#ca8a04" } : { bg: "#fee2e2", text: "#dc2626" };
+                const dStr = p.purchase_date ? new Date(p.purchase_date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—";
+                return (
+                  <tr key={p.id} style={{ background: idx % 2 === 0 ? "#fff" : "#FAFAF8", borderBottom: "1px solid #e8e8e5" }}>
+                    <td style={{ ...td, fontWeight: 700 }}>{p.supplier_name}</td>
+                    <td style={td}>{dStr}</td>
+                    <td style={{ ...td, fontSize: "12px", color: "#555" }}>{p.items_bought || "—"}</td>
+                    <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }}>{fmtKES(parseFloat(p.total_amount) || 0)}</td>
+                    <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace", color: "#2E7D32" }}>{fmtKES(parseFloat(p.amount_paid) || 0)}</td>
+                    <td style={{ ...td, textAlign: "right", fontWeight: 700, color: bal > 0 ? "#C62828" : "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(bal)}</td>
+                    <td style={td}><span style={{ fontSize: "10px", fontWeight: 700, color: sClr.text, background: sClr.bg, padding: "3px 8px", borderRadius: "4px", whiteSpace: "nowrap" }}>{p.payment_status}</span></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       ) : (
         <div style={{ overflowX: "auto" }}>
@@ -725,7 +885,7 @@ export default function Reports() {
     </div>
   );
 
-  // ── Render ────────────────────────────────────────────────────────────────────
+  // ── Render ──────────────────────────────────────────────────────────────────
   // Mobile: card layout (with "Full Table" toggle to switch back to table)
   // Desktop: existing table layout
   if (isMobile && !mobileTableView) {

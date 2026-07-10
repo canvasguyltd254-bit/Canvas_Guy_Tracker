@@ -69,6 +69,8 @@ export const ALLOWED_FIELDS = {
       'status',           // initial status (Inquiry / Reported)
       'items',            // denormalized summary string
       'parent_order_id',  // repair/return link to original order
+      'customer_id',      // nullable FK to customers table
+      'payment_due_date', // calculated from customer credit terms at order creation
     ],
     update: [
       // Editable metadata
@@ -85,6 +87,7 @@ export const ALLOWED_FIELDS = {
       'delivery_address',
       'delivery_contact',
       'delivery_instructions',
+      'batch_delivery',        // one-way toggle (false → true) via Enable Batch Delivery
       // Workflow fields — only set via applyStatus or specific modal actions
       'status',
       'credit_approval_ref',
@@ -352,6 +355,163 @@ export const ALLOWED_FIELDS = {
       'moved_at',
     ],
     // Stock movements are immutable — no update. Add a reversal movement instead.
+  },
+
+  // ── Customers module ───────────────────────────────────────────────────────
+
+  customers: {
+    insert: [
+      'name',
+      'contact_person',
+      'phone',
+      'email',
+      'address',
+      'kra_pin',
+      'credit_limit',
+      'credit_terms',
+      'opening_balance',
+      'opening_balance_date',
+      'notes',
+    ],
+    update: [
+      'name',
+      'contact_person',
+      'phone',
+      'email',
+      'address',
+      'kra_pin',
+      'credit_limit',
+      'credit_terms',
+      'opening_balance',
+      'opening_balance_date',
+      'notes',
+    ],
+  },
+
+  customer_notes: {
+    insert: [
+      'customer_id',
+      'content',
+      'author_name',
+      'created_by',
+    ],
+    // Notes are immutable — no update.
+  },
+
+  contacts: {
+    insert: [
+      'contact_type',
+      'name',
+      'company',
+      'phone',
+      'email',
+      'address',
+      'notes',
+      'created_by',
+    ],
+    update: [
+      'contact_type',
+      'name',
+      'company',
+      'phone',
+      'email',
+      'address',
+      'notes',
+    ],
+  },
+
+  // ── Payments module ────────────────────────────────────────────────────────
+
+  purchase_order_links: {
+    insert: [
+      'purchase_id',
+      'order_id',
+    ],
+    // Delete is handled by RLS (no update — replace by delete + re-insert)
+  },
+
+  supplier_purchases: {
+    insert: [
+      'supplier_id',
+      'purchase_date',
+      'items_bought',
+      'total_amount',
+      'amount_paid',
+      'payment_status',
+      'invoice_path',
+      'invoice_name',
+      'notes',
+    ],
+    update: [
+      'purchase_date',
+      'items_bought',
+      'total_amount',
+      'amount_paid',
+      'payment_status',
+      'invoice_path',
+      'invoice_name',
+      'notes',
+    ],
+  },
+
+  chatpesa_imports: {
+    insert: [
+      'uploaded_by',
+      'uploaded_at',
+      'statement_from',
+      'statement_to',
+      'account_ref',
+      'account_name',
+      'reconciliation_week',
+      'row_count',
+      'debit_count',
+      'credit_count',
+      'refund_count',
+      'duplicate_count',
+      'total_debits',
+    ],
+    // Imports are immutable — no update.
+  },
+
+  chatpesa_transactions: {
+    // Inserted in bulk by the import API — no individual insert whitelist needed
+    update: [
+      'match_status',
+      'matched_at',
+      'matched_by',
+      'ignored_at',
+      'ignored_by',
+      'suggested_supplier_id',
+      'suggested_confidence',
+    ],
+  },
+
+  chatpesa_payment_allocations: {
+    insert: [
+      'transaction_id',
+      'allocation_type',
+      'supplier_purchase_id',
+      'supplier_id',
+      'petty_cash_category',
+      'amount',
+      'note',
+      'created_by',
+    ],
+    // Allocations are immutable — delete and re-add to correct.
+  },
+
+  manual_supplier_payments: {
+    insert: [
+      'supplier_id',
+      'supplier_purchase_id',
+      'payment_date',
+      'amount',
+      'payment_method',
+      'reference',
+      'note',
+      'created_by',
+    ],
+    // Manual payments are immutable — delete and re-add to correct.
   },
 
 };

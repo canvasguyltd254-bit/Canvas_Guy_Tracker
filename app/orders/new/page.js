@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, useMemo } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import AppShell from '@/shared/ui/AppShell';
 import { createClient } from '@/shared/supabase/client';
@@ -201,13 +201,30 @@ function ChargesBuilder({ charges, onChange }) {
 }
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
+// Credit terms days helper
+const TERMS_DAYS_MAP = { 'COD': 0, '7 Days': 7, '30 Days': 30, '60 Days': 60 };
+
+function calcPaymentDueDate(createdAt, termsDays) {
+  const d = new Date(createdAt || Date.now());
+  d.setDate(d.getDate() + (termsDays || 0));
+  return d.toISOString().split('T')[0];
+}
+
 export default function NewOrderPage() {
-  const router = useRouter();
+  const router       = useRouter();
+  const searchParams = useSearchParams();
   const [userRole, setUserRole] = useState('viewer');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState(null);
-  const [items, setItems] = useState([newItem()]);
-  const [charges, setCharges] = useState([]);
+  const [saving, setSaving]     = useState(false);
+  const [error, setError]       = useState(null);
+  const [items, setItems]       = useState([newItem()]);
+  const [charges, setCharges]   = useState([]);
+
+  // Customer link
+  const [customers, setCustomers]             = useState([]);
+  const [selectedCustomer, setSelectedCustomer] = useState(null); // { id, name, credit_terms, ... }
+  const [showCustomerPicker, setShowCustomerPicker] = useState(false);
+  const [customerSearch, setCustomerSearch]   = useState('');
+
   const [form, setForm] = useState({
     client: '',
     contact_person: '',
@@ -220,6 +237,52 @@ export default function NewOrderPage() {
     batch_delivery: false,
     notes: '',
   });
+
+  // Load customers for picker
+  useEffect(() => {
+    fetch('/api/customers').then(r => r.json()).then(j => setCustomers(j.data || []));
+  }, []);
+
+  // Pre-fill from URL params (coming from customer profile "New Order" button)
+  useEffect(() => {
+    const customerId      = searchParams.get('customer_id');
+    const clientName      = searchParams.get('client');
+    const contactPerson   = searchParams.get('contact_person');
+    const creditTermsDays = parseInt(searchParams.get('credit_terms_days') || '0', 10);
+    if (customerId && clientName) {
+      setForm(f => ({ ...f, client: decodeURIComponent(clientName), contact_person: decodeURIComponent(contactPerson || '') }));
+      // Find and set the customer
+      fetch('/api/customers').then(r => r.json()).then(j => {
+        const found = (j.data || []).find(c => c.id === customerId);
+        if (found) {
+          setSelectedCustomer(found);
+          setCustomers(j.data || []);
+        }
+      });
+    }
+  }, []);
+
+  const filteredCustomers = useMemo(() => {
+    if (!customerSearch) return customers;
+    const q = customerSearch.toLowerCase();
+    return customers.filter(c => [c.name, c.contact_person, c.phone].filter(Boolean).join(' ').toLowerCase().includes(q));
+  }, [customers, customerSearch]);
+
+  const handleSelectCustomer = (customer) => {
+    setSelectedCustomer(customer);
+    setForm(f => ({
+      ...f,
+      client:         customer.name,
+      contact_person: customer.contact_person || f.contact_person,
+    }));
+    setShowCustomerPicker(false);
+    setCustomerSearch('');
+  };
+
+  const clearCustomer = () => {
+    setSelectedCustomer(null);
+    setForm(f => ({ ...f, client: '', contact_person: '' }));
+  };
 
   useEffect(() => {
     (async () => {
@@ -259,22 +322,28 @@ export default function NewOrderPage() {
         .map(i => `${i.quantity}x ${i.category}${i.size ? ' - ' + i.size : ''}`)
         .join('\n');
 
+      // Calculate payment_due_date from customer credit terms
+      const termsDays      = selectedCustomer ? (TERMS_DAYS_MAP[selectedCustomer.credit_terms] ?? 0) : 0;
+      const paymentDueDate = calcPaymentDueDate(new Date().toISOString(), termsDays);
+
       const { data: created, error: insertErr } = await supabase
         .from('orders')
         .insert({
-          client: form.client.trim(),
-          contact_person: form.contact_person.trim() || null,
-          author: form.author.trim() || null,
-          due_date: form.due_date || null,
-          total_value: contractTotal,
-          quote_number: form.quote_number.trim() || null,
-          invoice_number: form.invoice_number.trim() || null,
-          customer_type: form.customer_type,
-          payment_terms: form.payment_terms,
-          batch_delivery: form.batch_delivery,
-          notes: form.notes.trim() || null,
-          status: 'Inquiry',
-          items: summary,
+          client:           form.client.trim(),
+          contact_person:   form.contact_person.trim() || null,
+          author:           form.author.trim() || null,
+          due_date:         form.due_date || null,
+          total_value:      contractTotal,
+          quote_number:     form.quote_number.trim() || null,
+          invoice_number:   form.invoice_number.trim() || null,
+          customer_type:    form.customer_type,
+          payment_terms:    form.payment_terms,
+          batch_delivery:   form.batch_delivery,
+          notes:            form.notes.trim() || null,
+          status:           'Inquiry',
+          items:            summary,
+          customer_id:      selectedCustomer?.id || null,
+          payment_due_date: paymentDueDate,
         })
         .select()
         .single();
@@ -417,6 +486,25 @@ export default function NewOrderPage() {
             <div style={card}>
               <div style={{ fontSize: '11px', fontWeight: 700, color: '#111', textTransform: 'uppercase', marginBottom: '14px' }}>Client</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+
+                {/* Customer picker */}
+                <div>
+                  <label style={lbl}>Link to Customer Account</label>
+                  {selectedCustomer ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', border: '2px solid #1a1a1a', borderRadius: '7px', background: '#fafafa' }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: '13px', fontWeight: 700 }}>{selectedCustomer.name}</div>
+                        <div style={{ fontSize: '11px', color: '#888' }}>{selectedCustomer.credit_terms} · {selectedCustomer.phone || 'No phone'}</div>
+                      </div>
+                      <button type="button" onClick={clearCustomer} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#aaa', fontSize: '16px', fontWeight: 700, padding: '0 4px' }}>✕</button>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => setShowCustomerPicker(true)} style={{ width: '100%', padding: '9px 12px', border: '1.5px dashed #d0d0d0', borderRadius: '7px', background: '#fafafa', color: '#999', fontSize: '13px', cursor: 'pointer', textAlign: 'left' }}>
+                      + Link to customer account (optional)
+                    </button>
+                  )}
+                </div>
+
                 <div>
                   <label style={lbl}>Client / Company *</label>
                   <input type="text" value={form.client} onChange={set('client')}
@@ -582,6 +670,47 @@ export default function NewOrderPage() {
           </div>
         </main>
       </div>
+
+      {/* Customer Picker Modal */}
+      {showCustomerPicker && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}
+          onClick={() => { setShowCustomerPicker(false); setCustomerSearch(''); }}>
+          <div style={{ background: '#fff', borderRadius: '12px', width: '100%', maxWidth: '440px', maxHeight: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ padding: '16px 18px', borderBottom: '1px solid #f0ede8', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '15px', fontWeight: 700 }}>Select Customer</span>
+              <button onClick={() => { setShowCustomerPicker(false); setCustomerSearch(''); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#aaa', fontSize: '20px', lineHeight: 1 }}>✕</button>
+            </div>
+            <div style={{ padding: '12px 18px', borderBottom: '1px solid #f5f5f3' }}>
+              <input autoFocus type="text" placeholder="Search customers…" value={customerSearch} onChange={e => setCustomerSearch(e.target.value)}
+                style={{ width: '100%', padding: '8px 12px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ overflowY: 'auto', flex: 1 }}>
+              {filteredCustomers.length === 0 ? (
+                <div style={{ padding: '30px', textAlign: 'center', color: '#aaa', fontSize: '13px' }}>No customers found.</div>
+              ) : (
+                filteredCustomers.map(c => (
+                  <div key={c.id}
+                    onClick={() => handleSelectCustomer(c)}
+                    style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 18px', cursor: 'pointer', borderBottom: '1px solid #f5f5f3' }}
+                    onMouseEnter={e => e.currentTarget.style.background = '#f9f8f6'}
+                    onMouseLeave={e => e.currentTarget.style.background = ''}>
+                    <div style={{ width: 36, height: 36, borderRadius: '50%', background: '#1a1a1a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: 700, color: '#fff', flexShrink: 0 }}>
+                      {c.name.slice(0, 2).toUpperCase()}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '13px', fontWeight: 700, color: '#1a1a1a' }}>{c.name}</div>
+                      <div style={{ fontSize: '11px', color: '#888' }}>
+                        {[c.contact_person, c.phone, c.credit_terms].filter(Boolean).join(' · ')}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }

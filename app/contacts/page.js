@@ -1,6 +1,6 @@
 "use client";
 import AppShell from "@/shared/ui/AppShell";
-import ContactsDirectory from "@/modules/contacts/components/ContactsDirectory";
+import ContactsModule from "@/modules/contacts/components/ContactsModule";
 export default function ContactsPage() {
-  return <AppShell><ContactsDirectory /></AppShell>;
+  return <AppShell><ContactsModule /></AppShell>;
 }

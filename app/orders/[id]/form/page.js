@@ -612,6 +612,10 @@ export default function OrderFormPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const refreshOrder = useCallback(() => setRefreshKey(k => k + 1), []);
 
+  // Batch delivery toggle (admin / HoS / PM only)
+  const [batchConfirm, setBatchConfirm] = useState(false);
+  const [enablingBatch, setEnablingBatch] = useState(false);
+
   useEffect(() => {
     async function load() {
       try {
@@ -690,6 +694,11 @@ export default function OrderFormPage() {
 
   const isCredit = ['reseller', 'commercial'].includes(order.customer_type)
     && CREDIT_TERMS.includes(order.payment_terms);
+
+  const BATCH_ROLES   = ['admin', 'head_of_sales', 'production_manager'];
+  const canToggleBatch = BATCH_ROLES.includes(userRole);
+  const totalQty      = items.filter(i => !isChargeItem(i)).reduce((s, i) => s + (parseInt(i.quantity) || 1), 0);
+  const batchWarning  = !order.batch_delivery && canToggleBatch && (contractTotal >= 500000 || totalQty >= 100);
 
   // Build status list: always exclude "Cancelled / Refunded", also exclude "Partially Delivered" if not batch
   const sList = (() => {
@@ -1011,6 +1020,20 @@ export default function OrderFormPage() {
     await applyStatus('Quote Approved');
   };
 
+  // ── Enable batch delivery ─────────────────────────────────────────────────────
+  const enableBatchDelivery = async () => {
+    setEnablingBatch(true);
+    try {
+      const { error } = await supabase.from('orders').update({ batch_delivery: true }).eq('id', id);
+      if (error) throw new Error(error.message);
+      setBatchConfirm(false);
+      refreshOrder();
+    } catch (err) {
+      alert('Error enabling batch delivery: ' + err.message);
+    }
+    setEnablingBatch(false);
+  };
+
   // ── Styles ────────────────────────────────────────────────────────────────────
   const card = { background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '24px', marginBottom: '24px' };
   const sectionLabel = { fontSize: '10px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '16px' };
@@ -1148,6 +1171,26 @@ export default function OrderFormPage() {
             ═══════════════════════════════════════════════════ */}
         {activeTab === 'info' && (<>
 
+          {/* Batch delivery warning banner */}
+          {batchWarning && (
+            <div style={{ background: '#fffbeb', border: '1.5px solid #fcd34d', borderRadius: '8px', padding: '12px 16px', marginBottom: '16px', display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+              <span style={{ fontSize: '16px', flexShrink: 0 }}>⚠️</span>
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: '#92400e', marginBottom: '3px' }}>
+                  This order should use batch delivery
+                </div>
+                <div style={{ fontSize: '12px', color: '#b45309', lineHeight: 1.5 }}>
+                  {contractTotal >= 500000 && totalQty >= 100
+                    ? `Contract value (${fmtKES(contractTotal)}) and item count (${totalQty} units) both exceed batch delivery thresholds (KES 500k / 100 units).`
+                    : contractTotal >= 500000
+                    ? `Contract value (${fmtKES(contractTotal)}) exceeds the KES 500,000 batch delivery threshold.`
+                    : `Total item count (${totalQty} units) exceeds the 100-unit batch delivery threshold.`}
+                  {' '}Use the <strong>Enable Batch Delivery</strong> button in the General Info card below to unlock the fulfilment planner.
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Order + Client cards */}
           <div className="order-cards-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
             <div style={card}>
@@ -1166,7 +1209,43 @@ export default function OrderFormPage() {
                 <div><div style={fieldLabel}>Payment terms</div><div style={fieldValue}>{order.payment_terms || '-'}</div></div>
                 {order.quote_number && <div><div style={fieldLabel}>Quote #</div><div style={fieldValue}>{order.quote_number}</div></div>}
                 {order.invoice_number && <div><div style={fieldLabel}>Invoice #</div><div style={fieldValue}>{order.invoice_number}</div></div>}
-                {order.batch_delivery && <div style={{ gridColumn: '1/-1' }}><div style={{ display: 'inline-block', background: '#dcfce7', color: '#166534', fontSize: '10px', fontWeight: 700, padding: '3px 8px', borderRadius: '4px' }}>Batch delivery</div></div>}
+                {order.batch_delivery ? (
+                  <div style={{ gridColumn: '1/-1' }}>
+                    <div style={{ display: 'inline-block', background: '#dcfce7', color: '#166534', fontSize: '10px', fontWeight: 700, padding: '3px 8px', borderRadius: '4px' }}>✓ Batch delivery</div>
+                  </div>
+                ) : canToggleBatch && (
+                  <div style={{ gridColumn: '1/-1' }}>
+                    {!batchConfirm ? (
+                      <button
+                        onClick={() => setBatchConfirm(true)}
+                        style={{ fontSize: '12px', fontWeight: 700, color: '#92400e', background: '#fef3c7', border: '1.5px solid #fcd34d', padding: '5px 14px', borderRadius: '6px', cursor: 'pointer' }}
+                      >
+                        ⚡ Enable Batch Delivery
+                      </button>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', background: '#fffbeb', border: '1.5px solid #fcd34d', borderRadius: '7px', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '12px', color: '#92400e', flex: '1 1 200px' }}>
+                          ⚠ Once enabled, batch delivery cannot be turned off. Confirm?
+                        </span>
+                        <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                          <button
+                            onClick={enableBatchDelivery}
+                            disabled={enablingBatch}
+                            style={{ padding: '5px 16px', borderRadius: '5px', border: 'none', background: '#f59e0b', color: '#fff', fontWeight: 700, fontSize: '12px', cursor: 'pointer', opacity: enablingBatch ? 0.6 : 1 }}
+                          >
+                            {enablingBatch ? '...' : 'Enable'}
+                          </button>
+                          <button
+                            onClick={() => setBatchConfirm(false)}
+                            style={{ padding: '5px 12px', borderRadius: '5px', border: '1px solid #d1d5db', background: '#fff', color: '#6b7280', fontSize: '12px', cursor: 'pointer' }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {isCredit && <div style={{ gridColumn: '1/-1' }}><div style={{ display: 'inline-block', background: '#EDE7F6', color: '#512DA8', fontSize: '10px', fontWeight: 700, padding: '3px 8px', borderRadius: '4px' }}>Credit client</div></div>}
               </div>
             </div>
