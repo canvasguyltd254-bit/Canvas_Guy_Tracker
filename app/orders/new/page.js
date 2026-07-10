@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import AppShell from '@/shared/ui/AppShell';
@@ -210,7 +210,7 @@ function calcPaymentDueDate(createdAt, termsDays) {
   return d.toISOString().split('T')[0];
 }
 
-export default function NewOrderPage() {
+function NewOrderContent() {
   const router       = useRouter();
   const searchParams = useSearchParams();
   const [userRole, setUserRole] = useState('viewer');
@@ -712,5 +712,13 @@ export default function NewOrderPage() {
         </div>
       )}
     </AppShell>
+  );
+}
+
+export default function NewOrderPage() {
+  return (
+    <Suspense fallback={<div style={{ padding: '24px', color: '#9ca3af', fontSize: '14px' }}>Loading order form...</div>}>
+      <NewOrderContent />
+    </Suspense>
   );
 }
