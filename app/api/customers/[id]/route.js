@@ -13,8 +13,9 @@ import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-aut
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales', 'sales'];
 const VALID_TERMS = ['COD', '7 Days', '30 Days', '60 Days'];
-const ACTIVE_STATUSES = ['Inquiry','Quoted','Quote Approved','Deposit Paid','In Production','Quality Check','Ready for Delivery','Out for Delivery'];
-const QUOTE_STATUSES  = ['Inquiry','Quoted','Quote Approved'];
+const ACTIVE_STATUSES    = ['Inquiry','Quoted','Quote Approved','Deposit Paid','In Production','Quality Check','Ready for Delivery','Out for Delivery'];
+const QUOTE_STATUSES     = ['Inquiry','Quoted','Quote Approved'];
+const DELIVERED_STATUSES = ['Partially Delivered', 'Delivered', 'Closed'];
 
 export async function GET(request, { params }) {
   try {
@@ -63,7 +64,7 @@ export async function GET(request, { params }) {
     }, 0);
     const outstanding  = parseFloat(customer.opening_balance || 0) + totalSales - totalPaid;
     const overdue      = nonCancelled
-      .filter(o => o.payment_due_date && o.payment_due_date < today)
+      .filter(o => o.payment_due_date && o.payment_due_date < today && DELIVERED_STATUSES.includes(o.status))
       .reduce((s, o) => {
         const paid = (o.order_payments || []).reduce((ps, p) => ps + parseFloat(p.amount || 0), 0);
         return s + Math.max(0, parseFloat(o.total_value || 0) - paid);

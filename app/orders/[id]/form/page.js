@@ -616,13 +616,20 @@ export default function OrderFormPage() {
   const [batchConfirm, setBatchConfirm] = useState(false);
   const [enablingBatch, setEnablingBatch] = useState(false);
 
+  // Customer linking
+  const [showLinkCustomer, setShowLinkCustomer] = useState(false);
+  const [customerSearch, setCustomerSearch]     = useState('');
+  const [customerResults, setCustomerResults]   = useState([]);
+  const [customerSearching, setCustomerSearching] = useState(false);
+  const [linkingCustomer, setLinkingCustomer]   = useState(false);
+
   useEffect(() => {
     async function load() {
       try {
         setLoading(true);
         setError(null);
         const [ordRes, itemsRes, deliveriesRes, userRes] = await Promise.all([
-          supabase.from('orders').select('*').eq('id', id).single(),
+          supabase.from('orders').select('*, customers(id, name)').eq('id', id).single(),
           supabase.from('order_items').select('*').eq('order_id', id).order('sort_order'),
           supabase.from('order_deliveries').select('*').eq('order_id', id).order('batch_number'),
           supabase.auth.getUser(),
@@ -637,6 +644,8 @@ export default function OrderFormPage() {
         }
 
         const ord = ordRes.data;
+        // Hoist the customers join into _customer for easy access
+        if (ord.customers) { ord._customer = ord.customers; delete ord.customers; }
         setOrder(ord);
         setEditedNotes(ord.notes || '');
         setEditedDueDate(ord.due_date || '');
@@ -800,9 +809,10 @@ export default function OrderFormPage() {
       }
 
       const [{ data: refreshed }, { data: refreshedItems }] = await Promise.all([
-        supabase.from('orders').select('*').eq('id', id).single(),
+        supabase.from('orders').select('*, customers(id, name)').eq('id', id).single(),
         supabase.from('order_items').select('*').eq('order_id', id).order('sort_order'),
       ]);
+      if (refreshed?.customers) { refreshed._customer = refreshed.customers; delete refreshed.customers; }
       setOrder(refreshed);
       const loaded = refreshedItems || [];
       setItems(loaded);
@@ -1034,6 +1044,40 @@ export default function OrderFormPage() {
     setEnablingBatch(false);
   };
 
+  // ── Customer search (for link modal) ─────────────────────────────────────────
+  useEffect(() => {
+    if (!showLinkCustomer) return;
+    const t = setTimeout(async () => {
+      setCustomerSearching(true);
+      const q = customerSearch.trim();
+      let query = supabase.from('customers').select('id, name, contact_person, phone').order('name').limit(20);
+      if (q) query = query.or(`name.ilike.%${q}%,contact_person.ilike.%${q}%,phone.ilike.%${q}%`);
+      const { data } = await query;
+      setCustomerResults(data || []);
+      setCustomerSearching(false);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [customerSearch, showLinkCustomer]);
+
+  const linkCustomerToOrder = async (customer) => {
+    setLinkingCustomer(true);
+    try {
+      const res  = await fetch(`/api/orders/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customer_id: customer.id }),
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || 'Failed to link customer');
+      setOrder(prev => ({ ...prev, customer_id: customer.id, _customer: customer }));
+      setShowLinkCustomer(false);
+      setCustomerSearch('');
+    } catch (err) {
+      alert('Error linking customer: ' + err.message);
+    }
+    setLinkingCustomer(false);
+  };
+
   // ── Styles ────────────────────────────────────────────────────────────────────
   const card = { background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '24px', marginBottom: '24px' };
   const sectionLabel = { fontSize: '10px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '16px' };
@@ -1257,8 +1301,67 @@ export default function OrderFormPage() {
                 {order.contact_person && <div><div style={fieldLabel}>Contact person</div><div style={fieldValue}>{order.contact_person}</div></div>}
                 {order.author && <div><div style={fieldLabel}>Sales rep</div><div style={fieldValue}>{order.author}</div></div>}
                 {order.customer_type && <div><div style={fieldLabel}>Customer type</div><div style={fieldValue}>{order.customer_type}</div></div>}
+
+                {/* Customer profile link */}
+                <div>
+                  <div style={fieldLabel}>Customer profile</div>
+                  {order.customer_id ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Link href={`/customers/${order.customer_id}`} style={{ fontSize: '13px', color: '#E8512A', fontWeight: 600, textDecoration: 'none' }}>
+                        {order._customer?.name || order.client} ↗
+                      </Link>
+                      {['admin', 'head_of_sales', 'production_manager', 'sales'].includes(userRole) && (
+                        <button onClick={() => { setCustomerSearch(''); setShowLinkCustomer(true); }} style={{ fontSize: '11px', color: '#6b7280', background: 'none', border: '1px solid #e5e7eb', borderRadius: '4px', padding: '2px 8px', cursor: 'pointer' }}>
+                          Change
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    ['admin', 'head_of_sales', 'production_manager', 'sales'].includes(userRole) ? (
+                      <button onClick={() => { setCustomerSearch(''); setShowLinkCustomer(true); }} style={{ fontSize: '12px', color: '#E8512A', background: '#fff7f5', border: '1px dashed #E8512A', borderRadius: '6px', padding: '5px 12px', cursor: 'pointer', fontWeight: 600 }}>
+                        + Link to customer profile
+                      </button>
+                    ) : (
+                      <div style={fieldValue}>Not linked</div>
+                    )
+                  )}
+                </div>
               </div>
             </div>
+
+            {/* Link customer modal */}
+            {showLinkCustomer && (
+              <Modal title="Link to Customer Profile" onClose={() => setShowLinkCustomer(false)}>
+                <div style={{ padding: '20px' }}>
+                  <input
+                    autoFocus
+                    placeholder="Search by name, contact, or phone…"
+                    value={customerSearch}
+                    onChange={e => setCustomerSearch(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', boxSizing: 'border-box', marginBottom: '12px' }}
+                  />
+                  {customerSearching && <div style={{ fontSize: '12px', color: '#9ca3af', textAlign: 'center', padding: '8px' }}>Searching…</div>}
+                  <div style={{ maxHeight: '300px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {customerResults.map(c => (
+                      <button
+                        key={c.id}
+                        disabled={linkingCustomer}
+                        onClick={() => linkCustomerToOrder(c)}
+                        style={{ textAlign: 'left', padding: '10px 12px', border: '1.5px solid #e5e7eb', borderRadius: '7px', background: order.customer_id === c.id ? '#fff7f5' : '#fafafa', cursor: 'pointer', width: '100%' }}
+                      >
+                        <div style={{ fontSize: '13px', fontWeight: 700, color: '#1a1a1a' }}>{c.name}</div>
+                        {c.contact_person && <div style={{ fontSize: '11px', color: '#6b7280' }}>{c.contact_person}{c.phone ? ` · ${c.phone}` : ''}</div>}
+                      </button>
+                    ))}
+                    {!customerSearching && customerResults.length === 0 && (
+                      <div style={{ fontSize: '12px', color: '#9ca3af', textAlign: 'center', padding: '16px' }}>
+                        {customerSearch ? 'No customers found' : 'Type to search customers'}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </Modal>
+            )}
           </div>
 
           {/* Line Items */}

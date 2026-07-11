@@ -92,6 +92,8 @@ export const ALLOWED_FIELDS = {
       'status',
       'credit_approval_ref',
       'refund_reference',
+      // Customer linking — assign/reassign a customer profile to an existing order
+      'customer_id',
     ],
     // BLOCKED from update: id, order_num, created_at, created_by, client, customer_type, order_type
   },

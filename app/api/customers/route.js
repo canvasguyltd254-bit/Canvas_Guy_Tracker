@@ -71,7 +71,8 @@ export async function GET(request) {
       paymentsByOrder[p.order_id] += parseFloat(p.amount || 0);
     }
 
-    const ACTIVE_STATUSES = ['Inquiry','Quoted','Quote Approved','Deposit Paid','In Production','Quality Check','Ready for Delivery','Out for Delivery'];
+    const ACTIVE_STATUSES    = ['Inquiry','Quoted','Quote Approved','Deposit Paid','In Production','Quality Check','Ready for Delivery','Out for Delivery'];
+    const DELIVERED_STATUSES = ['Partially Delivered', 'Delivered', 'Closed'];
 
     const enriched = customers.map(c => {
       const cOrders = ordersByCustomer[c.id] || [];
@@ -79,7 +80,7 @@ export async function GET(request) {
       const totalPaid  = cOrders.reduce((s, o) => s + (paymentsByOrder[o.id] || 0), 0);
       const outstanding = parseFloat(c.opening_balance || 0) + totalSales - totalPaid;
       const overdue = cOrders
-        .filter(o => o.payment_due_date && o.payment_due_date < today)
+        .filter(o => o.payment_due_date && o.payment_due_date < today && DELIVERED_STATUSES.includes(o.status))
         .reduce((s, o) => {
           const paid = paymentsByOrder[o.id] || 0;
           const bal  = parseFloat(o.total_value || 0) - paid;

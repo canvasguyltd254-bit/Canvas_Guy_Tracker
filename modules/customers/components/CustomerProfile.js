@@ -262,7 +262,7 @@ function OrdersTab({ orders, customerId }) {
           {sorted.map(o => {
             const paid    = (o.order_payments || []).reduce((s, p) => s + parseFloat(p.amount || 0), 0);
             const balance = parseFloat(o.total_value || 0) - paid;
-            const isOverdue = o.payment_due_date && o.payment_due_date < new Date().toISOString().split("T")[0] && balance > 0;
+            const isOverdue = o.payment_due_date && o.payment_due_date < new Date().toISOString().split("T")[0] && balance > 0 && ['Partially Delivered','Delivered','Closed'].includes(o.status);
             return (
               <tr key={o.id}
                 onClick={() => router.push(`/orders/${o.id}`)}
