@@ -10,10 +10,9 @@
 
 'use strict';
 
-// pdfkit.standalone.js is the self-contained pdfkit bundle (no external deps).
-// It lives in scripts/ alongside this file so Vercel always deploys it — no
-// node_modules tracing required.
-const PDFDocument = require('./pdfkit.standalone');
+// Use pdfkit from node_modules. Webpack won't touch it (serverExternalPackages
+// in next.config.js) and Vercel traces it as a normal npm dependency.
+const PDFDocument = require('pdfkit');
 
 // ── Unit conversion ────────────────────────────────────────────────────────────
 const MM = 2.8346; // 1 mm in points
@@ -733,14 +732,61 @@ function buildReportPDF(data) {
         doc.on('end',  () => resolve(Buffer.concat(chunks)));
         doc.on('error', reject);
 
-        const cols = ORDER_PNL_COLS;
-        const rows = orderPnL.map(o => {
+        const cols    = ORDER_PNL_COLS;
+        // Sub-row height is slightly smaller than main ROW_H
+        const SUB_H   = 5.5 * MM;
+        const CORAL_A = '#E8512A';
+
+        // Helper to draw a purchase sub-row under an order summary row
+        function drawPurchaseSubRow(doc, y, p, isLast) {
+          const subBg = '#FAF8F6';
+          fillRect(doc, LM, y, LCW, SUB_H, subBg);
+          if (!isLast) {
+            doc.save().moveTo(LM, y + SUB_H).lineTo(LM + LCW, y + SUB_H).lineWidth(0.15).stroke('#EDE9E3').restore();
+          }
+          // Coral arrow indicator
+          doc.font('Helvetica-Bold').fontSize(6).fillColor(CORAL_A)
+            .text('↳', LM + 3 * MM, y + 1.2 * MM, { lineBreak: false });
+          // Supplier name (bold)
+          const supplierText = String(p.supplier_name || '—');
+          const dateStr = p.purchase_date ? fmtDate(p.purchase_date) : '';
+          const metaText = dateStr ? `${supplierText}  ·  ${dateStr}` : supplierText;
+          drawLeft(doc, metaText, LM + 7 * MM, y + 1.2 * MM, { font: 'Helvetica-Bold', size: 5.5, color: '#555', maxW: 70 * MM });
+          // Items description
+          drawLeft(doc, p.items_bought || '—', LM + 80 * MM, y + 1.2 * MM, { size: 5.5, color: '#888', maxW: 90 * MM });
+          // Cost right-aligned to 'costs' column
+          const costsCol = cols.find(c => c.key === 'costs');
+          if (costsCol) {
+            drawRight(doc, fmtKes(parseFloat(p.total_amount || 0)),
+              LM + costsCol.x + costsCol.w, y + 1.2 * MM,
+              { font: 'Helvetica-Bold', size: 5.5, color: '#C62828', maxW: costsCol.w });
+          }
+          return y + SUB_H;
+        }
+
+        let pageNum = 1;
+        doc.addPage();
+        let y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum);
+        y = drawSectionBar(doc, y, 'ORDER P&L  —  DIRECT MATERIAL COSTS ONLY');
+        y = drawColHeaders(doc, y, cols);
+
+        orderPnL.forEach((o, idx) => {
           const revenue   = parseFloat(o.revenue       || 0);
           const costs     = parseFloat(o.material_cost || 0);
           const collected = parseFloat(o.collected     || 0);
           const profit    = revenue - costs;
           const margin    = revenue > 0 ? (profit / revenue * 100) : 0;
-          return {
+          const purchases = Array.isArray(o.purchases) ? o.purchases : [];
+          const neededH   = ROW_H + purchases.length * SUB_H + 2 * MM;
+
+          if (y + neededH > LH - LBOTTOM) {
+            doc.addPage(); pageNum++;
+            y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum);
+            y = drawSectionBar(doc, y, 'ORDER P&L (continued)');
+            y = drawColHeaders(doc, y, cols);
+          }
+
+          const row = {
             order_num: o.order_num || '—',
             client:    o.client    || '—',
             status:    o.status    || '—',
@@ -750,22 +796,35 @@ function buildReportPDF(data) {
             profit:    fmtKes(profit),
             margin:    margin.toFixed(1) + '%',
           };
-        });
 
-        let pageNum = 1;
-        doc.addPage();
-        let y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum);
-        y = drawSectionBar(doc, y, 'ORDER P&L  —  DIRECT MATERIAL COSTS ONLY');
-        y = drawColHeaders(doc, y, cols);
-
-        rows.forEach((row, idx) => {
-          if (y + ROW_H > LH - LBOTTOM) {
-            doc.addPage(); pageNum++;
-            y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum);
-            y = drawSectionBar(doc, y, 'ORDER P&L (continued)');
-            y = drawColHeaders(doc, y, cols);
+          // Summary row — no bottom border if sub-rows follow
+          const totalW = cols.reduce((s, c) => Math.max(s, c.x + c.w), 0);
+          fillRect(doc, LM, y, totalW, ROW_H, idx % 2 === 0 ? LGRAY : WHITE);
+          if (purchases.length === 0) {
+            doc.save().moveTo(LM, y + ROW_H).lineTo(LM + totalW, y + ROW_H).lineWidth(0.2).stroke(MGRAY).restore();
           }
-          y = drawDataRow(doc, y, cols, row, idx);
+          cols.forEach(col => {
+            const raw  = row[col.key];
+            const text = (raw === null || raw === undefined || raw === '') ? '—' : String(raw);
+            const font  = col.bold ? 'Helvetica-Bold' : 'Helvetica';
+            const size  = col.size || 6.5;
+            const x     = LM + col.x;
+            const opts  = { font, size, color: DGRAY, maxW: col.w };
+            if (col.right)   drawRight(doc, text, x + col.w, y + 1.5 * MM, opts);
+            else if (col.centre) drawCenter(doc, text, x + col.w / 2, y + 1.5 * MM, opts);
+            else             drawLeft(doc, text, x, y + 1.5 * MM, opts);
+          });
+          y += ROW_H;
+
+          // Purchase sub-rows
+          purchases.forEach((p, pIdx) => {
+            y = drawPurchaseSubRow(doc, y, p, pIdx === purchases.length - 1);
+          });
+          // Separator after last sub-row
+          if (purchases.length > 0) {
+            doc.save().moveTo(LM, y).lineTo(LM + LCW, y).lineWidth(0.4).stroke(MGRAY).restore();
+            y += 1 * MM;
+          }
         });
 
         if (y + 10 * MM > LH - LBOTTOM) { doc.addPage(); pageNum++; y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum); }

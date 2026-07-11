@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, Fragment } from "react";
 import { useSearchParams } from "next/navigation";
 import { createClient } from "@/shared/supabase/client";
 import { ALL_STATUS_COLORS, CATEGORIES } from "@/modules/orders/components/constants";
@@ -90,6 +90,7 @@ export default function Reports() {
   const [exporting, setExporting]               = useState(false);
   const [supplierPurchases, setSupplierPurchases] = useState([]);
   const [pnlCosts, setPnlCosts] = useState({});
+  const [pnlPurchases, setPnlPurchases] = useState({});
 
   // Sorting
   const [sortField, setSortField] = useState(null);
@@ -140,17 +141,29 @@ export default function Reports() {
         })));
       }
 
-      // Fetch purchase→order links for P&L cost computation
+      // Fetch purchase→order links with full purchase details for P&L
       const { data: linkData } = await sb
         .from("purchase_order_links")
-        .select("order_id, supplier_purchases(total_amount)");
+        .select("order_id, supplier_purchases(id, total_amount, items_bought, purchase_date, suppliers(name))")
+        .order("supplier_purchases(purchase_date)", { ascending: true });
       if (linkData) {
         const costs = {};
+        const purchases = {};
         linkData.forEach((l) => {
-          const amt = parseFloat(l.supplier_purchases?.total_amount || 0);
+          const sp = l.supplier_purchases;
+          if (!sp) return;
+          const amt = parseFloat(sp.total_amount || 0);
           costs[l.order_id] = (costs[l.order_id] || 0) + amt;
+          if (!purchases[l.order_id]) purchases[l.order_id] = [];
+          purchases[l.order_id].push({
+            supplier_name: sp.suppliers?.name || "Unknown",
+            items_bought:  sp.items_bought  || "—",
+            total_amount:  amt,
+            purchase_date: sp.purchase_date || null,
+          });
         });
         setPnlCosts(costs);
+        setPnlPurchases(purchases);
       }
 
       setLoaded(true);
@@ -365,6 +378,7 @@ export default function Reports() {
               revenue:       parseFloat(o.total_value) || 0,
               collected:     payTotals[o.id]            || 0,
               material_cost: pnlCosts[o.id]             || 0,
+              purchases:     pnlPurchases[o.id]         || [],
             })),
             dateFrom: showDateRange ? dateFrom.toISOString() : null,
             dateTo:   showDateRange ? dateTo.toISOString()   : null,
@@ -683,14 +697,16 @@ export default function Reports() {
               Orders ({filtered.length})
             </div>
             {filtered.map((o) => {
-              const revenue   = parseFloat(o.total_value) || 0;
-              const collected = payTotals[o.id] || 0;
-              const costs     = pnlCosts[o.id]  || 0;
-              const profit    = revenue - costs;
-              const margin    = revenue > 0 ? (profit / revenue * 100) : 0;
-              const sc        = ALL_STATUS_COLORS[o.status] || {};
+              const revenue        = parseFloat(o.total_value) || 0;
+              const collected      = payTotals[o.id]    || 0;
+              const costs          = pnlCosts[o.id]     || 0;
+              const profit         = revenue - costs;
+              const margin         = revenue > 0 ? (profit / revenue * 100) : 0;
+              const sc             = ALL_STATUS_COLORS[o.status] || {};
+              const orderPurchases = pnlPurchases[o.id] || [];
               return (
                 <div key={o.id} style={{ background: "#fff", border: "1px solid #e5e5e5", borderRadius: "12px", padding: "14px", marginBottom: "10px" }}>
+                  {/* Header */}
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px", marginBottom: "10px" }}>
                     <div>
                       <div style={{ fontWeight: 700, fontSize: "14px" }}>{o.client}</div>
@@ -698,6 +714,7 @@ export default function Reports() {
                     </div>
                     <StatusBadge status={o.status} colors={sc} />
                   </div>
+                  {/* P&L summary grid */}
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "8px", paddingTop: "10px", borderTop: "1px solid #f0f0f0" }}>
                     <div>
                       <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase" }}>Revenue</div>
@@ -716,6 +733,27 @@ export default function Reports() {
                       <div style={{ fontSize: "13px", fontWeight: 700, color: margin >= 30 ? "#2E7D32" : margin >= 10 ? "#ca8a04" : "#C62828" }}>{margin.toFixed(1)}%</div>
                     </div>
                   </div>
+                  {/* Itemized purchases */}
+                  {orderPurchases.length > 0 && (
+                    <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #f0ede8" }}>
+                      <div style={{ fontSize: "9px", fontWeight: 700, color: "#bbb", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: "6px" }}>Cost Breakdown</div>
+                      {orderPurchases.map((p, pIdx) => {
+                        const dStr = p.purchase_date
+                          ? new Date(p.purchase_date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })
+                          : "";
+                        return (
+                          <div key={pIdx} style={{ display: "flex", alignItems: "flex-start", gap: "6px", padding: "5px 0", borderBottom: pIdx < orderPurchases.length - 1 ? "1px solid #f5f3f0" : "none" }}>
+                            <span style={{ color: "#E8512A", fontWeight: 700, fontSize: "11px", flexShrink: 0, marginTop: "1px" }}>↳</span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: "12px", fontWeight: 600, color: "#333", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.supplier_name}</div>
+                              <div style={{ fontSize: "10px", color: "#aaa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.items_bought}{dStr ? ` · ${dStr}` : ""}</div>
+                            </div>
+                            <div style={{ fontSize: "12px", fontWeight: 700, color: "#C62828", fontFamily: "'DM Mono',monospace", flexShrink: 0 }}>{fmtKES(p.total_amount)}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -911,23 +949,47 @@ export default function Reports() {
             </thead>
             <tbody>
               {filtered.map((o, idx) => {
-                const revenue   = parseFloat(o.total_value) || 0;
-                const collected = payTotals[o.id] || 0;
-                const costs     = pnlCosts[o.id]  || 0;
-                const profit    = revenue - costs;
-                const margin    = revenue > 0 ? (profit / revenue * 100) : 0;
-                const sc        = ALL_STATUS_COLORS[o.status] || {};
+                const revenue      = parseFloat(o.total_value) || 0;
+                const collected    = payTotals[o.id]    || 0;
+                const costs        = pnlCosts[o.id]     || 0;
+                const profit       = revenue - costs;
+                const margin       = revenue > 0 ? (profit / revenue * 100) : 0;
+                const sc           = ALL_STATUS_COLORS[o.status] || {};
+                const orderPurchases = pnlPurchases[o.id] || [];
+                const rowBg        = idx % 2 === 0 ? "#fff" : "#FAFAF8";
+                const subBg        = idx % 2 === 0 ? "#faf9f7" : "#f4f2ef";
                 return (
-                  <tr key={o.id} style={{ background: idx % 2 === 0 ? "#fff" : "#FAFAF8", borderBottom: "1px solid #e8e8e5" }}>
-                    <td style={{ ...td, fontFamily: "'DM Mono',monospace", fontSize: "12px" }}>{o.order_num}</td>
-                    <td style={{ ...td, fontWeight: 700 }}>{o.client}</td>
-                    <td style={td}><StatusBadge status={o.status} colors={sc} /></td>
-                    <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }}>{fmtKES(revenue)}</td>
-                    <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace", color: "#2E7D32" }}>{fmtKES(collected)}</td>
-                    <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace", color: "#C62828" }}>{costs > 0 ? fmtKES(costs) : "—"}</td>
-                    <td style={{ ...td, textAlign: "right", fontWeight: 700, fontFamily: "'DM Mono',monospace", color: profit >= 0 ? "#2E7D32" : "#C62828" }}>{fmtKES(profit)}</td>
-                    <td style={{ ...td, textAlign: "right", fontWeight: 600, color: margin >= 30 ? "#2E7D32" : margin >= 10 ? "#ca8a04" : "#C62828" }}>{margin.toFixed(1)}%</td>
-                  </tr>
+                  <Fragment key={o.id}>
+                    {/* Order summary row */}
+                    <tr style={{ background: rowBg, borderBottom: orderPurchases.length > 0 ? "none" : "2px solid #e8e8e5" }}>
+                      <td style={{ ...td, fontFamily: "'DM Mono',monospace", fontSize: "12px" }}>{o.order_num}</td>
+                      <td style={{ ...td, fontWeight: 700 }}>{o.client}</td>
+                      <td style={td}><StatusBadge status={o.status} colors={sc} /></td>
+                      <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }}>{fmtKES(revenue)}</td>
+                      <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace", color: "#2E7D32" }}>{fmtKES(collected)}</td>
+                      <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace", color: "#C62828", fontWeight: costs > 0 ? 700 : 400 }}>{costs > 0 ? fmtKES(costs) : "—"}</td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 700, fontFamily: "'DM Mono',monospace", color: profit >= 0 ? "#2E7D32" : "#C62828" }}>{fmtKES(profit)}</td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 600, color: margin >= 30 ? "#2E7D32" : margin >= 10 ? "#ca8a04" : "#C62828" }}>{margin.toFixed(1)}%</td>
+                    </tr>
+                    {/* Purchase sub-rows */}
+                    {orderPurchases.map((p, pIdx) => {
+                      const dStr = p.purchase_date
+                        ? new Date(p.purchase_date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })
+                        : "";
+                      return (
+                        <tr key={pIdx} style={{ background: subBg, borderBottom: pIdx === orderPurchases.length - 1 ? "2px solid #e0ddd9" : "1px solid #ece9e4" }}>
+                          <td colSpan={2} style={{ ...td, paddingLeft: "24px", fontSize: "11px", color: "#444" }}>
+                            <span style={{ color: "#E8512A", marginRight: "6px", fontWeight: 700 }}>↳</span>
+                            <strong>{p.supplier_name}</strong>
+                            {dStr && <span style={{ color: "#bbb", fontWeight: 400, marginLeft: "6px" }}>· {dStr}</span>}
+                          </td>
+                          <td colSpan={3} style={{ ...td, fontSize: "11px", color: "#777" }}>{p.items_bought}</td>
+                          <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace", fontSize: "12px", fontWeight: 700, color: "#C62828" }}>{fmtKES(p.total_amount)}</td>
+                          <td colSpan={2} style={td} />
+                        </tr>
+                      );
+                    })}
+                  </Fragment>
                 );
               })}
             </tbody>
