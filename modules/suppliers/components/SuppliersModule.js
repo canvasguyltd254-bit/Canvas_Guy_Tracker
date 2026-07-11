@@ -101,6 +101,15 @@ export default function SuppliersModule() {
   const [filterSupplier, setFilterSupplier] = useState("All");
   const [expandedPurchase, setExpandedPurchase] = useState(null);
 
+  // Mobile detection
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 640);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
+
   // Supplier modal
   const [showSupplierForm, setShowSupplierForm] = useState(false);
   const [editingSupplierId, setEditingSupplierId] = useState(null);
@@ -402,35 +411,41 @@ export default function SuppliersModule() {
                   <Avatar name={s.name} />
 
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                      <span style={{ fontSize: "14px", fontWeight: 700, color: "#1a1a1a" }}>{s.name}</span>
+                    {/* Name row — chip truncated, both nowrap */}
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
+                      <span style={{ fontSize: "14px", fontWeight: 700, color: "#1a1a1a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: "1 1 0" }}>{s.name}</span>
                       {s.materials_supplied && (
-                        <span style={{ fontSize: "10px", fontWeight: 600, background: "#f0ede8", color: "#555", padding: "2px 8px", borderRadius: "10px" }}>
+                        <span style={{ fontSize: "10px", fontWeight: 600, background: "#f0ede8", color: "#555", padding: "2px 8px", borderRadius: "10px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "90px", flexShrink: 0 }}>
                           {s.materials_supplied.split(",")[0].trim()}
                         </span>
                       )}
                     </div>
-                    <div style={{ fontSize: "12px", color: "#888", marginTop: "2px" }}>
+                    {/* Subtitle — phone · contact, single line */}
+                    <div style={{ fontSize: "12px", color: "#888", marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {[s.phone, s.contact_person].filter(Boolean).join(" · ")}
                       {(s._stats?.purchase_count || 0) > 0 && ` · ${s._stats.purchase_count} purchase${s._stats.purchase_count !== 1 ? "s" : ""}`}
                     </div>
                   </div>
 
+                  {/* Balance — compact on mobile */}
                   <div style={{ textAlign: "right", flexShrink: 0 }}>
                     {(s._stats?.balance_owed || 0) > 0 ? (
                       <>
-                        <div style={{ fontSize: "13px", fontWeight: 700, color: "#C62828" }}>{fmt(s._stats.balance_owed)} owed</div>
-                        <div style={{ fontSize: "10px", color: "#bbb", marginTop: "1px" }}>of {fmt(s._stats.total_purchased)} purchased</div>
+                        <div style={{ fontSize: "13px", fontWeight: 700, color: "#C62828", whiteSpace: "nowrap" }}>{fmt(s._stats.balance_owed)} owed</div>
+                        {(s._stats?.total_purchased || 0) > 0 && (
+                          <div style={{ fontSize: "10px", color: "#bbb", marginTop: "1px", whiteSpace: "nowrap" }}>of {fmt(s._stats.total_purchased)}</div>
+                        )}
                       </>
                     ) : (
                       <>
-                        <div style={{ fontSize: "13px", fontWeight: 600, color: "#16a34a" }}>Paid up</div>
-                        {(s._stats?.total_purchased || 0) > 0 && <div style={{ fontSize: "10px", color: "#bbb", marginTop: "1px" }}>{fmt(s._stats.total_purchased)} total</div>}
+                        <div style={{ fontSize: "13px", fontWeight: 600, color: "#16a34a", whiteSpace: "nowrap" }}>Paid up</div>
+                        {(s._stats?.total_purchased || 0) > 0 && <div style={{ fontSize: "10px", color: "#bbb", marginTop: "1px", whiteSpace: "nowrap" }}>{fmt(s._stats.total_purchased)}</div>}
                       </>
                     )}
                   </div>
 
-                  {canWrite && (
+                  {/* Action buttons — hidden on mobile (access via profile) */}
+                  {canWrite && !isMobile && (
                     <div style={{ display: "flex", gap: "4px", flexShrink: 0 }} onClick={e => e.stopPropagation()}>
                       <button
                         onClick={e => openEditSupplier(s, e)}

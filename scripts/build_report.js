@@ -136,6 +136,17 @@ const SUPPLIER_COLS = mmCols([
   { key: 'status',        header: 'Status',        x: 255, w: 18 },
 ]);
 
+const ORDER_PNL_COLS = mmCols([
+  { key: 'order_num',  header: 'Order #',        x:   0, w: 22, size: 6 },
+  { key: 'client',     header: 'Client',          x:  22, w: 45, bold: true },
+  { key: 'status',     header: 'Status',          x:  67, w: 32 },
+  { key: 'revenue',    header: 'Revenue (KES)',   x:  99, w: 38, right: true },
+  { key: 'collected',  header: 'Collected (KES)', x: 137, w: 35, right: true },
+  { key: 'costs',      header: 'Material Costs',  x: 172, w: 38, right: true },
+  { key: 'profit',     header: 'Gross Profit',    x: 210, w: 38, right: true, bold: true },
+  { key: 'margin',     header: 'Margin %',        x: 248, w: 25, right: true },
+]);
+
 const CUSTOMER_REC_COLS = mmCols([
   { key: 'name',         header: 'Customer',          x:   0, w: 55, bold: true },
   { key: 'terms',        header: 'Terms',             x:  55, w: 20 },
@@ -710,6 +721,62 @@ function buildReportPDF(data) {
         drawRight(doc, `Balance: KES ${balStr}`, PM + PCW, y + 3.5 * MM,
           { font: 'Helvetica-Bold', size: 7.5, color: WHITE });
 
+        doc.end();
+        return;
+      }
+
+      // ── Order P&L ─────────────────────────────────────────────────────────
+      const orderPnL = data.orderPnL;
+      if (orderPnL != null) {
+        doc = new PDFDocument({ size: [LW, LH], autoFirstPage: false, margin: 0 });
+        doc.on('data', c => chunks.push(c));
+        doc.on('end',  () => resolve(Buffer.concat(chunks)));
+        doc.on('error', reject);
+
+        const cols = ORDER_PNL_COLS;
+        const rows = orderPnL.map(o => {
+          const revenue   = parseFloat(o.revenue       || 0);
+          const costs     = parseFloat(o.material_cost || 0);
+          const collected = parseFloat(o.collected     || 0);
+          const profit    = revenue - costs;
+          const margin    = revenue > 0 ? (profit / revenue * 100) : 0;
+          return {
+            order_num: o.order_num || '—',
+            client:    o.client    || '—',
+            status:    o.status    || '—',
+            revenue:   fmtKes(revenue),
+            collected: fmtKes(collected),
+            costs:     costs > 0 ? fmtKes(costs) : '—',
+            profit:    fmtKes(profit),
+            margin:    margin.toFixed(1) + '%',
+          };
+        });
+
+        let pageNum = 1;
+        doc.addPage();
+        let y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum);
+        y = drawSectionBar(doc, y, 'ORDER P&L  —  DIRECT MATERIAL COSTS ONLY');
+        y = drawColHeaders(doc, y, cols);
+
+        rows.forEach((row, idx) => {
+          if (y + ROW_H > LH - LBOTTOM) {
+            doc.addPage(); pageNum++;
+            y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum);
+            y = drawSectionBar(doc, y, 'ORDER P&L (continued)');
+            y = drawColHeaders(doc, y, cols);
+          }
+          y = drawDataRow(doc, y, cols, row, idx);
+        });
+
+        if (y + 10 * MM > LH - LBOTTOM) { doc.addPage(); pageNum++; y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum); }
+        const n         = orderPnL.length;
+        const totalRev  = orderPnL.reduce((s, o) => s + parseFloat(o.revenue       || 0), 0);
+        const totalCost = orderPnL.reduce((s, o) => s + parseFloat(o.material_cost || 0), 0);
+        const totalProf = totalRev - totalCost;
+        const avgMargin = totalRev > 0 ? (totalProf / totalRev * 100) : 0;
+        drawTotalsBar(doc, y + 2 * MM,
+          `TOTAL  |  ${n} order${n !== 1 ? 's' : ''}  |  Avg Margin: ${avgMargin.toFixed(1)}%`,
+          `Revenue: KES ${fmtKes(totalRev)}   Costs: KES ${fmtKes(totalCost)}   Gross Profit: KES ${fmtKes(totalProf)}`);
         doc.end();
         return;
       }

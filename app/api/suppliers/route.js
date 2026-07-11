@@ -33,7 +33,7 @@ export async function GET() {
     // Fetch purchase stats for all suppliers in one query
     const supplierIds = suppliers.map(s => s.id);
     const { data: purchases } = await serviceClient
-      .from('purchases')
+      .from('supplier_purchases')
       .select('supplier_id, total_amount, amount_paid, payment_status, purchase_date')
       .in('supplier_id', supplierIds);
 
