@@ -669,6 +669,21 @@ export default function OrderFormPage() {
     load();
   }, [id, refreshKey]);
 
+  // ── Customer search (for link modal) — must be before any early returns ───────
+  useEffect(() => {
+    if (!showLinkCustomer) return;
+    const t = setTimeout(async () => {
+      setCustomerSearching(true);
+      const q = customerSearch.trim();
+      let query = supabase.from('customers').select('id, name, contact_person, phone').order('name').limit(20);
+      if (q) query = query.or(`name.ilike.%${q}%,contact_person.ilike.%${q}%,phone.ilike.%${q}%`);
+      const { data } = await query;
+      setCustomerResults(data || []);
+      setCustomerSearching(false);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [customerSearch, showLinkCustomer]);
+
   if (loading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: '#f9fafb' }}>
@@ -1050,20 +1065,6 @@ export default function OrderFormPage() {
     setEnablingBatch(false);
   };
 
-  // ── Customer search (for link modal) ─────────────────────────────────────────
-  useEffect(() => {
-    if (!showLinkCustomer) return;
-    const t = setTimeout(async () => {
-      setCustomerSearching(true);
-      const q = customerSearch.trim();
-      let query = supabase.from('customers').select('id, name, contact_person, phone').order('name').limit(20);
-      if (q) query = query.or(`name.ilike.%${q}%,contact_person.ilike.%${q}%,phone.ilike.%${q}%`);
-      const { data } = await query;
-      setCustomerResults(data || []);
-      setCustomerSearching(false);
-    }, 250);
-    return () => clearTimeout(t);
-  }, [customerSearch, showLinkCustomer]);
 
   const linkCustomerToOrder = async (customer) => {
     setLinkingCustomer(true);
