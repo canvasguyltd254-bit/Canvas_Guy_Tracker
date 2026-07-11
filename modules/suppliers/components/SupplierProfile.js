@@ -151,8 +151,13 @@ function PurchasesTab({ purchases }) {
   if (!purchases.length) {
     return (
       <div style={{ padding: "60px 20px", textAlign: "center" }}>
-        <div style={{ fontSize: "32px", marginBottom: "10px" }}>🧾</div>
-        <div style={{ fontSize: "14px", color: "#999" }}>No purchases recorded yet.</div>
+        <div style={{ width: "48px", height: "48px", background: "#f0ede8", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px" }}>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#999" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
+          </svg>
+        </div>
+        <div style={{ fontSize: "14px", fontWeight: 500, color: "#555", marginBottom: "4px" }}>No purchases yet</div>
+        <div style={{ fontSize: "12px", color: "#999" }}>Purchases from this supplier will appear here.</div>
       </div>
     );
   }
@@ -279,8 +284,13 @@ function StatementTab({ supplier, purchases, manualPayments, chatpesaAllocations
   if (!entries.length) {
     return (
       <div style={{ padding: "60px 20px", textAlign: "center" }}>
-        <div style={{ fontSize: "32px", marginBottom: "10px" }}>📋</div>
-        <div style={{ fontSize: "14px", color: "#999" }}>No transactions to show.</div>
+        <div style={{ width: "48px", height: "48px", background: "#f0ede8", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px" }}>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#999" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="5" y="2" width="14" height="20" rx="2"/><line x1="9" y1="7" x2="15" y2="7"/><line x1="9" y1="11" x2="15" y2="11"/><line x1="9" y1="15" x2="13" y2="15"/>
+          </svg>
+        </div>
+        <div style={{ fontSize: "14px", fontWeight: 500, color: "#555", marginBottom: "4px" }}>No transactions yet</div>
+        <div style={{ fontSize: "12px", color: "#999" }}>Purchases and payments will appear in the ledger here.</div>
       </div>
     );
   }
@@ -297,39 +307,42 @@ function StatementTab({ supplier, purchases, manualPayments, chatpesaAllocations
         </button>
       </div>
 
-      {/* Header row */}
-      <div style={{ display: "grid", gridTemplateColumns: "90px 100px 1fr 90px 90px 90px", gap: "0", background: "#1a1a1a", borderRadius: "8px 8px 0 0", padding: "8px 12px" }} className="stmt-grid">
-        {["Date", "Type", "Description", "Debit", "Credit", "Balance"].map((h, i) => (
-          <div key={h} style={{ fontSize: "10px", fontWeight: 700, color: "#fff", textTransform: "uppercase", letterSpacing: "0.5px", textAlign: i >= 3 ? "right" : "left" }}>{h}</div>
-        ))}
-      </div>
-
-      {/* Rows */}
-      {entries.map((e, i) => (
-        <div key={i} style={{ display: "grid", gridTemplateColumns: "90px 100px 1fr 90px 90px 90px", gap: "0", padding: "8px 12px", background: i % 2 === 0 ? "#f9f9f7" : "#fff", borderBottom: "1px solid #f0ede8" }} className="stmt-grid">
-          <div style={{ fontSize: "12px", color: "#555" }}>{fmtDate(e.date)}</div>
-          <div>
-            <span style={{
-              fontSize: "11px", fontWeight: 600, padding: "2px 7px", borderRadius: "4px",
-              background: e.type === "Purchase" ? "#FEF3C7" : e.type === "Opening Balance" ? "#E3F2FD" : "#D1FAE5",
-              color: e.type === "Purchase" ? "#92400E" : e.type === "Opening Balance" ? "#1565C0" : "#065F46",
-            }}>{e.type}</span>
-          </div>
-          <div style={{ fontSize: "12px", color: "#444", paddingRight: "8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={e.description}>{e.description}</div>
-          <div style={{ fontSize: "12px", fontWeight: 600, color: "#92400E", textAlign: "right" }}>{e.debit > 0 ? fmt(e.debit).replace("KSh ", "") : "—"}</div>
-          <div style={{ fontSize: "12px", fontWeight: 600, color: "#065F46", textAlign: "right" }}>{e.credit > 0 ? fmt(e.credit).replace("KSh ", "") : "—"}</div>
-          <div style={{ fontSize: "12px", fontWeight: 700, color: e.balance > 0 ? "#92400E" : "#065F46", textAlign: "right" }}>
-            {fmt(Math.abs(e.balance)).replace("KSh ", "")}{e.balance < 0 ? " CR" : ""}
-          </div>
+      {/* Scrollable table wrapper — prevents horizontal overflow on small screens */}
+      <div style={{ overflowX: "auto" }}>
+        {/* Header row */}
+        <div style={{ display: "grid", gridTemplateColumns: "90px 100px 1fr 90px 90px 90px", gap: "0", background: "#1a1a1a", borderRadius: "8px 8px 0 0", padding: "8px 12px", minWidth: "520px" }} className="stmt-grid">
+          {["Date", "Type", "Description", "Debit", "Credit", "Balance"].map((h, i) => (
+            <div key={h} style={{ fontSize: "10px", fontWeight: 700, color: "#fff", textTransform: "uppercase", letterSpacing: "0.5px", textAlign: i >= 3 ? "right" : "left" }}>{h}</div>
+          ))}
         </div>
-      ))}
 
-      {/* Closing balance */}
-      <div style={{ background: "#E8512A", borderRadius: "0 0 8px 8px", padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontSize: "13px", fontWeight: 700, color: "#fff" }}>Closing Balance — {entries.length} transaction{entries.length !== 1 ? "s" : ""}</span>
-        <span style={{ fontSize: "14px", fontWeight: 700, color: "#fff" }}>
-          KSh {Number(Math.abs(finalBal)).toLocaleString("en-KE")}{finalBal < 0 ? " CR" : ""}
-        </span>
+        {/* Rows */}
+        {entries.map((e, i) => (
+          <div key={i} style={{ display: "grid", gridTemplateColumns: "90px 100px 1fr 90px 90px 90px", gap: "0", padding: "8px 12px", background: i % 2 === 0 ? "#f9f9f7" : "#fff", borderBottom: "1px solid #f0ede8", minWidth: "520px" }} className="stmt-grid">
+            <div style={{ fontSize: "12px", color: "#555" }}>{fmtDate(e.date)}</div>
+            <div>
+              <span style={{
+                fontSize: "11px", fontWeight: 600, padding: "2px 7px", borderRadius: "4px",
+                background: e.type === "Purchase" ? "#FEF3C7" : e.type === "Opening Balance" ? "#E3F2FD" : "#D1FAE5",
+                color: e.type === "Purchase" ? "#92400E" : e.type === "Opening Balance" ? "#1565C0" : "#065F46",
+              }}>{e.type}</span>
+            </div>
+            <div style={{ fontSize: "12px", color: "#444", paddingRight: "8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={e.description}>{e.description}</div>
+            <div style={{ fontSize: "12px", fontWeight: 600, color: "#92400E", textAlign: "right" }}>{e.debit > 0 ? fmt(e.debit).replace("KSh ", "") : "—"}</div>
+            <div style={{ fontSize: "12px", fontWeight: 600, color: "#065F46", textAlign: "right" }}>{e.credit > 0 ? fmt(e.credit).replace("KSh ", "") : "—"}</div>
+            <div style={{ fontSize: "12px", fontWeight: 700, color: e.balance > 0 ? "#92400E" : "#065F46", textAlign: "right" }}>
+              {fmt(Math.abs(e.balance)).replace("KSh ", "")}{e.balance < 0 ? " CR" : ""}
+            </div>
+          </div>
+        ))}
+
+        {/* Closing balance */}
+        <div style={{ background: "#E8512A", borderRadius: "0 0 8px 8px", padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", minWidth: "520px" }}>
+          <span style={{ fontSize: "13px", fontWeight: 700, color: "#fff" }}>Closing Balance — {entries.length} transaction{entries.length !== 1 ? "s" : ""}</span>
+          <span style={{ fontSize: "14px", fontWeight: 700, color: "#fff" }}>
+            KSh {Number(Math.abs(finalBal)).toLocaleString("en-KE")}{finalBal < 0 ? " CR" : ""}
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -375,11 +388,16 @@ function PaymentsTab({ manualPayments, chatpesaAllocations, purchases, canWrite,
 
       {allPayments.length === 0 ? (
         <div style={{ padding: "60px 20px", textAlign: "center" }}>
-          <div style={{ fontSize: "32px", marginBottom: "10px" }}>💳</div>
-          <div style={{ fontSize: "14px", color: "#999" }}>No payments recorded yet.</div>
+          <div style={{ width: "48px", height: "48px", background: "#f0ede8", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px" }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#999" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>
+            </svg>
+          </div>
+          <div style={{ fontSize: "14px", fontWeight: 500, color: "#555", marginBottom: "4px" }}>No payments yet</div>
+          <div style={{ fontSize: "12px", color: "#999", marginBottom: canWrite ? "14px" : "0" }}>Payments made to this supplier will appear here.</div>
           {canWrite && (
-            <button onClick={onRecordPayment} style={{ marginTop: "12px", padding: "8px 20px", borderRadius: "6px", border: "1.5px solid #e0e0e0", background: "#fff", color: "#333", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
-              Record first payment
+            <button onClick={onRecordPayment} style={{ padding: "8px 20px", borderRadius: "6px", border: "none", background: "#1a1a1a", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
+              + Record payment
             </button>
           )}
         </div>
@@ -622,7 +640,58 @@ export default function SupplierProfile({ supplierId }) {
   };
 
   if (loading) {
-    return <div style={{ padding: "60px 20px", textAlign: "center", color: "#aaa", fontSize: "14px" }}>Loading supplier profile…</div>;
+    return (
+      <div style={{ padding: "20px 16px", maxWidth: "900px", margin: "0 auto" }}>
+        <style>{`
+          @keyframes cg-shimmer {
+            0%   { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+          }
+          .cg-skel {
+            background: linear-gradient(90deg, #e8e8e5 25%, #f0ede8 50%, #e8e8e5 75%);
+            background-size: 200% 100%;
+            animation: cg-shimmer 1.4s infinite;
+            border-radius: 6px;
+          }
+        `}</style>
+        {/* Back + header skeleton */}
+        <div className="cg-skel" style={{ height: "13px", width: "80px", marginBottom: "16px" }} />
+        <div style={{ display: "flex", alignItems: "center", gap: "14px", marginBottom: "24px" }}>
+          <div className="cg-skel" style={{ width: "44px", height: "44px", borderRadius: "50%", flexShrink: 0 }} />
+          <div style={{ flex: 1 }}>
+            <div className="cg-skel" style={{ height: "22px", width: "55%", marginBottom: "8px" }} />
+            <div className="cg-skel" style={{ height: "13px", width: "30%" }} />
+          </div>
+        </div>
+        {/* Tabs skeleton */}
+        <div style={{ display: "flex", gap: "8px", borderBottom: "2px solid #e8e8e5", marginBottom: "20px", paddingBottom: "10px" }}>
+          {[80, 110, 90, 110].map((w, i) => (
+            <div key={i} className="cg-skel" style={{ height: "13px", width: `${w}px` }} />
+          ))}
+        </div>
+        {/* Stat cards skeleton */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "10px", marginBottom: "24px" }}>
+          {[1, 2, 3].map(i => (
+            <div key={i} style={{ background: "#fff", border: "1px solid #e8e8e5", borderRadius: "10px", padding: "14px 16px" }}>
+              <div className="cg-skel" style={{ height: "11px", width: "70%", marginBottom: "10px" }} />
+              <div className="cg-skel" style={{ height: "20px", width: "85%" }} />
+            </div>
+          ))}
+        </div>
+        {/* Detail card skeleton */}
+        <div style={{ background: "#fff", border: "1px solid #e8e8e5", borderRadius: "10px", padding: "20px" }}>
+          <div className="cg-skel" style={{ height: "15px", width: "120px", marginBottom: "20px" }} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+            {[1, 2, 3, 4].map(i => (
+              <div key={i}>
+                <div className="cg-skel" style={{ height: "10px", width: "50%", marginBottom: "7px" }} />
+                <div className="cg-skel" style={{ height: "14px", width: "80%" }} />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
   }
   if (error || !data) {
     return (

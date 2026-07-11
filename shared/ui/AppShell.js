@@ -99,10 +99,10 @@ export default function AppShell({ children }) {
             </div>
           )}
           <button onClick={handleLogout} style={{
-            padding: "5px 12px", borderRadius: "5px", border: "1px solid #444",
-            background: "transparent", color: "#999", fontSize: "11px", cursor: "pointer",
+            padding: "5px 12px", borderRadius: "5px", border: "1px solid #555",
+            background: "transparent", color: "#ccc", fontSize: "12px", cursor: "pointer",
             fontWeight: 500,
-          }}>Sign Out</button>
+          }}>Sign out</button>
         </div>
       </header>
 
@@ -140,10 +140,10 @@ export default function AppShell({ children }) {
             )}
             <button onClick={handleLogout} style={{
               display: "block", width: "calc(100% - 16px)", margin: "8px 8px 12px",
-              padding: "10px", borderRadius: "6px", border: "1px solid #444",
-              background: "transparent", color: "#999", fontSize: "14px",
+              padding: "10px", borderRadius: "6px", border: "1px solid #555",
+              background: "transparent", color: "#ccc", fontSize: "14px",
               cursor: "pointer", textAlign: "center",
-            }}>Sign Out</button>
+            }}>Sign out</button>
           </div>
         </div>
       )}

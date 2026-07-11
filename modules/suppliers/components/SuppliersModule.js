@@ -69,6 +69,17 @@ function SummaryBar({ purchases }) {
   );
 }
 
+function Avatar({ name, size = 40 }) {
+  const initials = (name || "?").split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase();
+  const colors   = ["#E8512A", "#1a1a1a", "#2563EB", "#059669", "#7C3AED", "#DB2777"];
+  const idx      = name ? name.charCodeAt(0) % colors.length : 0;
+  return (
+    <div style={{ width: size, height: size, borderRadius: "50%", background: colors[idx], display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: size * 0.35, fontWeight: 700, color: "#fff", letterSpacing: "-0.5px" }}>
+      {initials}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function SuppliersModule() {
@@ -83,7 +94,6 @@ export default function SuppliersModule() {
 
   // Supplier list state
   const [supplierSearch, setSupplierSearch] = useState("");
-  const [expandedSupplier, setExpandedSupplier] = useState(null);
 
   // Purchase list state
   const [purchaseSearch, setPurchaseSearch] = useState("");
@@ -279,7 +289,6 @@ export default function SuppliersModule() {
       setDeleteTarget(null);
       if (deleteTarget.type === "supplier") {
         await loadSuppliers();
-        setExpandedSupplier(null);
       } else {
         await loadPurchases();
         setExpandedPurchase(null);
@@ -318,6 +327,28 @@ export default function SuppliersModule() {
         )}
       </div>
 
+      {/* ── KPI Bar ── */}
+      {(() => {
+        const totalAP        = suppliers.reduce((sum, s) => sum + (s._stats?.balance_owed    || 0), 0);
+        const thisMonthSpend = suppliers.reduce((sum, s) => sum + (s._stats?.this_month_spend || 0), 0);
+        const paidUpCount    = suppliers.filter(s => (s._stats?.balance_owed || 0) <= 0).length;
+        return (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "10px", marginBottom: "18px" }}>
+            {[
+              { label: "Suppliers",        value: suppliers.length,                        color: "#1a1a1a" },
+              { label: "Total AP balance", value: fmt(totalAP),                            color: totalAP > 0 ? "#C62828" : "#065F46" },
+              { label: "This month",       value: fmt(thisMonthSpend),                     color: "#E8512A" },
+              { label: "Paid up",          value: `${paidUpCount} / ${suppliers.length}`,  color: "#065F46" },
+            ].map(card => (
+              <div key={card.label} style={{ background: "#fff", border: "1px solid #e8e8e5", borderRadius: "10px", padding: "12px 14px" }}>
+                <div style={{ fontSize: "10px", color: "#999", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>{card.label}</div>
+                <div style={{ fontSize: "17px", fontWeight: 700, color: card.color }}>{card.value}</div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
       {/* Tabs */}
       <div style={{ display: "flex", gap: "0", marginBottom: "20px", borderBottom: "2px solid #e8e8e5" }}>
         {[
@@ -346,107 +377,75 @@ export default function SuppliersModule() {
 
           {filteredSuppliers.length === 0 ? (
             <div style={{ padding: "60px 20px", textAlign: "center" }}>
-              <div style={{ fontSize: "36px", marginBottom: "12px" }}>🏭</div>
-              <div style={{ fontSize: "14px", color: "#999" }}>{supplierSearch ? "No suppliers match your search." : "No suppliers yet."}</div>
+              <div style={{ width: "52px", height: "52px", background: "#f0ede8", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px" }}>
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#999" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
+                </svg>
+              </div>
+              <div style={{ fontSize: "14px", fontWeight: 500, color: "#555", marginBottom: "4px" }}>{supplierSearch ? "No suppliers match your search." : "No suppliers yet."}</div>
+              {!supplierSearch && <div style={{ fontSize: "12px", color: "#999", marginBottom: "14px" }}>Add your first supplier to start tracking purchases.</div>}
               {canWrite && !supplierSearch && (
-                <button onClick={openAddSupplier} style={{ marginTop: "14px", padding: "8px 20px", borderRadius: "6px", border: "1.5px solid #e0e0e0", background: "#fff", color: "#333", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
-                  Add your first supplier
+                <button onClick={openAddSupplier} style={{ padding: "8px 20px", borderRadius: "6px", border: "none", background: "#1a1a1a", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
+                  + Add supplier
                 </button>
               )}
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              {filteredSuppliers.map(s => {
-                const sPurchases = purchases.filter(p => p.supplier_id === s.id);
-                const sTotal     = sPurchases.reduce((sum, p) => sum + parseFloat(p.total_amount || 0), 0);
-                const sBalance   = sPurchases.reduce((sum, p) => sum + (parseFloat(p.total_amount || 0) - parseFloat(p.amount_paid || 0)), 0);
-                const isExpanded = expandedSupplier === s.id;
+              {filteredSuppliers.map(s => (
+                <div key={s.id}
+                  style={{ background: "#fff", border: "1px solid #e8e8e5", borderRadius: "10px", padding: "13px 16px", display: "flex", alignItems: "center", gap: "12px", cursor: "pointer", transition: "background 0.12s" }}
+                  onClick={() => router.push(`/suppliers/${s.id}`)}
+                  onMouseEnter={e => e.currentTarget.style.background = "#faf9f7"}
+                  onMouseLeave={e => e.currentTarget.style.background = "#fff"}
+                >
+                  <Avatar name={s.name} />
 
-                return (
-                  <div key={s.id} style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e8e8e5", borderLeft: "4px solid #E8512A", overflow: "hidden", cursor: "pointer" }}
-                    onClick={() => setExpandedSupplier(isExpanded ? null : s.id)}>
-                    {/* Row */}
-                    <div style={{ padding: "14px 16px", display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
-                      <div style={{ flex: "1 1 200px" }}>
-                        <button
-                          onClick={e => { e.stopPropagation(); router.push(`/suppliers/${s.id}`); }}
-                          style={{ background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", fontSize: "14px", fontWeight: 700, color: "#E8512A", textDecoration: "underline", textDecorationColor: "transparent", transition: "text-decoration-color 0.1s" }}
-                          onMouseEnter={e => e.currentTarget.style.textDecorationColor = "#E8512A"}
-                          onMouseLeave={e => e.currentTarget.style.textDecorationColor = "transparent"}
-                          title="View supplier profile"
-                        >{s.name}</button>
-                        {s.contact_person && <div style={{ fontSize: "12px", color: "#888", marginTop: "2px" }}>{s.contact_person}</div>}
-                        {s.materials_supplied && <div style={{ fontSize: "11px", color: "#aaa", marginTop: "2px", fontStyle: "italic" }}>{s.materials_supplied}</div>}
-                      </div>
-                      <div style={{ display: "flex", gap: "20px", alignItems: "center", flexWrap: "wrap" }}>
-                        {s.phone && <a href={`tel:${s.phone}`} onClick={e => e.stopPropagation()} style={{ fontSize: "13px", color: "#1565C0", textDecoration: "none", fontFamily: "monospace" }}>{s.phone}</a>}
-                        <div style={{ fontSize: "12px", color: "#999" }}>
-                          {sPurchases.length} purchase{sPurchases.length !== 1 ? "s" : ""}
-                          {sTotal > 0 && <> · {fmt(sTotal)}</>}
-                          {sBalance > 0 && <span style={{ color: "#92400E" }}> · {fmt(sBalance)} owed</span>}
-                        </div>
-                      </div>
-                      <span style={{ fontSize: "16px", color: "#ccc", transition: "transform 0.15s", transform: isExpanded ? "rotate(180deg)" : "rotate(0)" }}>▾</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: "14px", fontWeight: 700, color: "#1a1a1a" }}>{s.name}</span>
+                      {s.materials_supplied && (
+                        <span style={{ fontSize: "10px", fontWeight: 600, background: "#f0ede8", color: "#555", padding: "2px 8px", borderRadius: "10px" }}>
+                          {s.materials_supplied.split(",")[0].trim()}
+                        </span>
+                      )}
                     </div>
+                    <div style={{ fontSize: "12px", color: "#888", marginTop: "2px" }}>
+                      {[s.phone, s.contact_person].filter(Boolean).join(" · ")}
+                      {(s._stats?.purchase_count || 0) > 0 && ` · ${s._stats.purchase_count} purchase${s._stats.purchase_count !== 1 ? "s" : ""}`}
+                    </div>
+                  </div>
 
-                    {/* Expanded */}
-                    {isExpanded && (
-                      <div style={{ padding: "0 16px 16px", borderTop: "1px solid #f0ede8" }} onClick={e => e.stopPropagation()}>
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", paddingTop: "14px" }} className="detail-grid">
-                          {s.phone  && <div><div style={ss.label}>Phone</div><a href={`tel:${s.phone}`} style={{ fontSize: "13px", color: "#1565C0" }}>{s.phone}</a></div>}
-                          {s.email  && <div><div style={ss.label}>Email</div><a href={`mailto:${s.email}`} style={{ fontSize: "13px", color: "#1565C0" }}>{s.email}</a></div>}
-                          {s.materials_supplied && <div style={{ gridColumn: "1 / -1" }}><div style={ss.label}>Materials supplied</div><div style={{ fontSize: "13px", color: "#333" }}>{s.materials_supplied}</div></div>}
-                          {s.notes  && <div style={{ gridColumn: "1 / -1" }}><div style={ss.label}>Notes</div><div style={{ fontSize: "13px", color: "#666", fontStyle: "italic" }}>{s.notes}</div></div>}
-                        </div>
-
-                        {/* Purchase mini-list */}
-                        {sPurchases.length > 0 && (
-                          <div style={{ marginTop: "16px" }}>
-                            <div style={ss.label}>Purchases</div>
-                            <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "6px" }}>
-                              {sPurchases.slice(0, 5).map(p => (
-                                <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "#f9f9f7", borderRadius: "6px", flexWrap: "wrap", gap: "6px" }}>
-                                  <div>
-                                    <span style={{ fontSize: "12px", color: "#333", fontWeight: 600 }}>{p.purchase_date}</span>
-                                    {p.items_bought && <span style={{ fontSize: "12px", color: "#999", marginLeft: "8px" }}>{p.items_bought.substring(0, 50)}{p.items_bought.length > 50 ? "…" : ""}</span>}
-                                  </div>
-                                  <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-                                    <span style={{ fontSize: "12px", fontWeight: 700, color: "#333" }}>{fmt(p.total_amount)}</span>
-                                    <StatusBadge status={p.payment_status} />
-                                  </div>
-                                </div>
-                              ))}
-                              {sPurchases.length > 5 && <div style={{ fontSize: "12px", color: "#999", paddingLeft: "4px" }}>+{sPurchases.length - 5} more — view profile for full history</div>}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Actions */}
-                        <div style={{ display: "flex", gap: "8px", marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #f0ede8", flexWrap: "wrap" }}>
-                          <button onClick={e => { e.stopPropagation(); router.push(`/suppliers/${s.id}`); }} style={{ padding: "7px 14px", borderRadius: "6px", border: "1.5px solid #1a1a1a", background: "#1a1a1a", color: "#fff", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
-                            View Profile →
-                          </button>
-                          {canWrite && (
-                            <>
-                              <button onClick={() => openAddPurchase(s.id)} style={{ padding: "7px 14px", borderRadius: "6px", border: "none", background: "#E8512A", color: "#fff", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
-                                + Add Purchase
-                              </button>
-                              <button onClick={e => openEditSupplier(s, e)} style={{ padding: "7px 14px", borderRadius: "6px", border: "1.5px solid #e0e0e0", background: "#fff", color: "#333", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
-                                Edit
-                              </button>
-                            </>
-                          )}
-                          {canDelete && (
-                            <button onClick={e => { e.stopPropagation(); setDeleteTarget({ type: "supplier", id: s.id, label: s.name }); }} style={{ padding: "7px 14px", borderRadius: "6px", border: "1.5px solid #FFCDD2", background: "#FFF5F5", color: "#C62828", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
-                              Delete
-                            </button>
-                          )}
-                        </div>
-                      </div>
+                  <div style={{ textAlign: "right", flexShrink: 0 }}>
+                    {(s._stats?.balance_owed || 0) > 0 ? (
+                      <>
+                        <div style={{ fontSize: "13px", fontWeight: 700, color: "#C62828" }}>{fmt(s._stats.balance_owed)} owed</div>
+                        <div style={{ fontSize: "10px", color: "#bbb", marginTop: "1px" }}>of {fmt(s._stats.total_purchased)} purchased</div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: "13px", fontWeight: 600, color: "#16a34a" }}>Paid up</div>
+                        {(s._stats?.total_purchased || 0) > 0 && <div style={{ fontSize: "10px", color: "#bbb", marginTop: "1px" }}>{fmt(s._stats.total_purchased)} total</div>}
+                      </>
                     )}
                   </div>
-                );
-              })}
+
+                  {canWrite && (
+                    <div style={{ display: "flex", gap: "4px", flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                      <button
+                        onClick={e => openEditSupplier(s, e)}
+                        style={{ padding: "5px 10px", borderRadius: "5px", border: "1px solid #e8e5e0", background: "none", color: "#888", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}
+                      >Edit</button>
+                      <button
+                        onClick={() => openAddPurchase(s.id)}
+                        style={{ padding: "5px 10px", borderRadius: "5px", border: "1px solid #e8e5e0", background: "none", color: "#555", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}
+                      >+ Purchase</button>
+                    </div>
+                  )}
+
+                  <span style={{ color: "#ccc", fontSize: "14px", flexShrink: 0 }}>›</span>
+                </div>
+              ))}
             </div>
           )}
         </>
@@ -478,12 +477,19 @@ export default function SuppliersModule() {
 
           {filteredPurchases.length === 0 ? (
             <div style={{ padding: "60px 20px", textAlign: "center" }}>
-              <div style={{ fontSize: "36px", marginBottom: "12px" }}>🧾</div>
-              <div style={{ fontSize: "14px", color: "#999" }}>{purchaseSearch || filterStatus !== "All" || filterSupplier !== "All" ? "No purchases match your filters." : "No purchases yet."}</div>
+              <div style={{ width: "52px", height: "52px", background: "#f0ede8", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px" }}>
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#999" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+                </svg>
+              </div>
+              <div style={{ fontSize: "14px", fontWeight: 500, color: "#555", marginBottom: "4px" }}>{purchaseSearch || filterStatus !== "All" || filterSupplier !== "All" ? "No purchases match your filters." : "No purchases yet."}</div>
               {canWrite && !purchaseSearch && filterStatus === "All" && filterSupplier === "All" && (
-                <button onClick={() => openAddPurchase()} style={{ marginTop: "14px", padding: "8px 20px", borderRadius: "6px", border: "1.5px solid #e0e0e0", background: "#fff", color: "#333", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
-                  Record first purchase
-                </button>
+                <>
+                  <div style={{ fontSize: "12px", color: "#999", marginBottom: "14px" }}>Record purchases from your suppliers to track spend.</div>
+                  <button onClick={() => openAddPurchase()} style={{ padding: "8px 20px", borderRadius: "6px", border: "none", background: "#1a1a1a", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
+                    + Record purchase
+                  </button>
+                </>
               )}
             </div>
           ) : (

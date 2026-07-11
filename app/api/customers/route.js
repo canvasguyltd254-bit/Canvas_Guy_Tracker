@@ -73,6 +73,7 @@ export async function GET(request) {
 
     const ACTIVE_STATUSES    = ['Inquiry','Quoted','Quote Approved','Deposit Paid','In Production','Quality Check','Ready for Delivery','Out for Delivery'];
     const DELIVERED_STATUSES = ['Partially Delivered', 'Delivered', 'Closed'];
+    const CLOSED_STATUSES    = ['Closed', 'Cancelled', 'Cancelled/Refunded', 'Refunded'];
 
     const enriched = customers.map(c => {
       const cOrders = ordersByCustomer[c.id] || [];
@@ -86,18 +87,23 @@ export async function GET(request) {
           const bal  = parseFloat(o.total_value || 0) - paid;
           return s + Math.max(0, bal);
         }, 0);
+      // Active work value: total order value for orders not yet closed/cancelled
+      const activeWorkValue = cOrders
+        .filter(o => !CLOSED_STATUSES.includes(o.status))
+        .reduce((s, o) => s + parseFloat(o.total_value || 0), 0);
       const lastOrder = cOrders.sort((a, b) => b.created_at > a.created_at ? 1 : -1)[0];
       const activeOrders = cOrders.filter(o => ACTIVE_STATUSES.includes(o.status)).length;
 
       return {
         ...c,
         _stats: {
-          total_orders:   cOrders.length,
-          total_sales:    totalSales,
+          total_orders:      cOrders.length,
+          total_sales:       totalSales,
           outstanding,
           overdue,
-          active_orders:  activeOrders,
-          last_order_date: lastOrder?.created_at?.split('T')[0] || null,
+          active_orders:     activeOrders,
+          active_work_value: activeWorkValue,
+          last_order_date:   lastOrder?.created_at?.split('T')[0] || null,
         },
       };
     });

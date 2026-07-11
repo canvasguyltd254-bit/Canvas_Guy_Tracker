@@ -18,7 +18,7 @@ export async function GET() {
     const authError = requireRole(user, role);
     if (authError) return authError;
 
-    const { data, error } = await serviceClient
+    const { data: suppliers, error } = await serviceClient
       .from('suppliers')
       .select('*')
       .order('name', { ascending: true });
@@ -28,7 +28,48 @@ export async function GET() {
       return NextResponse.json({ error: 'Failed to fetch suppliers' }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, data });
+    if (!suppliers?.length) return NextResponse.json({ success: true, data: [] });
+
+    // Fetch purchase stats for all suppliers in one query
+    const supplierIds = suppliers.map(s => s.id);
+    const { data: purchases } = await serviceClient
+      .from('purchases')
+      .select('supplier_id, total_amount, amount_paid, payment_status, purchase_date')
+      .in('supplier_id', supplierIds);
+
+    // Group purchases by supplier
+    const bySupplier = {};
+    for (const p of purchases || []) {
+      if (!bySupplier[p.supplier_id]) bySupplier[p.supplier_id] = [];
+      bySupplier[p.supplier_id].push(p);
+    }
+
+    const thisMonth = new Date().toISOString().slice(0, 7); // "YYYY-MM"
+
+    const enriched = suppliers.map(s => {
+      const sp = bySupplier[s.id] || [];
+      const totalPurchased  = sp.reduce((sum, p) => sum + parseFloat(p.total_amount || 0), 0);
+      const totalPaid       = sp.reduce((sum, p) => sum + parseFloat(p.amount_paid  || 0), 0);
+      const balanceOwed     = Math.max(0, parseFloat(s.opening_balance || 0) + totalPurchased - totalPaid);
+      const unpaidCount     = sp.filter(p => p.payment_status !== 'Paid').length;
+      const thisMonthSpend  = sp
+        .filter(p => p.purchase_date && p.purchase_date.startsWith(thisMonth))
+        .reduce((sum, p) => sum + parseFloat(p.total_amount || 0), 0);
+
+      return {
+        ...s,
+        _stats: {
+          purchase_count:   sp.length,
+          total_purchased:  totalPurchased,
+          total_paid:       totalPaid,
+          balance_owed:     balanceOwed,
+          unpaid_count:     unpaidCount,
+          this_month_spend: thisMonthSpend,
+        },
+      };
+    });
+
+    return NextResponse.json({ success: true, data: enriched });
   } catch (err) {
     console.error('GET /api/suppliers:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

@@ -442,9 +442,9 @@ export default function CustomersModule() {
     );
   }, [customers, search]);
 
+  const totalWorkValue   = customers.reduce((s, c) => s + (c._stats?.active_work_value || 0), 0);
   const totalOutstanding = customers.reduce((s, c) => s + (c._stats?.outstanding || 0), 0);
   const totalOverdue     = customers.reduce((s, c) => s + (c._stats?.overdue || 0), 0);
-  const overdueCount     = customers.filter(c => (c._stats?.overdue || 0) > 0).length;
 
   const handleSave = async () => {
     if (!form.name.trim()) { setFormError("Customer name is required."); return; }
@@ -501,10 +501,10 @@ export default function CustomersModule() {
           {/* Summary bar */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "10px", marginBottom: "20px" }}>
             {[
-              { label: "Customers",         value: customers.length,     color: "#1a1a1a" },
-              { label: "Total Outstanding", value: fmt(totalOutstanding), color: totalOutstanding > 0 ? "#92400E" : "#065F46" },
-              { label: "Overdue",           value: fmt(totalOverdue),    color: totalOverdue > 0 ? "#C62828" : "#065F46" },
-              { label: "With Overdue",      value: overdueCount,         color: overdueCount > 0 ? "#C62828" : "#065F46" },
+              { label: "Customers",        value: customers.length,      color: "#1a1a1a" },
+              { label: "Total Work Value", value: fmt(totalWorkValue),   color: "#1a1a1a" },
+              { label: "Outstanding",      value: fmt(totalOutstanding), color: totalOutstanding > 0 ? "#92400E" : "#065F46" },
+              { label: "Overdue",          value: fmt(totalOverdue),     color: totalOverdue > 0 ? "#C62828" : "#065F46" },
             ].map(card => (
               <div key={card.label} style={{ background: "#fff", border: "1px solid #e8e8e5", borderRadius: "10px", padding: "14px 16px" }}>
                 <div style={{ fontSize: "11px", color: "#999", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>{card.label}</div>
