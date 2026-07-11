@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/shared/supabase/client";
 import PaymentsTab from "./PaymentsTab";
 
@@ -16,6 +17,7 @@ const STATUS_COLORS = {
 const EMPTY_SUPPLIER = {
   name: "", contact_person: "", phone: "", email: "",
   materials_supplied: "", notes: "",
+  opening_balance: "", opening_balance_date: "", opening_balance_notes: "",
 };
 
 const EMPTY_PURCHASE = {
@@ -115,6 +117,7 @@ export default function SuppliersModule() {
   const canWrite  = WRITE_ROLES.includes(userRole);
   const canDelete = ["admin"].includes(userRole);
 
+  const router = useRouter();
   const sb = createClient();
 
   // ── Load data ──────────────────────────────────────────────────────────────
@@ -194,6 +197,9 @@ export default function SuppliersModule() {
       name: s.name || "", contact_person: s.contact_person || "",
       phone: s.phone || "", email: s.email || "",
       materials_supplied: s.materials_supplied || "", notes: s.notes || "",
+      opening_balance: s.opening_balance != null ? String(s.opening_balance) : "",
+      opening_balance_date: s.opening_balance_date || "",
+      opening_balance_notes: s.opening_balance_notes || "",
     });
     setEditingSupplierId(s.id);
     setShowSupplierForm(true);
@@ -362,7 +368,13 @@ export default function SuppliersModule() {
                     {/* Row */}
                     <div style={{ padding: "14px 16px", display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
                       <div style={{ flex: "1 1 200px" }}>
-                        <div style={{ fontSize: "14px", fontWeight: 700, color: "#1a1a1a" }}>{s.name}</div>
+                        <button
+                          onClick={e => { e.stopPropagation(); router.push(`/suppliers/${s.id}`); }}
+                          style={{ background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", fontSize: "14px", fontWeight: 700, color: "#E8512A", textDecoration: "underline", textDecorationColor: "transparent", transition: "text-decoration-color 0.1s" }}
+                          onMouseEnter={e => e.currentTarget.style.textDecorationColor = "#E8512A"}
+                          onMouseLeave={e => e.currentTarget.style.textDecorationColor = "transparent"}
+                          title="View supplier profile"
+                        >{s.name}</button>
                         {s.contact_person && <div style={{ fontSize: "12px", color: "#888", marginTop: "2px" }}>{s.contact_person}</div>}
                         {s.materials_supplied && <div style={{ fontSize: "11px", color: "#aaa", marginTop: "2px", fontStyle: "italic" }}>{s.materials_supplied}</div>}
                       </div>
@@ -590,6 +602,24 @@ export default function SuppliersModule() {
               <div style={{ gridColumn: "1 / -1" }}>
                 <label style={ss.label}>Notes</label>
                 <textarea style={ss.textarea} value={supplierForm.notes} onChange={e => setSupplierForm({ ...supplierForm, notes: e.target.value })} placeholder="e.g. Best pricing on bulk orders above 50 boards" />
+              </div>
+              {/* ── Opening balance (existing debt before tracker was set up) ── */}
+              <div style={{ gridColumn: "1 / -1", borderTop: "1px dashed #e0e0e0", paddingTop: "14px", marginTop: "4px" }}>
+                <div style={{ fontSize: "11px", fontWeight: 600, color: "#999", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px" }}>Opening Balance (optional)</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
+                  <div>
+                    <label style={ss.label}>Amount owed (KSh)</label>
+                    <input style={ss.input} type="number" min="0" step="1" value={supplierForm.opening_balance} onChange={e => setSupplierForm({ ...supplierForm, opening_balance: e.target.value })} placeholder="0" />
+                  </div>
+                  <div>
+                    <label style={ss.label}>As of date</label>
+                    <input style={ss.input} type="date" value={supplierForm.opening_balance_date} onChange={e => setSupplierForm({ ...supplierForm, opening_balance_date: e.target.value })} />
+                  </div>
+                  <div style={{ gridColumn: "1 / -1" }}>
+                    <label style={ss.label}>Notes on opening balance</label>
+                    <input style={ss.input} value={supplierForm.opening_balance_notes} onChange={e => setSupplierForm({ ...supplierForm, opening_balance_notes: e.target.value })} placeholder="e.g. Balance carried forward from before Jan 2025" />
+                  </div>
+                </div>
               </div>
             </div>
             <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end", marginTop: "20px" }}>

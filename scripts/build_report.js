@@ -10,7 +10,10 @@
 
 'use strict';
 
-const PDFDocument = require('pdfkit');
+// pdfkit.standalone.js is the self-contained pdfkit bundle (no external deps).
+// It lives in scripts/ alongside this file so Vercel always deploys it — no
+// node_modules tracing required.
+const PDFDocument = require('./pdfkit.standalone');
 
 // ── Unit conversion ────────────────────────────────────────────────────────────
 const MM = 2.8346; // 1 mm in points
@@ -190,6 +193,49 @@ function drawLandscapeHeader(doc, label, subtitle, nowStr, user, pageNum) {
   doc.save().moveTo(LM, y).lineTo(LW - LM, y).lineWidth(0.4).stroke(MGRAY).restore();
   y += 3 * MM;
   return y;
+}
+
+/**
+ * Draw portrait page header for supplier statement. Returns y where content begins.
+ */
+function drawPortraitSupplierHeader(doc, subtitle, nowStr, user, pageNum, first, supplier) {
+  fillRect(doc, 0, 0, PW, 13 * MM, CORAL);
+  drawLeft(doc, 'CANVAS GUY LIMITED', PM, 4 * MM,
+    { font: 'Helvetica-Bold', size: 10, color: WHITE });
+  drawRight(doc, 'Colorful Spaces  |  1408-01000 Thika  |  Holla@canvasguy.co.ke  |  0713-196-650',
+    PW - PM, 5.5 * MM, { size: 6.5, color: WHITE });
+
+  let y = 16 * MM;
+  drawLeft(doc, 'SUPPLIER STATEMENT', PM, y, { font: 'Helvetica-Bold', size: 11, color: DGRAY });
+  drawRight(doc, `${nowStr}   |   Page ${pageNum}`, PW - PM, y, { size: 7, color: DGRAY });
+
+  y += 5 * MM;
+  if (subtitle) drawLeft(doc, subtitle, PM, y, { size: 7, color: DGRAY });
+
+  y += 4 * MM;
+  doc.save().moveTo(PM, y).lineTo(PW - PM, y).lineWidth(0.4).stroke(MGRAY).restore();
+  y += 3 * MM;
+
+  if (first && supplier) {
+    const boxH = 22 * MM;
+    fillRect(doc, PM, y, PCW, boxH, LGRAY);
+    drawLeft(doc, (supplier.name || '').toUpperCase(), PM, y + 2 * MM,
+      { font: 'Helvetica-Bold', size: 8, color: DGRAY });
+
+    const infoLines = [
+      supplier.address,
+      [supplier.phone, supplier.email].filter(Boolean).join('  ·  '),
+      supplier.contact_person ? `Contact: ${supplier.contact_person}` : null,
+      user ? `Prepared by: ${user}` : null,
+    ].filter(Boolean);
+
+    infoLines.forEach((line, i) => {
+      drawLeft(doc, line, PM, y + 8 * MM + i * 3.5 * MM, { size: 6.5, color: DGRAY });
+    });
+    y += boxH + 4 * MM;
+  }
+
+  return y + 2 * MM;
 }
 
 /**
@@ -491,6 +537,92 @@ function buildReportPDF(data) {
         drawTotalsBar(doc, y + 2 * MM,
           `TOTAL  |  ${n} order${n !== 1 ? 's' : ''}`,
           `Total Value: KES ${fmtKes(tv2)}   Collected: KES ${fmtKes(tp2)}   Outstanding: KES ${fmtKes(Math.max(tv2-tp2,0))}`);
+        doc.end();
+        return;
+      }
+
+      // ── Supplier statement (portrait A4) ──────────────────────────────────
+      const supplierStatement = data.supplierStatement;
+      if (supplierStatement != null) {
+        doc = new PDFDocument({ size: [PW, PH], autoFirstPage: false, margin: 0 });
+        doc.on('data', c => chunks.push(c));
+        doc.on('end',  () => resolve(Buffer.concat(chunks)));
+        doc.on('error', reject);
+
+        const supplier = supplierStatement.supplier || {};
+        const entries  = supplierStatement.entries  || [];
+        const stats    = supplierStatement.stats    || {};
+
+        const stmtRows = entries.map(e => {
+          const debit  = parseFloat(e.debit   || 0);
+          const credit = parseFloat(e.credit  || 0);
+          const bal    = parseFloat(e.balance || 0);
+          return {
+            date:        fmtDate(e.date),
+            type:        e.type        || '',
+            description: e.description || '—',
+            debit:       debit  > 0 ? fmtKes(debit)  : '—',
+            credit:      credit > 0 ? fmtKes(credit) : '—',
+            balance:     fmtKes(Math.abs(bal)) + (bal < 0 ? ' CR' : ''),
+          };
+        });
+
+        let pageNum = 1;
+        doc.addPage();
+        let y = drawPortraitSupplierHeader(doc, subtitle, nowStr, userName, pageNum, true, supplier);
+
+        // Section bar
+        fillRect(doc, PM, y, PCW, 7 * MM, '#000000');
+        drawLeft(doc, 'TRANSACTION HISTORY', PM, y + 1.5 * MM,
+          { font: 'Helvetica-Bold', size: 7.5, color: WHITE });
+        y += 7 * MM;
+
+        // Col headers
+        fillRect(doc, PM, y, PCW, HDR_H, DKROW);
+        STMT_COLS.forEach(col => {
+          const x = PM + col.x;
+          const opts = { font: 'Helvetica-Bold', size: 6.5, color: WHITE, maxW: col.w };
+          if (col.right) drawRight(doc, col.header, x + col.w, y + 1.5 * MM, opts);
+          else           drawLeft(doc, col.header, x, y + 1.5 * MM, opts);
+        });
+        y += HDR_H;
+
+        stmtRows.forEach((row, idx) => {
+          if (y + ROW_H > PH - PBOTTOM) {
+            doc.addPage(); pageNum++;
+            y = drawPortraitSupplierHeader(doc, subtitle, nowStr, userName, pageNum, false, supplier);
+            fillRect(doc, PM, y, PCW, HDR_H, DKROW);
+            STMT_COLS.forEach(col => {
+              const x = PM + col.x;
+              const opts = { font: 'Helvetica-Bold', size: 6.5, color: WHITE, maxW: col.w };
+              if (col.right) drawRight(doc, col.header, x + col.w, y + 1.5 * MM, opts);
+              else           drawLeft(doc, col.header, x, y + 1.5 * MM, opts);
+            });
+            y += HDR_H;
+          }
+          fillRect(doc, PM, y, PCW, ROW_H, idx % 2 === 0 ? LGRAY : WHITE);
+          doc.save().moveTo(PM, y + ROW_H).lineTo(PM + PCW, y + ROW_H).lineWidth(0.2).stroke(MGRAY).restore();
+          STMT_COLS.forEach(col => {
+            const x    = PM + col.x;
+            const text = row[col.key] || '—';
+            const font  = col.bold ? 'Helvetica-Bold' : 'Helvetica';
+            const opts  = { font, size: 6.5, color: DGRAY, maxW: col.w };
+            if (col.right) drawRight(doc, text, x + col.w, y + 1.5 * MM, opts);
+            else           drawLeft(doc, text, x, y + 1.5 * MM, opts);
+          });
+          y += ROW_H;
+        });
+
+        if (y + 10 * MM > PH - PBOTTOM) { doc.addPage(); pageNum++; y = drawPortraitSupplierHeader(doc, subtitle, nowStr, userName, pageNum, false, supplier); }
+        const finalBal = entries.length ? parseFloat(entries[entries.length - 1].balance || 0) : 0;
+        const balStr   = fmtKes(Math.abs(finalBal)) + (finalBal < 0 ? ' CR' : '');
+        const n        = entries.length;
+        fillRect(doc, PM, y + 2 * MM, PCW, 8 * MM, CORAL);
+        drawLeft(doc, `CLOSING BALANCE  |  ${n} transaction${n !== 1 ? 's' : ''}`,
+          PM, y + 3.5 * MM, { font: 'Helvetica-Bold', size: 7.5, color: WHITE });
+        drawRight(doc, `Balance: KES ${balStr}`, PM + PCW, y + 3.5 * MM,
+          { font: 'Helvetica-Bold', size: 7.5, color: WHITE });
+
         doc.end();
         return;
       }

@@ -10,6 +10,7 @@ export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales'];
 
@@ -29,14 +30,61 @@ export async function GET(request, { params }) {
       return NextResponse.json({ error: 'Supplier not found' }, { status: 404 });
     }
 
-    // Also fetch their purchases
+    // Fetch purchases (with linked order numbers)
     const { data: purchases } = await serviceClient
       .from('supplier_purchases')
-      .select('*, orders(order_num, client)')
+      .select('*, purchase_order_links(order_id, orders(order_num, client))')
       .eq('supplier_id', params.id)
-      .order('purchase_date', { ascending: false });
+      .order('purchase_date', { ascending: true });
 
-    return NextResponse.json({ success: true, data: { ...supplier, purchases: purchases || [] } });
+    // Fetch manual payments for this supplier
+    const { data: manualPayments } = await serviceClient
+      .from('manual_supplier_payments')
+      .select('*')
+      .eq('supplier_id', params.id)
+      .order('payment_date', { ascending: true });
+
+    // Fetch Chatpesa allocations linked to this supplier's purchases
+    const purchaseIds = (purchases || []).map(p => p.id);
+    let chatpesaAllocations = [];
+    if (purchaseIds.length > 0) {
+      const { data: allocByPurchase } = await serviceClient
+        .from('chatpesa_payment_allocations')
+        .select('*, chatpesa_transactions(transaction_date, amount, description, confirm_code)')
+        .in('supplier_purchase_id', purchaseIds)
+        .order('created_at', { ascending: true });
+      chatpesaAllocations = allocByPurchase || [];
+    }
+    // Also fetch any allocations matched directly to this supplier (opening balance type)
+    const { data: allocBySupplier } = await serviceClient
+      .from('chatpesa_payment_allocations')
+      .select('*, chatpesa_transactions(transaction_date, amount, description, confirm_code)')
+      .eq('supplier_id', params.id)
+      .is('supplier_purchase_id', null)
+      .order('created_at', { ascending: true });
+    chatpesaAllocations = [...chatpesaAllocations, ...(allocBySupplier || [])];
+
+    // Compute stats
+    const totalPurchased = (purchases || []).reduce((s, p) => s + parseFloat(p.total_amount || 0), 0);
+    const totalPaid      = (purchases || []).reduce((s, p) => s + parseFloat(p.amount_paid  || 0), 0);
+    const openingBalance = parseFloat(supplier.opening_balance || 0);
+    const currentBalance = openingBalance + totalPurchased - totalPaid;
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        ...supplier,
+        purchases:            purchases           || [],
+        manual_payments:      manualPayments      || [],
+        chatpesa_allocations: chatpesaAllocations,
+        stats: {
+          total_purchased: totalPurchased,
+          total_paid:      totalPaid,
+          opening_balance: openingBalance,
+          current_balance: Math.max(currentBalance, 0),
+        },
+      },
+    });
   } catch (err) {
     console.error('GET /api/suppliers/[id]:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -54,13 +102,15 @@ export async function PATCH(request, { params }) {
       return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
 
-    const safe = {};
-    if (body.name !== undefined)               safe.name               = body.name.trim();
-    if (body.contact_person !== undefined)     safe.contact_person     = body.contact_person?.trim() || null;
-    if (body.phone !== undefined)              safe.phone              = body.phone?.trim() || null;
-    if (body.email !== undefined)              safe.email              = body.email?.trim() || null;
-    if (body.materials_supplied !== undefined) safe.materials_supplied = body.materials_supplied?.trim() || null;
-    if (body.notes !== undefined)              safe.notes              = body.notes?.trim() || null;
+    const safe = pick(body, ALLOWED_FIELDS.suppliers.update);
+
+    // Trim string fields
+    for (const k of ['name', 'contact_person', 'phone', 'email', 'materials_supplied', 'opening_balance_notes', 'notes']) {
+      if (safe[k] !== undefined) safe[k] = safe[k]?.trim() || null;
+    }
+    if (safe.name !== undefined && !safe.name) {
+      return NextResponse.json({ error: 'Supplier name is required' }, { status: 400 });
+    }
 
     if (Object.keys(safe).length === 0) {
       return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 });
