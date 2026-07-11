@@ -104,12 +104,23 @@ export async function PATCH(request, { params }) {
 
     const safe = pick(body, ALLOWED_FIELDS.suppliers.update);
 
-    // Trim string fields
+    // Trim string fields — null out blanks
     for (const k of ['name', 'contact_person', 'phone', 'email', 'materials_supplied', 'opening_balance_notes', 'notes']) {
       if (safe[k] !== undefined) safe[k] = safe[k]?.trim() || null;
     }
     if (safe.name !== undefined && !safe.name) {
       return NextResponse.json({ error: 'Supplier name is required' }, { status: 400 });
+    }
+
+    // Numeric field — empty string → 0, otherwise parse float
+    if (safe.opening_balance !== undefined) {
+      const v = String(safe.opening_balance).trim();
+      safe.opening_balance = v === '' ? 0 : parseFloat(v) || 0;
+    }
+    // Date field — empty string → null
+    if (safe.opening_balance_date !== undefined) {
+      const v = String(safe.opening_balance_date || '').trim();
+      safe.opening_balance_date = v || null;
     }
 
     if (Object.keys(safe).length === 0) {
