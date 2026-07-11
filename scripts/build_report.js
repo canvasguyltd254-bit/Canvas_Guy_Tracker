@@ -687,3 +687,20 @@ function buildReportPDF(data) {
 }
 
 module.exports = { buildReportPDF };
+
+// ── Standalone entry point (called as child process by the API route) ──────────
+// Reads JSON from stdin, writes PDF bytes to stdout — same pattern as build_report.py
+if (require.main === module) {
+  const chunks = [];
+  process.stdin.on('data', chunk => chunks.push(chunk));
+  process.stdin.on('end', async () => {
+    try {
+      const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const pdf  = await buildReportPDF(data);
+      process.stdout.write(pdf);
+    } catch (err) {
+      process.stderr.write(err.message || String(err));
+      process.exit(1);
+    }
+  });
+}

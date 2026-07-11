@@ -2,16 +2,16 @@
  * app/api/reports/pdf/route.js
  *
  * POST /api/reports/pdf
- * Accepts report data as JSON, generates a PDF via the Node.js
- * build_report.js script (pdfkit — no Python required).
- * Returns the PDF as a binary response.
+ * Spawns scripts/build_report.js as a Node.js child process (avoids webpack
+ * bundling pdfkit). Same stdin/stdout pattern as the old Python script.
  */
 
 export const runtime = 'nodejs';
 
-import { NextResponse }                from 'next/server';
+import { NextResponse }        from 'next/server';
 import { getAuthContext, requireRole } from '@/shared/lib/api-auth';
-import { buildReportPDF }              from '@/scripts/build_report.js';
+import { execFileSync }        from 'child_process';
+import path                    from 'path';
 
 export async function POST(request) {
   try {
@@ -24,12 +24,19 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
 
+    const scriptPath = path.join(process.cwd(), 'scripts', 'build_report.js');
+    const json       = JSON.stringify(body);
+
     let pdfBuffer;
     try {
-      pdfBuffer = await buildReportPDF(body);
+      pdfBuffer = execFileSync(
+        process.execPath,   // the Node.js binary that is already running — always available
+        [scriptPath],
+        { input: json, maxBuffer: 20 * 1024 * 1024, timeout: 30_000 },
+      );
     } catch (err) {
-      const detail = err?.message || String(err);
-      console.error('buildReportPDF error:', detail);
+      const detail = err.stderr?.toString() || err.message;
+      console.error('build_report.js error:', detail);
       return NextResponse.json({ error: 'PDF generation failed', detail }, { status: 500 });
     }
 
