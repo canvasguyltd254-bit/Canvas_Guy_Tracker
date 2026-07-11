@@ -416,13 +416,16 @@ export default function SuppliersModule() {
                                   </div>
                                 </div>
                               ))}
-                              {sPurchases.length > 5 && <div style={{ fontSize: "12px", color: "#999", paddingLeft: "4px" }}>+{sPurchases.length - 5} more — see Purchases tab</div>}
+                              {sPurchases.length > 5 && <div style={{ fontSize: "12px", color: "#999", paddingLeft: "4px" }}>+{sPurchases.length - 5} more — view profile for full history</div>}
                             </div>
                           </div>
                         )}
 
                         {/* Actions */}
                         <div style={{ display: "flex", gap: "8px", marginTop: "16px", paddingTop: "14px", borderTop: "1px solid #f0ede8", flexWrap: "wrap" }}>
+                          <button onClick={e => { e.stopPropagation(); router.push(`/suppliers/${s.id}`); }} style={{ padding: "7px 14px", borderRadius: "6px", border: "1.5px solid #1a1a1a", background: "#1a1a1a", color: "#fff", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+                            View Profile →
+                          </button>
                           {canWrite && (
                             <>
                               <button onClick={() => openAddPurchase(s.id)} style={{ padding: "7px 14px", borderRadius: "6px", border: "none", background: "#E8512A", color: "#fff", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
