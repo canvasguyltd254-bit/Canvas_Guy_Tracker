@@ -629,7 +629,7 @@ export default function OrderFormPage() {
         setLoading(true);
         setError(null);
         const [ordRes, itemsRes, deliveriesRes, userRes] = await Promise.all([
-          supabase.from('orders').select('*, customers(id, name)').eq('id', id).single(),
+          supabase.from('orders').select('*').eq('id', id).single(),
           supabase.from('order_items').select('*').eq('order_id', id).order('sort_order'),
           supabase.from('order_deliveries').select('*').eq('order_id', id).order('batch_number'),
           supabase.auth.getUser(),
@@ -644,8 +644,11 @@ export default function OrderFormPage() {
         }
 
         const ord = ordRes.data;
-        // Hoist the customers join into _customer for easy access
-        if (ord.customers) { ord._customer = ord.customers; delete ord.customers; }
+        // Fetch linked customer name separately (safe — won't break load if table missing)
+        if (ord.customer_id) {
+          const { data: cust } = await supabase.from('customers').select('id, name').eq('id', ord.customer_id).maybeSingle();
+          if (cust) ord._customer = cust;
+        }
         setOrder(ord);
         setEditedNotes(ord.notes || '');
         setEditedDueDate(ord.due_date || '');
@@ -809,10 +812,13 @@ export default function OrderFormPage() {
       }
 
       const [{ data: refreshed }, { data: refreshedItems }] = await Promise.all([
-        supabase.from('orders').select('*, customers(id, name)').eq('id', id).single(),
+        supabase.from('orders').select('*').eq('id', id).single(),
         supabase.from('order_items').select('*').eq('order_id', id).order('sort_order'),
       ]);
-      if (refreshed?.customers) { refreshed._customer = refreshed.customers; delete refreshed.customers; }
+      if (refreshed?.customer_id) {
+        const { data: cust } = await supabase.from('customers').select('id, name').eq('id', refreshed.customer_id).maybeSingle();
+        if (cust) refreshed._customer = cust;
+      }
       setOrder(refreshed);
       const loaded = refreshedItems || [];
       setItems(loaded);
