@@ -10,8 +10,8 @@
 
 'use strict';
 
-// Use pdfkit from node_modules. Webpack won't touch it (serverExternalPackages
-// in next.config.js) and Vercel traces it as a normal npm dependency.
+// pdfkit runs only in the child process spawned by the API routes —
+// webpack never sees this file, so no bundling config is needed.
 const PDFDocument = require('pdfkit');
 const nodePath    = require('path');
 const nodeFs      = require('fs');
