@@ -13,6 +13,12 @@
 // Use pdfkit from node_modules. Webpack won't touch it (serverExternalPackages
 // in next.config.js) and Vercel traces it as a normal npm dependency.
 const PDFDocument = require('pdfkit');
+const nodePath    = require('path');
+const nodeFs      = require('fs');
+
+// Logo embedded in delivery note PDFs — same position in both copy variants.
+const LOGO_PATH = nodePath.join(__dirname, '..', 'public', 'canvas-guy-logo.png');
+const HAS_LOGO  = nodeFs.existsSync(LOGO_PATH);
 
 // ── Unit conversion ────────────────────────────────────────────────────────────
 const MM = 2.8346; // 1 mm in points
@@ -836,6 +842,353 @@ function buildReportPDF(data) {
         drawTotalsBar(doc, y + 2 * MM,
           `TOTAL  |  ${n} order${n !== 1 ? 's' : ''}  |  Avg Margin: ${avgMargin.toFixed(1)}%`,
           `Revenue: KES ${fmtKes(totalRev)}   Costs: KES ${fmtKes(totalCost)}   Gross Profit: KES ${fmtKes(totalProf)}`);
+        doc.end();
+        return;
+      }
+
+      // ── Delivery note (portrait A4) ───────────────────────────────────────
+      const deliveryNote = data.deliveryNote;
+      if (deliveryNote != null) {
+        const order       = deliveryNote.order    || {};
+        const items       = deliveryNote.items    || [];
+        const batch       = deliveryNote.batch    || null;
+        const payments    = deliveryNote.payments || [];
+        const showAmounts = !!deliveryNote.showAmounts;
+
+        const CHARGE_CATS  = new Set(['Delivery Fee','Installation Fee','Design Fee','Rush Fee','Discount']);
+        const regularItems = items.filter(i => !CHARGE_CATS.has(i.category));
+        const chargeItems  = items.filter(i =>  CHARGE_CATS.has(i.category));
+
+        const totalPaid     = payments.reduce((s, p) => s + parseFloat(p.amount || 0), 0);
+        const contractTotal = parseFloat(order.total_value || 0);
+        const balance       = Math.max(contractTotal - totalPaid, 0);
+        const totalPieces   = regularItems.reduce((s, i) => s + (parseInt(i.quantity) || 0), 0);
+        const itemsSubtotal = regularItems.reduce((s, i) =>
+          s + (parseFloat(i.unit_price) || 0) * (parseInt(i.quantity) || 1), 0);
+
+        const batchNum  = batch ? batch.batch_number : null;
+        const delivLoc  = (batch && batch.delivery_location) || order.delivery_address || null;
+        const delivDate = batch
+          ? (batch.actual_delivery_date || batch.planned_date || order.due_date)
+          : order.due_date;
+        const docTitle  = showAmounts ? 'INTERNAL COPY' : 'DELIVERY NOTE';
+
+        // ── Column definitions (mm, relative to PM) ───────────────────────
+        const DN_BASIC = mmCols([
+          { key: 'idx',      header: '#',                  x:   0, w:  7, centre: true },
+          { key: 'category', header: 'Category',           x:   7, w: 32, bold: true },
+          { key: 'spec',     header: 'Description / Spec', x:  39, w: 95 },
+          { key: 'qty',      header: 'Qty',                x: 134, w: 16, centre: true, bold: true },
+        ]);
+        const DN_AMOUNTS = mmCols([
+          { key: 'idx',       header: '#',                  x:   0, w:  7, centre: true },
+          { key: 'category',  header: 'Category',           x:   7, w: 28, bold: true },
+          { key: 'spec',      header: 'Description / Spec', x:  35, w: 73 },
+          { key: 'qty',       header: 'Qty',                x: 108, w: 12, centre: true, bold: true },
+          { key: 'unit_price',header: 'Unit Price',         x: 120, w: 27, right: true },
+          { key: 'total',     header: 'Total',              x: 147, w: 27, right: true, bold: true },
+        ]);
+        const dnCols = showAmounts ? DN_AMOUNTS : DN_BASIC;
+        const DN_ROW  = 7 * MM;
+        const DN_HDR  = 7 * MM;
+        const DN_BOT  = 24 * MM; // reserve space for sig block at page bottom
+
+        doc = new PDFDocument({ size: [PW, PH], autoFirstPage: false, margin: 0 });
+        doc.on('data', c => chunks.push(c));
+        doc.on('end',  () => resolve(Buffer.concat(chunks)));
+        doc.on('error', reject);
+        doc.addPage();
+
+        // ── Page header (reused on continuation pages) ────────────────────
+        // Logo sits on white; coral band starts right after the logo.
+        const LOGO_W  = 11 * MM;  // logo render width
+        const BAND_X  = PM + LOGO_W + 2 * MM;  // coral band left edge
+
+        function drawDnHeader() {
+          // Full-bleed dark strip at very top for premium framing
+          fillRect(doc, 0, 0, PW, 2 * MM, '#0F172A');
+
+          // Coral band starts AFTER the logo so the logo is visible on white
+          fillRect(doc, BAND_X, 2 * MM, PW - BAND_X, 14 * MM, CORAL);
+
+          // Logo — SAME position for both Delivery Note and Internal Copy
+          if (HAS_LOGO) {
+            try { doc.image(LOGO_PATH, PM, 2.5 * MM, { fit: [LOGO_W, LOGO_W] }); } catch (_) {}
+          }
+
+          // Company name + contact in coral band
+          drawLeft(doc, 'CANVAS GUY LIMITED', BAND_X + 3 * MM, 4 * MM,
+            { font: 'Helvetica-Bold', size: 10, color: WHITE });
+          drawLeft(doc, 'info@canvasguy.co.ke  ·  Nairobi, Kenya  ·  0713 196 650',
+            BAND_X + 3 * MM, 10 * MM, { size: 5.5, color: '#FFD0C0' });
+
+          // Document title far right — only this differs between variants
+          doc.font('Helvetica-Bold').fontSize(13).fillColor(WHITE)
+            .text(docTitle, PM, 4.5 * MM, { width: PCW, align: 'right', lineBreak: false });
+          if (showAmounts) {
+            doc.font('Helvetica').fontSize(5).fillColor('#FFD0C0')
+              .text('● CONFIDENTIAL', PM, 11 * MM, { width: PCW, align: 'right', lineBreak: false });
+          }
+          return 18 * MM;
+        }
+
+        let y = drawDnHeader();
+
+        // ── Order number bar (dark) ──────────────────────────────────────
+        const orderLine = [order.order_num, batchNum != null ? `Batch ${batchNum}` : null]
+          .filter(Boolean).join(' · ');
+        fillRect(doc, PM, y, PCW, 9.5 * MM, '#0F172A');
+        // Coral left accent stripe
+        fillRect(doc, PM, y, 2.5 * MM, 9.5 * MM, CORAL);
+        doc.font('Helvetica-Bold').fontSize(10).fillColor(WHITE)
+          .text(orderLine, PM + 6 * MM, y + 2.6 * MM, { lineBreak: false });
+
+        const todayFmt = fmtDate(new Date().toISOString().split('T')[0]);
+        const dueLabel = batch ? `Delivery: ${fmtDate(delivDate)}` : `Due: ${fmtDate(delivDate)}`;
+        doc.font('Helvetica').fontSize(6.5).fillColor('#94A3B8')
+          .text(`${dueLabel}  ·  Issued: ${todayFmt}`, PM, y + 2.9 * MM,
+            { width: PCW - 3 * MM, align: 'right', lineBreak: false });
+        y += 13 * MM;
+
+        // ── Deliver To + Logistics (2-column) ────────────────────────────
+        const COL_W  = (PCW / 2) - 5 * MM;
+        const COL2_X = PM + PCW / 2 + 5 * MM;
+        let   ly     = y;  // left  column tracker
+        let   ry     = y;  // right column tracker
+
+        // Left: client block
+        fillRect(doc, PM, ly, 2 * MM, 4 * MM, CORAL);
+        doc.font('Helvetica-Bold').fontSize(6.5).fillColor(CORAL)
+          .text('DELIVER TO', PM + 4 * MM, ly, { lineBreak: false });
+        ly += 5.5 * MM;
+        doc.font('Helvetica-Bold').fontSize(12).fillColor('#111111')
+          .text(order.client || '—', PM, ly, { width: COL_W, lineBreak: false });
+        ly += 6 * MM;
+        if (order.contact_person) {
+          doc.font('Helvetica').fontSize(8).fillColor(DGRAY)
+            .text(order.contact_person, PM, ly, { width: COL_W, lineBreak: false });
+          ly += 4 * MM;
+        }
+        if (order.delivery_contact && order.delivery_contact !== order.contact_person) {
+          doc.font('Helvetica').fontSize(8).fillColor(DGRAY)
+            .text(order.delivery_contact, PM, ly, { width: COL_W, lineBreak: false });
+          ly += 4 * MM;
+        }
+        if (delivLoc) {
+          doc.font('Helvetica').fontSize(7.5).fillColor('#6B7280')
+            .text(delivLoc, PM, ly, { width: COL_W });
+          ly = doc.y + 2 * MM;
+        }
+
+        // Right: logistics / order detail fields
+        fillRect(doc, COL2_X, ry, 2 * MM, 4 * MM, CORAL);
+        doc.font('Helvetica-Bold').fontSize(6.5).fillColor(CORAL)
+          .text(batch ? 'LOGISTICS' : 'ORDER DETAILS', COL2_X + 4 * MM, ry, { lineBreak: false });
+        ry += 5.5 * MM;
+
+        const rightFields = batch ? [
+          { label: 'DRIVER',   value: batch.driver   || '—' },
+          { label: 'VEHICLE',  value: batch.vehicle  || '—' },
+          { label: 'DATE',     value: fmtDate(delivDate) },
+          ...(showAmounts && order.invoice_number ? [{ label: 'INVOICE #', value: order.invoice_number }] : []),
+        ] : [
+          ...(order.quote_number   ? [{ label: 'QUOTE #',       value: order.quote_number }]   : []),
+          ...(order.invoice_number ? [{ label: 'INVOICE #',     value: order.invoice_number }] : []),
+          { label: 'SALES REP',      value: order.author        || '—' },
+          { label: 'PAYMENT TERMS',  value: order.payment_terms || '—' },
+        ];
+
+        rightFields.forEach(({ label, value }) => {
+          doc.font('Helvetica-Bold').fontSize(6).fillColor('#9CA3AF')
+            .text(label, COL2_X, ry, { lineBreak: false });
+          doc.font('Helvetica-Bold').fontSize(8).fillColor('#111111')
+            .text(String(value), COL2_X + 24 * MM, ry, { width: COL_W - 24 * MM, lineBreak: false });
+          ry += 5 * MM;
+        });
+
+        y = Math.max(ly, ry) + 4 * MM;
+
+        // ── Instructions boxes ────────────────────────────────────────────
+        if (order.delivery_instructions) {
+          const bxH = 10 * MM;
+          fillRect(doc, PM, y, PCW, bxH, '#FFF7ED');
+          doc.save().rect(PM, y, PCW, bxH).lineWidth(1).strokeColor('#FED7AA').stroke().restore();
+          doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#92400E')
+            .text('Special instructions: ', PM + 3 * MM, y + 3 * MM, { continued: true, lineBreak: false });
+          doc.font('Helvetica').fontSize(7.5).fillColor('#92400E')
+            .text(order.delivery_instructions, { lineBreak: false });
+          y += bxH + 3 * MM;
+        }
+        if (batch && batch.notes) {
+          const bxH = 10 * MM;
+          fillRect(doc, PM, y, PCW, bxH, '#F0F9FF');
+          doc.save().rect(PM, y, PCW, bxH).lineWidth(1).strokeColor('#BAE6FD').stroke().restore();
+          doc.font('Helvetica-Bold').fontSize(7.5).fillColor('#0369A1')
+            .text('Batch notes: ', PM + 3 * MM, y + 3 * MM, { continued: true, lineBreak: false });
+          doc.font('Helvetica').fontSize(7.5).fillColor('#0369A1')
+            .text(batch.notes, { lineBreak: false });
+          y += bxH + 3 * MM;
+        }
+
+        y += 2 * MM;
+
+        // ── Section label + items table ───────────────────────────────────
+        fillRect(doc, PM, y, 2 * MM, 4.5 * MM, CORAL);
+        doc.font('Helvetica-Bold').fontSize(7).fillColor('#374151')
+          .text(`ITEMS${batchNum != null ? ` — BATCH ${batchNum}` : ''}`, PM + 4 * MM, y + 0.5 * MM, { lineBreak: false });
+        y += 6.5 * MM;
+
+        function drawDnTableHeader(atY) {
+          fillRect(doc, PM, atY, PCW, DN_HDR, '#111827');
+          dnCols.forEach(col => {
+            const x    = PM + col.x;
+            const opts = { font: 'Helvetica-Bold', size: 6.5, color: WHITE, maxW: col.w };
+            if (col.right)       drawRight(doc, col.header, x + col.w, atY + 1.5 * MM, opts);
+            else if (col.centre) drawCenter(doc, col.header, x + col.w / 2, atY + 1.5 * MM, opts);
+            else                 drawLeft(doc, col.header, x, atY + 1.5 * MM, opts);
+          });
+          return atY + DN_HDR;
+        }
+        y = drawDnTableHeader(y);
+
+        // Item rows
+        regularItems.forEach((item, idx) => {
+          if (y + DN_ROW > PH - DN_BOT) {
+            doc.addPage();
+            y = drawDnHeader() + 4 * MM;
+            y = drawDnTableHeader(y);
+          }
+          fillRect(doc, PM, y, PCW, DN_ROW, idx % 2 === 0 ? LGRAY : WHITE);
+          doc.save().moveTo(PM, y + DN_ROW).lineTo(PM + PCW, y + DN_ROW)
+            .lineWidth(0.2).stroke(MGRAY).restore();
+
+          const spec = [item.size, item.finish_type, item.finish_color, item.wood_type]
+            .filter(Boolean).join(' · ') || item.description || '—';
+          const rowTotal = (parseFloat(item.unit_price) || 0) * (parseInt(item.quantity) || 1);
+          const vals = {
+            idx:        String(idx + 1),
+            category:   item.category || '—',
+            spec,
+            qty:        String(parseInt(item.quantity) || 0),
+            unit_price: `KES ${fmtKes(item.unit_price)}`,
+            total:      `KES ${fmtKes(rowTotal)}`,
+          };
+          dnCols.forEach(col => {
+            const x    = PM + col.x;
+            const text = vals[col.key] || '—';
+            const opts = { font: col.bold ? 'Helvetica-Bold' : 'Helvetica', size: 6.5, color: DGRAY, maxW: col.w };
+            if (col.right)       drawRight(doc, text, x + col.w, y + 1.5 * MM, opts);
+            else if (col.centre) drawCenter(doc, text, x + col.w / 2, y + 1.5 * MM, opts);
+            else                 drawLeft(doc, text, x, y + 1.5 * MM, opts);
+          });
+          y += DN_ROW;
+        });
+
+        // ── Amounts footer (internal copy) ────────────────────────────────
+        if (showAmounts) {
+          // Items subtotal
+          const subH = 6 * MM;
+          fillRect(doc, PM, y, PCW, subH, WHITE);
+          doc.save().moveTo(PM, y + subH).lineTo(PM + PCW, y + subH)
+            .lineWidth(0.8).stroke('#E5E7EB').restore();
+          drawRight(doc, `Items subtotal   KES ${fmtKes(itemsSubtotal)}`,
+            PM + PCW, y + 1.5 * MM, { font: 'Helvetica', size: 7, color: '#6B7280', maxW: PCW });
+          y += subH;
+
+          chargeItems.forEach(ci => {
+            const ciH = 5.5 * MM;
+            fillRect(doc, PM, y, PCW, ciH, WHITE);
+            doc.save().moveTo(PM, y + ciH).lineTo(PM + PCW, y + ciH)
+              .lineWidth(0.2).stroke(MGRAY).restore();
+            drawLeft(doc, ci.category, PM, y + 1 * MM, { size: 7, color: '#6B7280', maxW: PCW - 35 * MM });
+            drawRight(doc, `KES ${fmtKes(ci.unit_price)}`, PM + PCW, y + 1 * MM,
+              { size: 7, color: DGRAY, maxW: 35 * MM });
+            y += ciH;
+          });
+
+          // Contract total dark bar
+          fillRect(doc, PM, y, PCW, 8.5 * MM, '#111827');
+          drawLeft(doc, 'CONTRACT TOTAL', PM + 2 * MM, y + 1.5 * MM,
+            { font: 'Helvetica-Bold', size: 7.5, color: WHITE });
+          drawRight(doc, `KES ${fmtKes(contractTotal)}`, PM + PCW, y + 1.5 * MM,
+            { font: 'Helvetica-Bold', size: 9, color: CORAL, maxW: PCW });
+          y += 11 * MM;
+        }
+
+        // ── Total pieces badge ────────────────────────────────────────────
+        y += 3 * MM;
+        const BADGE_W = 32 * MM;
+        const BADGE_H = 17 * MM;
+        const BADGE_X = PM + PCW - BADGE_W;
+        fillRect(doc, BADGE_X, y, BADGE_W, BADGE_H, '#FFF5F2');
+        doc.save().rect(BADGE_X, y, BADGE_W, BADGE_H).lineWidth(2).strokeColor(CORAL).stroke().restore();
+        // Coral top accent strip
+        fillRect(doc, BADGE_X, y, BADGE_W, 3.5 * MM, CORAL);
+        doc.font('Helvetica-Bold').fontSize(5.5).fillColor(WHITE)
+          .text('TOTAL PIECES', BADGE_X, y + 1 * MM, { width: BADGE_W, align: 'center', lineBreak: false });
+        doc.font('Helvetica-Bold').fontSize(22).fillColor(CORAL)
+          .text(String(totalPieces), BADGE_X, y + 5.5 * MM, { width: BADGE_W, align: 'center', lineBreak: false });
+        y += BADGE_H + 5 * MM;
+
+        // ── Payment summary (internal only) ──────────────────────────────
+        if (showAmounts) {
+          const summaryCards = [
+            { label: 'Contract Total', value: `KES ${fmtKes(contractTotal)}`, color: '#111111', accent: '#1F2937' },
+            { label: 'Amount Paid',    value: `KES ${fmtKes(totalPaid)}`,     color: '#16A34A', accent: '#16A34A' },
+            { label: 'Balance Due',    value: `KES ${fmtKes(balance)}`,       color: balance > 0 ? CORAL : '#16A34A', accent: balance > 0 ? CORAL : '#16A34A' },
+          ];
+          const CARD_GAP = 4 * MM;
+          const CARD_W   = (PCW - 2 * CARD_GAP) / 3;
+          const CARD_H   = 20 * MM;
+          let cx = PM;
+          summaryCards.forEach(({ label, value, color, accent }) => {
+            const isBalance = label === 'Balance Due';
+            const bgColor   = isBalance && balance > 0 ? '#FFF5F2' : '#F9FAFB';
+            fillRect(doc, cx, y, CARD_W, CARD_H, bgColor);
+            doc.save().rect(cx, y, CARD_W, CARD_H).lineWidth(1.5).strokeColor(accent).stroke().restore();
+            // Top accent stripe
+            fillRect(doc, cx, y, CARD_W, 2.5 * MM, accent);
+            doc.font('Helvetica-Bold').fontSize(6).fillColor('#6B7280')
+              .text(label.toUpperCase(), cx, y + 6 * MM, { width: CARD_W, align: 'center', lineBreak: false });
+            doc.font('Helvetica-Bold').fontSize(11).fillColor(color)
+              .text(value, cx, y + 12 * MM, { width: CARD_W, align: 'center', lineBreak: false });
+            cx += CARD_W + CARD_GAP;
+          });
+          y += CARD_H + 5 * MM;
+        }
+
+        // ── Signature block ───────────────────────────────────────────────
+        const SIG_H     = 30 * MM;
+        fillRect(doc, PM, y, PCW, SIG_H, '#F9FAFB');
+        // Coral top accent
+        fillRect(doc, PM, y, PCW, 1.5 * MM, CORAL);
+        const SIG_START = y + 5 * MM;
+        const SIG_GAP   = 6 * MM;
+        const SIG_W     = (PCW - 2 * SIG_GAP) / 3;
+        ['Prepared by (Canvas Guy)', 'Delivered by', 'Received by (Client)'].forEach((label, i) => {
+          const sx       = PM + i * (SIG_W + SIG_GAP);
+          const sigLineY = SIG_START + 11 * MM;
+          doc.font('Helvetica-Bold').fontSize(6.5).fillColor('#6B7280')
+            .text(label.toUpperCase(), sx, SIG_START, { width: SIG_W, lineBreak: false });
+          // Dotted signature line
+          doc.save().moveTo(sx, sigLineY).lineTo(sx + SIG_W, sigLineY)
+            .lineWidth(0.75).dash(2, { space: 2 }).strokeColor('#374151').stroke().restore();
+          doc.font('Helvetica').fontSize(6.5).fillColor('#9CA3AF')
+            .text('Name & Date', sx, sigLineY + 2.5 * MM, { width: SIG_W, lineBreak: false });
+        });
+        y += SIG_H + 4 * MM;
+
+        // ── Footer ────────────────────────────────────────────────────────
+        fillRect(doc, PM, y, PCW, 1.5 * MM, CORAL);
+        y += 4 * MM;
+        doc.font('Helvetica').fontSize(6.5).fillColor('#9CA3AF')
+          .text('Canvas Guy Limited  ·  Nairobi, Kenya', PM, y, { lineBreak: false });
+        const footRight = [order.order_num, showAmounts ? 'CONFIDENTIAL' : null].filter(Boolean).join(' · ');
+        if (footRight) {
+          doc.font('Helvetica-Bold').fontSize(6.5).fillColor('#9CA3AF')
+            .text(footRight, PM, y, { width: PCW, align: 'right', lineBreak: false });
+        }
+
         doc.end();
         return;
       }

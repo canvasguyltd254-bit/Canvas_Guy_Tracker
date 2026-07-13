@@ -313,18 +313,16 @@ export default function DeliveryTab({ orderId, order, userRole, onUpdate }) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
         <a
-          href={`/orders/${orderId}/delivery-note?batch=${batch.id}`}
-          target="_blank"
+          href={`/api/orders/${orderId}/delivery-note/pdf?batch=${batch.id}`}
           style={{ padding: '4px 10px', borderRadius: 5, fontSize: 11, fontWeight: 600, border: '1px solid #d1d5db', background: '#fff', color: '#374151', textDecoration: 'none' }}
         >
-          🖨 Delivery Note
+          ⬇ Delivery Note
         </a>
         <a
-          href={`/orders/${orderId}/delivery-note?batch=${batch.id}&show=amounts`}
-          target="_blank"
+          href={`/api/orders/${orderId}/delivery-note/pdf?batch=${batch.id}&show=amounts`}
           style={{ padding: '4px 10px', borderRadius: 5, fontSize: 11, fontWeight: 600, border: '1px solid #d1d5db', background: '#fff', color: '#374151', textDecoration: 'none' }}
         >
-          🖨 Internal Copy
+          ⬇ Internal Copy
         </a>
         {primaryNext && canUpdate && (
           primaryNext === 'Delivered'
@@ -464,6 +462,22 @@ export default function DeliveryTab({ orderId, order, userRole, onUpdate }) {
         <div style={card}>
           <div style={sectionLabel}>Delivery</div>
 
+          {/* PDF download buttons — always visible once delivery is active */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: isAlreadyDelivered ? 0 : 10 }}>
+            <a
+              href={`/api/orders/${orderId}/delivery-note/pdf`}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '9px 12px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, color: '#374151', textDecoration: 'none', textAlign: 'center' }}
+            >
+              ⬇ Delivery Note
+            </a>
+            <a
+              href={`/api/orders/${orderId}/delivery-note/pdf?show=amounts`}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '9px 12px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, color: '#374151', textDecoration: 'none', textAlign: 'center' }}
+            >
+              ⬇ Internal Copy
+            </a>
+          </div>
+
           {isAlreadyDelivered ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{ fontSize: 18 }}>✅</span>
@@ -476,24 +490,6 @@ export default function DeliveryTab({ orderId, order, userRole, onUpdate }) {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {/* Print buttons — side by side */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <a
-                  href={`/orders/${orderId}/delivery-note`}
-                  target="_blank"
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '9px 12px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, color: '#374151', textDecoration: 'none', textAlign: 'center' }}
-                >
-                  🖨 Delivery Note
-                </a>
-                <a
-                  href={`/orders/${orderId}/delivery-note?show=amounts`}
-                  target="_blank"
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, padding: '9px 12px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontWeight: 600, color: '#374151', textDecoration: 'none', textAlign: 'center' }}
-                >
-                  🖨 Internal Copy
-                </a>
-              </div>
-
               {/* Mark Delivered — full width */}
               {canDeliveryAct && !simpleConfirm && (
                 <button

@@ -2,7 +2,6 @@
 import{useState,useEffect,useCallback}from"react";
 import{createClient}from"@/shared/supabase/client";
 import{ALL_STATUS_COLORS,ss,ROLES_CAN_ADVANCE}from"@/modules/orders/components/constants";
-import{generateReportPDF}from"@/shared/pdf/generateReport";
 
 const PROD_STAGES=["Material Check","Production","Quality Control","Ready for Delivery"];
 const STAGE_ICONS={"Material Check":"📦","Production":"🔨","Quality Control":"🔍","Ready for Delivery":"✅"};
@@ -63,7 +62,13 @@ export default function ProductionBoard(){
       // Build workload summary for weekly
       let wl=null;
       if(mode==="weekly"){const cm={};exportOrders.forEach(o=>{(itemMap[o.id]||[]).forEach(i=>{const cat=i.category||"Other";cm[cat]=(cm[cat]||0)+(i.quantity||1)})});wl=Object.entries(cm).map(([label,qty])=>({label,qty})).filter(x=>x.qty>0)}
-      await generateReportPDF({title,subtitle,orders:exportOrders,allItems:itemMap,payTotals:payMap,userName:qcBy,showFinancials:false,workloadSummary:wl});
+      const res=await fetch("/api/reports/pdf",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({reportLabel:title+(subtitle?` — ${subtitle}`:""),orders:exportOrders,allItems:itemMap,payTotals:payMap,userName:qcBy,showFinancials:false,workloadSummary:wl,dateFrom:null,dateTo:null})});
+      if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.detail||e.error||"PDF generation failed")}
+      const blob=await res.blob();
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement("a");
+      a.href=url;a.download=`${title.replace(/[^a-zA-Z0-9]/g,"_")}_${new Date().toISOString().split("T")[0]}.pdf`;
+      a.click();URL.revokeObjectURL(url);
     }catch(err){alert("PDF error: "+err.message)}
     setExporting(false);setExportMode(null);
   };

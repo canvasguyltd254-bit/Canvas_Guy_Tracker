@@ -8,7 +8,8 @@ const nextConfig = {
   // the deployment because they're referenced as path strings, not imports.
   experimental: {
     outputFileTracingIncludes: {
-      '/api/reports/pdf': ['./scripts/**'],
+      '/api/reports/pdf':                   ['./scripts/**', './public/canvas-guy-logo.png'],
+      '/api/orders/[id]/delivery-note/pdf': ['./scripts/**', './public/canvas-guy-logo.png'],
     },
   },
 };
