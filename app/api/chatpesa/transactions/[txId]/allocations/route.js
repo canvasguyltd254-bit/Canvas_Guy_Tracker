@@ -13,9 +13,10 @@ export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { recalcPurchasePayment } from '@/shared/lib/recalcPurchasePayment';
+import { postChatpesaAllocationJournal } from '@/shared/lib/accountingService';
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales'];
-const PETTY_CASH_CATEGORIES = ['Transport','Fuel','Lunch','Airtime','Casual wages','Workshop supplies','Other'];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -41,32 +42,6 @@ async function recalcTransactionStatus(txId, userId) {
     .eq('id', txId);
 }
 
-async function recalcPurchasePayment(purchaseId) {
-  if (!purchaseId) return;
-
-  const [{ data: chatpesaAllocs }, { data: manualPmts }, { data: purchase }] = await Promise.all([
-    serviceClient.from('chatpesa_payment_allocations').select('amount').eq('supplier_purchase_id', purchaseId),
-    serviceClient.from('manual_supplier_payments').select('amount').eq('supplier_purchase_id', purchaseId),
-    serviceClient.from('supplier_purchases').select('total_amount').eq('id', purchaseId).single(),
-  ]);
-
-  const totalPaid = [
-    ...(chatpesaAllocs || []),
-    ...(manualPmts    || []),
-  ].reduce((s, r) => s + parseFloat(r.amount || 0), 0);
-
-  const totalAmount = parseFloat(purchase?.total_amount || 0);
-  const amountPaid  = Math.min(totalPaid, totalAmount);
-
-  let paymentStatus = 'Unpaid';
-  if (amountPaid > 0 && amountPaid < totalAmount) paymentStatus = 'Part Paid';
-  if (amountPaid >= totalAmount)                   paymentStatus = 'Paid';
-
-  await serviceClient
-    .from('supplier_purchases')
-    .update({ amount_paid: amountPaid, payment_status: paymentStatus })
-    .eq('id', purchaseId);
-}
 
 // ── POST ─────────────────────────────────────────────────────────────────────
 
@@ -92,7 +67,7 @@ export async function POST(request, { params }) {
     // Validate transaction exists and is a debit
     const { data: tx } = await serviceClient
       .from('chatpesa_transactions')
-      .select('id, tx_type, match_status, amount')
+      .select('id, tx_type, match_status, amount, transaction_date')
       .eq('id', params.txId)
       .single();
 
@@ -111,8 +86,28 @@ export async function POST(request, { params }) {
       return NextResponse.json({ error: 'supplier_id required for opening_balance allocation' }, { status: 400 });
     }
     if (allocation_type === 'petty_cash') {
-      if (!petty_cash_category || !PETTY_CASH_CATEGORIES.includes(petty_cash_category)) {
-        return NextResponse.json({ error: `petty_cash_category must be one of: ${PETTY_CASH_CATEGORIES.join(', ')}` }, { status: 400 });
+      if (!petty_cash_category?.trim()) {
+        return NextResponse.json({ error: 'petty_cash_category is required for petty_cash allocation' }, { status: 400 });
+      }
+      if (!body.accounting_category_id) {
+        return NextResponse.json({ error: 'accounting_category_id is required for petty_cash allocation' }, { status: 400 });
+      }
+    }
+
+    // Overpayment guard — if allocating to a purchase, check remaining balance first
+    if (allocation_type === 'supplier_purchase' && supplier_purchase_id) {
+      const { data: purchase } = await serviceClient
+        .from('supplier_purchases')
+        .select('total_amount, amount_paid')
+        .eq('id', supplier_purchase_id)
+        .single();
+      if (purchase) {
+        const remaining = parseFloat(purchase.total_amount || 0) - parseFloat(purchase.amount_paid || 0);
+        if (allocAmount > remaining + 0.01) {
+          return NextResponse.json({
+            error: `Overpayment: this purchase has KSh ${Math.round(remaining).toLocaleString()} remaining — allocating KSh ${Math.round(allocAmount).toLocaleString()} would exceed the total`,
+          }, { status: 400 });
+        }
       }
     }
 
@@ -129,16 +124,20 @@ export async function POST(request, { params }) {
       }, { status: 400 });
     }
 
+    // accounting_category_id — required for petty_cash (validated above), optional otherwise
+    const { accounting_category_id } = body;
+
     // Insert allocation
     const alloc = {
-      transaction_id:      params.txId,
+      transaction_id:       params.txId,
       allocation_type,
-      amount:              allocAmount,
-      note:                note?.trim() || null,
-      created_by:          user.id,
+      amount:               allocAmount,
+      note:                 note?.trim() || null,
+      created_by:           user.id,
       supplier_purchase_id: allocation_type === 'supplier_purchase' ? supplier_purchase_id : null,
       supplier_id:          allocation_type === 'opening_balance'   ? supplier_id          : null,
       petty_cash_category:  allocation_type === 'petty_cash'        ? petty_cash_category  : null,
+      accounting_category_id: accounting_category_id || null,
     };
 
     const { data, error } = await serviceClient
@@ -152,11 +151,34 @@ export async function POST(request, { params }) {
       return NextResponse.json({ error: 'Failed to create allocation' }, { status: 500 });
     }
 
-    // Recalculate statuses
+    // Recalculate payment totals + transaction match status
     await Promise.all([
       recalcTransactionStatus(params.txId, user.id),
-      recalcPurchasePayment(supplier_purchase_id),
+      recalcPurchasePayment(supplier_purchase_id, serviceClient),
     ]);
+
+    // Accounting: post journal (fire-and-forget — allocation is already saved)
+    // Use the Chatpesa transaction's own date — not today — to put the entry in
+    // the correct accounting period.
+    const allocationDate = tx.transaction_date || new Date().toISOString().split('T')[0];
+    const { id: jId, error: jErr } = await postChatpesaAllocationJournal({
+      allocationId:   data.id,
+      allocationDate,
+      amount:         allocAmount,
+      allocationType: allocation_type,
+      categoryId:     accounting_category_id || null,
+      pettyLabel:     petty_cash_category || null,
+      postedBy:       user.id,
+      client:         serviceClient,
+    });
+    if (jId) {
+      await serviceClient
+        .from('chatpesa_payment_allocations')
+        .update({ journal_entry_id: jId })
+        .eq('id', data.id);
+    } else if (jErr && !jErr.startsWith('SKIP:')) {
+      console.error('POST allocations — accounting post failed:', jErr);
+    }
 
     return NextResponse.json({ success: true, data }, { status: 201 });
   } catch (err) {
@@ -177,15 +199,28 @@ export async function DELETE(request, { params }) {
     const allocationId = searchParams.get('allocation_id');
     if (!allocationId) return NextResponse.json({ error: 'Missing allocation_id' }, { status: 400 });
 
-    // Fetch allocation before deleting (need purchase_id for recalc)
+    // Fetch allocation before deleting (need purchase_id for recalc + journal check)
     const { data: alloc } = await serviceClient
       .from('chatpesa_payment_allocations')
-      .select('id, transaction_id, supplier_purchase_id')
+      .select('id, transaction_id, supplier_purchase_id, journal_entry_id')
       .eq('id', allocationId)
       .eq('transaction_id', params.txId)
       .single();
 
     if (!alloc) return NextResponse.json({ error: 'Allocation not found' }, { status: 404 });
+
+    // Block deletion if this allocation is already posted to the General Ledger.
+    // Deleting the allocation without reversing the journal would leave the ledger
+    // overstating Chatpesa payments and understating the AP balance.
+    if (alloc.journal_entry_id) {
+      return NextResponse.json(
+        {
+          error: 'Cannot delete a posted allocation. This allocation has a journal entry in the General Ledger. Create a reversal first.',
+          journal_entry_id: alloc.journal_entry_id,
+        },
+        { status: 409 },
+      );
+    }
 
     const { error } = await serviceClient
       .from('chatpesa_payment_allocations')
@@ -199,7 +234,7 @@ export async function DELETE(request, { params }) {
 
     await Promise.all([
       recalcTransactionStatus(params.txId, user.id),
-      recalcPurchasePayment(alloc.supplier_purchase_id),
+      recalcPurchasePayment(alloc.supplier_purchase_id, serviceClient),
     ]);
 
     return NextResponse.json({ success: true, message: 'Allocation removed' });

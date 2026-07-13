@@ -2,16 +2,19 @@
  * app/api/reports/pdf/route.js
  *
  * POST /api/reports/pdf
- * Spawns scripts/build_report.js as a Node.js child process (avoids webpack
- * bundling pdfkit). Same stdin/stdout pattern as the old Python script.
+ * Imports build_report.js directly so Next.js/Vercel can trace pdfkit as a
+ * normal dependency — no child process, no missing-module surprises on Vercel.
  */
 
 export const runtime = 'nodejs';
 
-import { NextResponse }        from 'next/server';
+import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole } from '@/shared/lib/api-auth';
-import { execFileSync }        from 'child_process';
-import path                    from 'path';
+
+// Static import so webpack sees require('pdfkit') inside build_report.js,
+// externalises it via serverExternalPackages, and Vercel traces + includes it.
+import buildReportModule from '../../../../scripts/build_report.js';
+const buildReportPDF = buildReportModule.buildReportPDF ?? buildReportModule.default?.buildReportPDF ?? buildReportModule;
 
 export async function POST(request) {
   try {
@@ -24,19 +27,12 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
 
-    const scriptPath = path.join(process.cwd(), 'scripts', 'build_report.js');
-    const json       = JSON.stringify(body);
-
     let pdfBuffer;
     try {
-      pdfBuffer = execFileSync(
-        process.execPath,   // the Node.js binary that is already running — always available
-        [scriptPath],
-        { input: json, maxBuffer: 20 * 1024 * 1024, timeout: 30_000 },
-      );
+      pdfBuffer = await buildReportPDF(body);
     } catch (err) {
-      const detail = err.stderr?.toString() || err.message;
-      console.error('build_report.js error:', detail);
+      const detail = err?.message || String(err);
+      console.error('buildReportPDF error:', detail);
       return NextResponse.json({ error: 'PDF generation failed', detail }, { status: 500 });
     }
 

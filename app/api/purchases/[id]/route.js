@@ -58,7 +58,7 @@ export async function PATCH(request, { params }) {
     // Fetch current record to merge amounts correctly
     const { data: current } = await serviceClient
       .from('supplier_purchases')
-      .select('total_amount, amount_paid')
+      .select('total_amount, amount_paid, journal_entry_id')
       .eq('id', params.id)
       .single();
 
@@ -66,15 +66,34 @@ export async function PATCH(request, { params }) {
       return NextResponse.json({ error: 'Purchase not found' }, { status: 404 });
     }
 
+    // Block any change that would make the operational record disagree with the
+    // posted journal entry. Non-financial fields (invoice_path, invoice_name,
+    // items_bought description, notes) are still editable.
+    if (current.journal_entry_id) {
+      const POSTED_LOCKED_FIELDS = ['supplier_id', 'purchase_date', 'total_amount', 'amount_paid', 'accounting_category_id'];
+      const blocked = POSTED_LOCKED_FIELDS.filter(f => body[f] !== undefined);
+      if (blocked.length > 0) {
+        return NextResponse.json(
+          {
+            error: 'Cannot change financial fields on a posted purchase. Create a reversal entry first.',
+            journal_entry_id: current.journal_entry_id,
+            blocked_fields:   blocked,
+          },
+          { status: 409 },
+        );
+      }
+    }
+
     const safe = {};
-    if (body.supplier_id !== undefined)    safe.supplier_id    = body.supplier_id;
-    if (body.purchase_date !== undefined)  safe.purchase_date  = body.purchase_date;
-    if (body.items_bought !== undefined)   safe.items_bought   = body.items_bought?.trim() || null;
-    if (body.total_amount !== undefined)   safe.total_amount   = parseFloat(body.total_amount) || 0;
-    if (body.invoice_path !== undefined)   safe.invoice_path   = body.invoice_path || null;
-    if (body.invoice_name !== undefined)   safe.invoice_name   = body.invoice_name || null;
-    if (body.amount_paid !== undefined)    safe.amount_paid    = parseFloat(body.amount_paid) || 0;
-    if (body.notes !== undefined)          safe.notes          = body.notes?.trim() || null;
+    if (body.supplier_id !== undefined)               safe.supplier_id    = body.supplier_id;
+    if (body.purchase_date !== undefined)             safe.purchase_date  = body.purchase_date;
+    if (body.items_bought !== undefined)              safe.items_bought   = body.items_bought?.trim() || null;
+    if (body.total_amount !== undefined)              safe.total_amount   = parseFloat(body.total_amount) || 0;
+    if (body.invoice_path !== undefined)              safe.invoice_path   = body.invoice_path || null;
+    if (body.invoice_name !== undefined)              safe.invoice_name   = body.invoice_name || null;
+    if (body.amount_paid !== undefined)               safe.amount_paid    = parseFloat(body.amount_paid) || 0;
+    if (body.notes !== undefined)                     safe.notes          = body.notes?.trim() || null;
+    if (body.accounting_category_id !== undefined)    safe.accounting_category_id = body.accounting_category_id || null;
 
     // Recalculate status from the merged totals
     const finalTotal = safe.total_amount ?? parseFloat(current.total_amount);
@@ -135,6 +154,25 @@ export async function DELETE(request, { params }) {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role, ['admin']);
     if (authError) return authError;
+
+    // Block deletion if purchase has been posted to the General Ledger.
+    const { data: purchase } = await serviceClient
+      .from('supplier_purchases')
+      .select('id, journal_entry_id')
+      .eq('id', params.id)
+      .single();
+
+    if (!purchase) return NextResponse.json({ error: 'Purchase not found' }, { status: 404 });
+
+    if (purchase.journal_entry_id) {
+      return NextResponse.json(
+        {
+          error: 'Cannot delete a posted purchase. This purchase has a journal entry in the General Ledger. Create a reversal entry first.',
+          journal_entry_id: purchase.journal_entry_id,
+        },
+        { status: 409 },
+      );
+    }
 
     const { error } = await serviceClient
       .from('supplier_purchases')

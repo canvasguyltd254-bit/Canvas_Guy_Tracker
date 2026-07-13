@@ -66,6 +66,7 @@ export function genId(){return Date.now().toString(36)+Math.random().toString(36
 // ── Delivery Batch ────────────────────────────────────────────────────────────
 
 export const BATCH_STATUSES = [
+  'Quality Control',
   'Planned',
   'Picking',
   'Loaded',
@@ -80,7 +81,7 @@ export const ALL_BATCH_STATUSES = [...BATCH_STATUSES, ...BATCH_EXCEPTION_STATUSE
 
 // Active = counts quantity_planned against Batched Qty
 export const BATCH_ACTIVE_STATUSES = new Set([
-  'Planned', 'Picking', 'Loaded', 'Out for Delivery', 'Delivered', 'Signed',
+  'Quality Control', 'Planned', 'Picking', 'Loaded', 'Out for Delivery', 'Delivered', 'Signed',
 ]);
 
 // Fulfilled = counts quantity_delivered toward Delivered Qty
@@ -94,6 +95,7 @@ export const ROLES_CAN_UPDATE_BATCH = ['admin', 'production_manager', 'head_of_s
 
 // Colour map: { bg, text, border } — matches ALL_STATUS_COLORS pattern
 export const BATCH_STATUS_COLORS = {
+  'Quality Control':   { bg: '#FCE4EC', text: '#C62828', border: '#EF9A9A' },
   'Planned':           { bg: '#f3f4f6', text: '#374151', border: '#d1d5db' },
   'Picking':           { bg: '#eff6ff', text: '#1d4ed8', border: '#bfdbfe' },
   'Loaded':            { bg: '#faf5ff', text: '#7c3aed', border: '#ddd6fe' },
@@ -107,6 +109,7 @@ export const BATCH_STATUS_COLORS = {
 
 // Valid forward transitions per batch status
 export const BATCH_STATUS_TRANSITIONS = {
+  'Quality Control':  ['Planned', 'Cancelled'],
   'Planned':          ['Picking', 'Cancelled'],
   'Picking':          ['Loaded', 'Cancelled'],
   'Loaded':           ['Out for Delivery', 'Cancelled'],

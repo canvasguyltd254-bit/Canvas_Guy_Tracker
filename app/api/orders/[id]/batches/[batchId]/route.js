@@ -127,6 +127,35 @@ export async function PATCH(request, { params }) {
         description: `Batch ${batch.batch_number}: ${batch.status} → ${newStatus}${body.reason ? ` — ${body.reason}` : ''}`,
       });
 
+      // ── Completion rule ─────────────────────────────────────────────────────
+      // When a batch is marked Delivered, check if all ordered quantities for
+      // this order have now been delivered. If so, mark the main order Delivered.
+      if (newStatus === 'Delivered') {
+        const { data: fulfillment } = await serviceClient
+          .from('order_item_fulfillment')
+          .select('remaining_qty')
+          .eq('order_id', orderId);
+
+        const allDelivered = fulfillment?.length > 0
+          && fulfillment.every(f => (f.remaining_qty || 0) === 0);
+
+        if (allDelivered) {
+          await serviceClient
+            .from('orders')
+            .update({
+              status: 'Delivered',
+              actual_delivery_date: new Date().toISOString().split('T')[0],
+            })
+            .eq('id', orderId);
+
+          await serviceClient.from('order_activities').insert({
+            order_id: orderId,
+            activity_type: 'status_change',
+            description: 'All quantities delivered — order marked Delivered automatically.',
+          });
+        }
+      }
+
       return NextResponse.json({ success: true, data: { batchId, oldStatus: batch.status, newStatus } });
     }
 

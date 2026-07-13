@@ -70,8 +70,9 @@ function QtyBar({ ordered, batched, delivered }) {
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export default function DeliveryTab({ orderId, order, userRole, onUpdate }) {
-  const isActive  = ACTIVE_STATUSES.has(order?.status);
+  // Batch orders are accessible from Production onwards; simple orders need Ready for Delivery+
   const isBatch   = !!order?.batch_delivery;
+  const isActive  = ACTIVE_STATUSES.has(order?.status) || (isBatch && order?.status === 'Production');
   const canAct    = ROLES_CAN_CREATE_BATCH.includes(userRole);
   // Sales can edit delivery details + mark delivered in simple flow, but cannot create/manage batches
   const canDeliveryAct = canAct || userRole === 'sales';
@@ -453,7 +454,7 @@ export default function DeliveryTab({ orderId, order, userRole, onUpdate }) {
           <div style={{ fontSize: 20, marginBottom: 8 }}>🔒</div>
           <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 4 }}>Delivery not yet available</div>
           <div style={{ fontSize: 12, color: '#9ca3af' }}>
-            Delivery actions unlock once production is complete and the order is Ready for Delivery.
+            Delivery actions unlock once the order reaches Ready for Delivery.
           </div>
         </div>
       )}

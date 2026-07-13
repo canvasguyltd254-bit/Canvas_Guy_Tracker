@@ -9,6 +9,7 @@ export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { postOpeningBalanceJournal } from '@/shared/lib/accountingService';
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales'];
 
@@ -91,14 +92,19 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Supplier name is required' }, { status: 400 });
     }
 
+    const openingBalance = parseFloat(body.opening_balance) || 0;
+
     const safe = {
-      name:               body.name.trim(),
-      contact_person:     body.contact_person?.trim() || null,
-      phone:              body.phone?.trim() || null,
-      email:              body.email?.trim() || null,
-      materials_supplied: body.materials_supplied?.trim() || null,
-      notes:              body.notes?.trim() || null,
-      created_by:         user.id,
+      name:                   body.name.trim(),
+      contact_person:         body.contact_person?.trim() || null,
+      phone:                  body.phone?.trim() || null,
+      email:                  body.email?.trim() || null,
+      materials_supplied:     body.materials_supplied?.trim() || null,
+      notes:                  body.notes?.trim() || null,
+      opening_balance:        openingBalance > 0 ? openingBalance : 0,
+      opening_balance_date:   body.opening_balance_date || null,
+      opening_balance_notes:  body.opening_balance_notes?.trim() || null,
+      created_by:             user.id,
     };
 
     const { data, error } = await serviceClient
@@ -110,6 +116,28 @@ export async function POST(request) {
     if (error) {
       console.error('POST /api/suppliers:', error);
       return NextResponse.json({ error: 'Failed to create supplier' }, { status: 500 });
+    }
+
+    // Post opening balance journal if a balance was provided.
+    // Fire-and-forget — supplier is already saved; journal failure doesn't roll back the record.
+    if (openingBalance > 0) {
+      const { id: jId, error: jErr } = await postOpeningBalanceJournal({
+        supplierId:    data.id,
+        openingBalance,
+        balanceDate:   safe.opening_balance_date || new Date().toISOString().split('T')[0],
+        supplierName:  safe.name,
+        postedBy:      user.id,
+        client:        serviceClient,
+      });
+      if (jId) {
+        await serviceClient
+          .from('suppliers')
+          .update({ opening_balance_journal_entry_id: jId })
+          .eq('id', data.id);
+        data.opening_balance_journal_entry_id = jId;
+      } else if (jErr && !jErr.startsWith('SKIP:')) {
+        console.error('POST /api/suppliers — opening balance journal failed:', jErr);
+      }
     }
 
     return NextResponse.json({ success: true, data }, { status: 201 });

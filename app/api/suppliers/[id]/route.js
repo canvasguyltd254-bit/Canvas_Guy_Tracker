@@ -11,6 +11,7 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
+import { postOpeningBalanceJournal } from '@/shared/lib/accountingService';
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales'];
 
@@ -64,11 +65,22 @@ export async function GET(request, { params }) {
       .order('created_at', { ascending: true });
     chatpesaAllocations = [...chatpesaAllocations, ...(allocBySupplier || [])];
 
-    // Compute stats
-    const totalPurchased = (purchases || []).reduce((s, p) => s + parseFloat(p.total_amount || 0), 0);
-    const totalPaid      = (purchases || []).reduce((s, p) => s + parseFloat(p.amount_paid  || 0), 0);
-    const openingBalance = parseFloat(supplier.opening_balance || 0);
-    const currentBalance = openingBalance + totalPurchased - totalPaid;
+    // Compute stats — use payment transaction tables as source of truth, not
+    // the denormalised amount_paid column (which may lag until recalc runs).
+    const totalPurchased  = (purchases || []).reduce((s, p) => s + parseFloat(p.total_amount || 0), 0);
+    const manualPaid      = (manualPayments || []).reduce((s, p) => s + parseFloat(p.amount || 0), 0);
+    const chatpesaPaid    = chatpesaAllocations
+      .filter(a => a.allocation_type === 'supplier_purchase')
+      .reduce((s, a) => s + parseFloat(a.amount || 0), 0);
+    const chatpesaObPaid  = chatpesaAllocations
+      .filter(a => a.allocation_type === 'opening_balance')
+      .reduce((s, a) => s + parseFloat(a.amount || 0), 0);
+    // total_paid includes ALL credits against this supplier — purchase payments AND
+    // opening-balance Chatpesa allocations — so the identity holds:
+    //   current_balance = opening_balance + total_purchased - total_paid
+    const totalPaid       = manualPaid + chatpesaPaid + chatpesaObPaid;
+    const openingBalance  = parseFloat(supplier.opening_balance || 0);
+    const currentBalance  = openingBalance + totalPurchased - totalPaid;
 
     return NextResponse.json({
       success: true,
@@ -78,10 +90,10 @@ export async function GET(request, { params }) {
         manual_payments:      manualPayments      || [],
         chatpesa_allocations: chatpesaAllocations,
         stats: {
-          total_purchased: totalPurchased,
-          total_paid:      totalPaid,
-          opening_balance: openingBalance,
-          current_balance: Math.max(currentBalance, 0),
+          total_purchased:  totalPurchased,
+          total_paid:       totalPaid,          // manual + chatpesa purchase allocations
+          opening_balance:  openingBalance,
+          current_balance:  Math.max(currentBalance, 0),
         },
       },
     });
@@ -127,6 +139,29 @@ export async function PATCH(request, { params }) {
       return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 });
     }
 
+    // Fetch current record to check if OB journal already exists
+    const { data: current } = await serviceClient
+      .from('suppliers')
+      .select('name, opening_balance, opening_balance_date, opening_balance_journal_entry_id')
+      .eq('id', params.id)
+      .single();
+
+    // Block edits to opening_balance or opening_balance_date once the OB has been
+    // posted to the General Ledger — the journal entry would then disagree with
+    // the operational record. Create a reversal first.
+    if (current?.opening_balance_journal_entry_id) {
+      const obChange = safe.opening_balance !== undefined || safe.opening_balance_date !== undefined;
+      if (obChange) {
+        return NextResponse.json(
+          {
+            error: 'Cannot change the opening balance or its date after posting to the General Ledger. Create a reversal entry first.',
+            journal_entry_id: current.opening_balance_journal_entry_id,
+          },
+          { status: 409 },
+        );
+      }
+    }
+
     const { data, error } = await serviceClient
       .from('suppliers')
       .update(safe)
@@ -137,6 +172,30 @@ export async function PATCH(request, { params }) {
     if (error) {
       console.error('PATCH /api/suppliers/[id]:', error);
       return NextResponse.json({ error: 'Failed to update supplier' }, { status: 500 });
+    }
+
+    // Accounting: post opening balance journal if OB is being set for the first time
+    // (only if no journal exists yet — we don't automatically reverse/re-post on OB edits)
+    const newOb = parseFloat(safe.opening_balance ?? current?.opening_balance ?? 0);
+    if (newOb > 0 && !current?.opening_balance_journal_entry_id) {
+      const obDate = safe.opening_balance_date || current?.opening_balance_date
+        || new Date().toISOString().split('T')[0];
+      const { id: jId, error: jErr } = await postOpeningBalanceJournal({
+        supplierId:     params.id,
+        openingBalance: newOb,
+        balanceDate:    obDate,
+        supplierName:   current?.name || data.name,
+        postedBy:       user.id,
+        client:         serviceClient,
+      });
+      if (jId) {
+        await serviceClient
+          .from('suppliers')
+          .update({ opening_balance_journal_entry_id: jId })
+          .eq('id', params.id);
+      } else if (jErr && !jErr.startsWith('SKIP:')) {
+        console.error('PATCH /api/suppliers/[id] — OB journal failed:', jErr);
+      }
     }
 
     return NextResponse.json({ success: true, data });
@@ -162,6 +221,23 @@ export async function DELETE(request, { params }) {
       return NextResponse.json(
         { error: `Cannot delete: supplier has ${count} purchase record(s). Delete purchases first.` },
         { status: 409 }
+      );
+    }
+
+    // Check for posted opening balance journal
+    const { data: supplierRecord } = await serviceClient
+      .from('suppliers')
+      .select('opening_balance_journal_entry_id')
+      .eq('id', params.id)
+      .single();
+
+    if (supplierRecord?.opening_balance_journal_entry_id) {
+      return NextResponse.json(
+        {
+          error: 'Cannot delete: supplier has a posted opening balance journal entry. Create a reversal first.',
+          journal_entry_id: supplierRecord.opening_balance_journal_entry_id,
+        },
+        { status: 409 },
       );
     }
 

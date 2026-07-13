@@ -145,9 +145,224 @@ function OverviewTab({ supplier, stats, canWrite, onEdit }) {
   );
 }
 
+// ── Add Purchase Modal ────────────────────────────────────────────────────────
+
+const EMPTY_ADD_PURCHASE = {
+  purchase_date: new Date().toISOString().split("T")[0],
+  items_bought: "",
+  total_amount: "",
+  amount_paid: "",
+  accounting_category_id: "",
+  initial_payment_method: "Cash",
+  initial_payment_reference: "",
+  notes: "",
+  order_ids: [],
+};
+
+function AddPurchaseModal({ supplier, onClose, onSaved }) {
+  const [form, setForm] = useState({ ...EMPTY_ADD_PURCHASE });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [categories, setCategories] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [orderSearch, setOrderSearch] = useState("");
+  const [showOrderPicker, setShowOrderPicker] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/accounting-categories").then(r => r.json()).then(d => {
+      if (d.success) setCategories(d.data || []);
+    }).catch(() => {});
+    fetch("/api/orders?status=all&limit=200").then(r => r.json()).then(d => {
+      if (d.success || Array.isArray(d.data)) setOrders(d.data || []);
+    }).catch(() => {});
+  }, []);
+
+  const totalAmt = parseFloat(form.total_amount) || 0;
+  const paidAmt  = parseFloat(form.amount_paid)  || 0;
+
+  const save = async () => {
+    setError("");
+    if (!form.total_amount || totalAmt <= 0) { setError("Total amount must be greater than zero."); return; }
+    if (paidAmt > totalAmt + 0.01) { setError("Amount paid cannot exceed total amount."); return; }
+    setSaving(true);
+    try {
+      const body = {
+        supplier_id:                supplier.id,
+        purchase_date:              form.purchase_date,
+        items_bought:               form.items_bought.trim() || null,
+        total_amount:               totalAmt,
+        amount_paid:                paidAmt,
+        accounting_category_id:     form.accounting_category_id || null,
+        notes:                      form.notes.trim() || null,
+        order_ids:                  form.order_ids,
+        ...(paidAmt > 0 ? {
+          initial_payment_method:    form.initial_payment_method,
+          initial_payment_reference: form.initial_payment_reference.trim() || null,
+        } : {}),
+      };
+      const res  = await fetch("/api/purchases", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || "Save failed");
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+    }
+    setSaving(false);
+  };
+
+  const filteredOrders = orders.filter(o =>
+    !form.order_ids.includes(o.id) &&
+    ((o.order_num || "").toLowerCase().includes(orderSearch.toLowerCase()) ||
+     (o.client   || "").toLowerCase().includes(orderSearch.toLowerCase()))
+  ).slice(0, 30);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}
+      onClick={onClose}>
+      <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "100%", maxWidth: "520px", maxHeight: "92vh", overflowY: "auto" }}
+        onClick={e => e.stopPropagation()}>
+        <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "4px" }}>Record Purchase</h2>
+        <p style={{ fontSize: "13px", color: "#999", marginBottom: "20px" }}>from {supplier.name}</p>
+
+        {error && (
+          <div style={{ background: "#FFF5F5", border: "1px solid #FFCDD2", borderRadius: "6px", padding: "10px 14px", marginBottom: "16px", fontSize: "13px", color: "#C62828" }}>{error}</div>
+        )}
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
+          {/* Purchase date */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={ss.label}>Purchase date</label>
+            <input style={ss.input} type="date" value={form.purchase_date} onChange={e => setForm({ ...form, purchase_date: e.target.value })} />
+          </div>
+
+          {/* Items bought */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={ss.label}>Items bought</label>
+            <textarea style={ss.textarea} value={form.items_bought} onChange={e => setForm({ ...form, items_bought: e.target.value })} placeholder="e.g. 20 boards Mahogany 2×4, 5 sheets MDF 18mm" rows={3} />
+          </div>
+
+          {/* Accounting category */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={ss.label}>Accounting category</label>
+            <select style={{ ...ss.input, cursor: "pointer" }} value={form.accounting_category_id} onChange={e => setForm({ ...form, accounting_category_id: e.target.value })}>
+              <option value="">— Select category (optional) —</option>
+              {categories.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+          </div>
+
+          {/* Amounts */}
+          <div>
+            <label style={ss.label}>Total amount (KSh) *</label>
+            <input style={ss.input} type="number" min="0.01" step="1" value={form.total_amount} onChange={e => setForm({ ...form, total_amount: e.target.value })} placeholder="0" autoFocus />
+          </div>
+          <div>
+            <label style={ss.label}>Amount paid (KSh)</label>
+            <input style={ss.input} type="number" min="0" step="1" value={form.amount_paid} onChange={e => setForm({ ...form, amount_paid: e.target.value })} placeholder="0" />
+          </div>
+
+          {/* Balance preview */}
+          {totalAmt > 0 && (
+            <div style={{ gridColumn: "1 / -1" }}>
+              <div style={{ fontSize: "12px", color: "#999", padding: "8px 12px", background: "#f9f9f7", borderRadius: "6px" }}>
+                Balance: <strong style={{ color: "#1a1a1a" }}>{fmt(totalAmt - paidAmt)}</strong>
+                &nbsp;·&nbsp;Status will be:&nbsp;
+                <strong>{paidAmt <= 0 ? "Unpaid" : paidAmt >= totalAmt ? "Paid" : "Part Paid"}</strong>
+              </div>
+            </div>
+          )}
+
+          {/* Initial payment method — only when amount_paid > 0 */}
+          {paidAmt > 0 && (
+            <>
+              <div>
+                <label style={ss.label}>Payment method</label>
+                <select style={{ ...ss.input, cursor: "pointer" }} value={form.initial_payment_method} onChange={e => setForm({ ...form, initial_payment_method: e.target.value })}>
+                  {PAYMENT_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={ss.label}>Payment reference</label>
+                <input style={ss.input} value={form.initial_payment_reference} onChange={e => setForm({ ...form, initial_payment_reference: e.target.value })} placeholder="e.g. QDK91XMPL" />
+              </div>
+            </>
+          )}
+
+          {/* Link to orders */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={ss.label}>Linked customer orders (optional)</label>
+            {form.order_ids.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "8px" }}>
+                {form.order_ids.map(oid => {
+                  const o = orders.find(x => x.id === oid);
+                  return (
+                    <div key={oid} style={{ display: "flex", alignItems: "center", gap: "6px", padding: "4px 10px", border: "1.5px solid #E8512A", borderRadius: "6px", background: "#fff8f6" }}>
+                      <span style={{ fontSize: "13px", fontWeight: 700, color: "#E8512A" }}>{o?.order_num || oid.slice(0, 8)}</span>
+                      {o?.client && <span style={{ fontSize: "12px", color: "#333" }}>{o.client}</span>}
+                      <button type="button" onClick={() => setForm({ ...form, order_ids: form.order_ids.filter(id => id !== oid) })} style={{ background: "none", border: "none", cursor: "pointer", color: "#aaa", fontSize: "14px", padding: "0 2px", lineHeight: 1 }}>✕</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <button type="button" onClick={() => { setOrderSearch(""); setShowOrderPicker(true); }} style={{ width: "100%", padding: "9px 12px", border: "1.5px dashed #d0d0d0", borderRadius: "6px", background: "#fafafa", color: "#999", fontSize: "13px", cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}>
+              {form.order_ids.length > 0 ? "+ Add another order…" : "+ Link to a customer order…"}
+            </button>
+          </div>
+
+          {/* Notes */}
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={ss.label}>Notes</label>
+            <textarea style={ss.textarea} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="e.g. Invoice #1234" rows={2} />
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end", marginTop: "20px" }}>
+          <button onClick={onClose} style={{ padding: "10px 20px", borderRadius: "8px", border: "1.5px solid #e0e0e0", background: "#fff", color: "#666", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+          <button onClick={save} disabled={saving} style={{ padding: "10px 24px", borderRadius: "8px", border: "none", background: "#E8512A", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.6 : 1 }}>
+            {saving ? "Saving…" : "Record Purchase"}
+          </button>
+        </div>
+      </div>
+
+      {/* Order picker */}
+      {showOrderPicker && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 400, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}
+          onClick={() => setShowOrderPicker(false)}>
+          <div style={{ background: "#fff", borderRadius: "12px", width: "100%", maxWidth: "460px", maxHeight: "65vh", display: "flex", flexDirection: "column", overflow: "hidden" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ padding: "16px 20px 12px", borderBottom: "1px solid #f0ede8" }}>
+              <div style={{ fontSize: "15px", fontWeight: 700, marginBottom: "10px" }}>Link to order</div>
+              <input autoFocus type="text" placeholder="Search order number or client…" value={orderSearch} onChange={e => setOrderSearch(e.target.value)}
+                style={{ width: "100%", padding: "9px 12px", border: "1.5px solid #e0e0e0", borderRadius: "6px", fontSize: "13px", fontFamily: "inherit", boxSizing: "border-box" }} />
+            </div>
+            <div style={{ flex: 1, overflowY: "auto", padding: "8px" }}>
+              {filteredOrders.length === 0 ? (
+                <div style={{ padding: "24px", textAlign: "center", fontSize: "13px", color: "#bbb" }}>No orders found</div>
+              ) : filteredOrders.map(o => (
+                <button key={o.id} onClick={() => { setForm(f => ({ ...f, order_ids: [...f.order_ids, o.id] })); setShowOrderPicker(false); }}
+                  style={{ width: "100%", padding: "10px 14px", border: "none", background: "none", textAlign: "left", cursor: "pointer", borderRadius: "6px", display: "flex", alignItems: "center", gap: "10px" }}
+                  onMouseEnter={e => e.currentTarget.style.background = "#f9f8f6"}
+                  onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                  <span style={{ fontSize: "13px", fontWeight: 700, color: "#E8512A", minWidth: "60px" }}>{o.order_num}</span>
+                  <span style={{ fontSize: "13px", color: "#333", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.client}</span>
+                  <span style={{ fontSize: "11px", color: "#bbb" }}>{o.status}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Purchases Tab ─────────────────────────────────────────────────────────────
 
-function PurchasesTab({ purchases }) {
+function PurchasesTab({ purchases, canWrite, onAddPurchase }) {
   if (!purchases.length) {
     return (
       <div style={{ padding: "60px 20px", textAlign: "center" }}>
@@ -157,13 +372,26 @@ function PurchasesTab({ purchases }) {
           </svg>
         </div>
         <div style={{ fontSize: "14px", fontWeight: 500, color: "#555", marginBottom: "4px" }}>No purchases yet</div>
-        <div style={{ fontSize: "12px", color: "#999" }}>Purchases from this supplier will appear here.</div>
+        <div style={{ fontSize: "12px", color: "#999", marginBottom: canWrite ? "16px" : 0 }}>Purchases from this supplier will appear here.</div>
+        {canWrite && (
+          <button onClick={onAddPurchase} style={{ padding: "9px 20px", borderRadius: "7px", border: "none", background: "#E8512A", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
+            + Record Purchase
+          </button>
+        )}
       </div>
     );
   }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+      {/* Header row with Add button */}
+      {canWrite && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "4px" }}>
+          <button onClick={onAddPurchase} style={{ padding: "8px 16px", borderRadius: "7px", border: "none", background: "#E8512A", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
+            + Record Purchase
+          </button>
+        </div>
+      )}
       {purchases.map((p, i) => {
         const balance = parseFloat(p.total_amount || 0) - parseFloat(p.amount_paid || 0);
         const linkedOrders = (p.purchase_order_links || []);
@@ -348,30 +576,102 @@ function StatementTab({ supplier, purchases, manualPayments, chatpesaAllocations
   );
 }
 
+// ── Link Payment to Purchase Modal ────────────────────────────────────────────
+
+function LinkPaymentModal({ payment, purchases, onClose, onSaved }) {
+  const [selectedPurchaseId, setSelectedPurchaseId] = useState(payment.purchase_id || "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  // Show all purchases so user can re-link or clear the link
+  const save = async () => {
+    setError("");
+    setSaving(true);
+    try {
+      const res = await fetch("/api/manual-payments", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: payment.id, supplier_purchase_id: selectedPurchaseId || null }),
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || "Failed to update link");
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 400, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}
+      onClick={onClose}>
+      <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "100%", maxWidth: "460px" }}
+        onClick={e => e.stopPropagation()}>
+        <h2 style={{ fontSize: "16px", fontWeight: 700, marginBottom: "4px" }}>Link Payment to Purchase</h2>
+        <p style={{ fontSize: "13px", color: "#999", marginBottom: "20px" }}>
+          {fmt(payment.amount)} · {fmtDate(payment.date)} · {payment.method}
+        </p>
+
+        {error && (
+          <div style={{ background: "#FFF5F5", border: "1px solid #FFCDD2", borderRadius: "6px", padding: "10px 14px", marginBottom: "16px", fontSize: "13px", color: "#C62828" }}>{error}</div>
+        )}
+
+        <label style={ss.label}>Select purchase</label>
+        <select style={{ ...ss.input, cursor: "pointer", marginBottom: "20px" }}
+          value={selectedPurchaseId}
+          onChange={e => setSelectedPurchaseId(e.target.value)}>
+          <option value="">— Unlinked (general payment) —</option>
+          {purchases.map(p => {
+            const balance = parseFloat(p.total_amount || 0) - parseFloat(p.amount_paid || 0);
+            return (
+              <option key={p.id} value={p.id}>
+                {fmtDate(p.purchase_date)} · {p.items_bought?.slice(0, 40) || "Purchase"} · Owed: {Number(Math.max(balance, 0)).toLocaleString("en-KE")}
+              </option>
+            );
+          })}
+        </select>
+
+        <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+          <button onClick={onClose} style={{ padding: "10px 20px", borderRadius: "8px", border: "1.5px solid #e0e0e0", background: "#fff", color: "#666", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+          <button onClick={save} disabled={saving} style={{ padding: "10px 24px", borderRadius: "8px", border: "none", background: "#1a1a1a", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.6 : 1 }}>
+            {saving ? "Saving…" : "Save Link"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Payments Tab ──────────────────────────────────────────────────────────────
 
-function PaymentsTab({ manualPayments, chatpesaAllocations, purchases, canWrite, onRecordPayment }) {
-  // Merge and sort all payments
+function PaymentsTab({ manualPayments, chatpesaAllocations, purchases, canWrite, onRecordPayment, onReload }) {
+  const [linkingPayment, setLinkingPayment] = useState(null); // the manual payment being linked
+
+  // Merge and sort all payments; track _type so we know which support linking
   const allPayments = [
     ...manualPayments.map(mp => ({
+      _type:       "manual",
+      id:          mp.id,
       date:        mp.payment_date,
       type:        "Manual",
       method:      mp.payment_method || "Cash",
       description: [mp.reference, mp.note].filter(Boolean).join(" · ") || "—",
       amount:      parseFloat(mp.amount || 0),
       purchase_id: mp.supplier_purchase_id,
-      id:          mp.id,
+      // keep raw object for linking modal
+      _raw: mp,
     })),
     ...chatpesaAllocations.map(ca => {
       const tx = ca.chatpesa_transactions || {};
       return {
+        _type:       "chatpesa",
+        id:          ca.id,
         date:        tx.transaction_date || ca.created_at?.slice(0, 10),
         type:        "Chatpesa",
         method:      "M-Pesa",
         description: [tx.confirm_code, tx.description, ca.note].filter(Boolean).join(" · ") || "—",
         amount:      parseFloat(ca.amount || tx.amount || 0),
         purchase_id: ca.supplier_purchase_id,
-        id:          ca.id,
       };
     }),
   ].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
@@ -405,19 +705,35 @@ function PaymentsTab({ manualPayments, chatpesaAllocations, purchases, canWrite,
         <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
           {allPayments.map((p, i) => {
             const linkedPurchase = purchases.find(pur => pur.id === p.purchase_id);
+            const canLink = canWrite && p._type === "manual";
             return (
               <div key={p.id || i} style={{ background: "#fff", border: "1px solid #e8e8e5", borderRadius: "10px", padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "10px" }}>
                 <div style={{ flex: "1 1 200px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px", flexWrap: "wrap" }}>
                     <span style={{ fontSize: "11px", fontWeight: 700, padding: "2px 7px", borderRadius: "4px", background: p.type === "Chatpesa" ? "#E8F5E9" : "#EDE7F6", color: p.type === "Chatpesa" ? "#2E7D32" : "#4527A0" }}>{p.type}</span>
                     <span style={{ fontSize: "11px", color: "#999" }}>{p.method}</span>
                     <span style={{ fontSize: "12px", color: "#555" }}>{fmtDate(p.date)}</span>
                   </div>
                   <div style={{ fontSize: "12px", color: "#444" }}>{p.description}</div>
-                  {linkedPurchase && (
-                    <div style={{ fontSize: "11px", color: "#E8512A", marginTop: "3px", fontWeight: 600 }}>
-                      → {fmtDate(linkedPurchase.purchase_date)}: {linkedPurchase.items_bought?.slice(0, 50) || "Purchase"}
+                  {linkedPurchase ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "4px", flexWrap: "wrap" }}>
+                      <span style={{ fontSize: "11px", color: "#E8512A", fontWeight: 600 }}>
+                        → {fmtDate(linkedPurchase.purchase_date)}: {linkedPurchase.items_bought?.slice(0, 45) || "Purchase"}
+                      </span>
+                      {canLink && (
+                        <button onClick={() => setLinkingPayment(p)}
+                          style={{ fontSize: "11px", color: "#999", background: "none", border: "1px solid #e0e0e0", borderRadius: "4px", padding: "1px 7px", cursor: "pointer", fontFamily: "inherit" }}>
+                          Change
+                        </button>
+                      )}
                     </div>
+                  ) : (
+                    canLink && (
+                      <button onClick={() => setLinkingPayment(p)}
+                        style={{ marginTop: "5px", fontSize: "12px", color: "#E8512A", background: "#fff8f6", border: "1.5px solid #E8512A", borderRadius: "5px", padding: "3px 10px", cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}>
+                        + Link to purchase
+                      </button>
+                    )
                   )}
                 </div>
                 <div style={{ fontSize: "15px", fontWeight: 700, color: "#065F46", flexShrink: 0 }}>{fmt(p.amount)}</div>
@@ -431,6 +747,19 @@ function PaymentsTab({ manualPayments, chatpesaAllocations, purchases, canWrite,
             <span style={{ fontSize: "13px", fontWeight: 700, color: "#6EE7B7" }}>{fmt(allPayments.reduce((s, p) => s + p.amount, 0))}</span>
           </div>
         </div>
+      )}
+
+      {/* Link to purchase modal */}
+      {linkingPayment && (
+        <LinkPaymentModal
+          payment={linkingPayment}
+          purchases={purchases}
+          onClose={() => setLinkingPayment(null)}
+          onSaved={async () => {
+            setLinkingPayment(null);
+            onReload();
+          }}
+        />
       )}
     </div>
   );
@@ -549,8 +878,9 @@ export default function SupplierProfile({ supplierId }) {
   const [error, setError]       = useState(null);
   const [tab, setTab]           = useState("overview");
   const [userRole, setUserRole] = useState("viewer");
-  const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [exportingPDF, setExportingPDF]         = useState(false);
+  const [showPaymentModal, setShowPaymentModal]   = useState(false);
+  const [showPurchaseModal, setShowPurchaseModal] = useState(false);
+  const [exportingPDF, setExportingPDF]           = useState(false);
 
   const canWrite = WRITE_ROLES.includes(userRole);
 
@@ -763,7 +1093,11 @@ export default function SupplierProfile({ supplierId }) {
         />
       )}
       {tab === "purchases" && (
-        <PurchasesTab purchases={data.purchases || []} />
+        <PurchasesTab
+          purchases={data.purchases || []}
+          canWrite={canWrite}
+          onAddPurchase={() => setShowPurchaseModal(true)}
+        />
       )}
       {tab === "statement" && (
         <StatementTab
@@ -782,6 +1116,19 @@ export default function SupplierProfile({ supplierId }) {
           purchases={data.purchases || []}
           canWrite={canWrite}
           onRecordPayment={() => setShowPaymentModal(true)}
+          onReload={load}
+        />
+      )}
+
+      {/* Add purchase modal */}
+      {showPurchaseModal && (
+        <AddPurchaseModal
+          supplier={data}
+          onClose={() => setShowPurchaseModal(false)}
+          onSaved={async () => {
+            setShowPurchaseModal(false);
+            await load();
+          }}
         />
       )}
 

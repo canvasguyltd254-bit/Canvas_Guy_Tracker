@@ -2,28 +2,17 @@
  * app/api/manual-payments/[id]/route.js
  *
  * DELETE /api/manual-payments/:id  — remove payment (admin / production_manager)
+ *
+ * Guard: if the payment has already been posted to the General Ledger
+ * (journal_entry_id IS NOT NULL), deletion is blocked. The journal entry
+ * must be reversed before the payment record can be removed.
  */
 
 export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
-
-async function recalcPurchasePayment(purchaseId) {
-  if (!purchaseId) return;
-  const [{ data: chatpesaAllocs }, { data: manualPmts }, { data: purchase }] = await Promise.all([
-    serviceClient.from('chatpesa_payment_allocations').select('amount').eq('supplier_purchase_id', purchaseId),
-    serviceClient.from('manual_supplier_payments').select('amount').eq('supplier_purchase_id', purchaseId),
-    serviceClient.from('supplier_purchases').select('total_amount').eq('id', purchaseId).single(),
-  ]);
-  const totalPaid = [...(chatpesaAllocs||[]),...(manualPmts||[])].reduce((s,r)=>s+parseFloat(r.amount||0),0);
-  const totalAmount = parseFloat(purchase?.total_amount||0);
-  const amountPaid = Math.min(totalPaid, totalAmount);
-  let paymentStatus = 'Unpaid';
-  if (amountPaid > 0 && amountPaid < totalAmount) paymentStatus = 'Part Paid';
-  if (amountPaid >= totalAmount) paymentStatus = 'Paid';
-  await serviceClient.from('supplier_purchases').update({ amount_paid: amountPaid, payment_status: paymentStatus }).eq('id', purchaseId);
-}
+import { recalcPurchasePayment } from '@/shared/lib/recalcPurchasePayment';
 
 export async function DELETE(request, { params }) {
   try {
@@ -33,19 +22,39 @@ export async function DELETE(request, { params }) {
 
     const { data: payment } = await serviceClient
       .from('manual_supplier_payments')
-      .select('id, supplier_purchase_id')
+      .select('id, supplier_purchase_id, journal_entry_id')
       .eq('id', params.id)
       .single();
 
     if (!payment) return NextResponse.json({ error: 'Payment not found' }, { status: 404 });
 
-    const { error } = await serviceClient.from('manual_supplier_payments').delete().eq('id', params.id);
-    if (error) return NextResponse.json({ error: 'Failed to delete payment' }, { status: 500 });
+    // Block deletion if payment has already been posted to the General Ledger.
+    // A reversal journal entry must be created first (Stage 2 — accounting audit controls).
+    if (payment.journal_entry_id) {
+      return NextResponse.json(
+        {
+          error: 'Cannot delete a posted payment. This payment has a journal entry in the General Ledger. Create a reversal first.',
+          journal_entry_id: payment.journal_entry_id,
+        },
+        { status: 409 },
+      );
+    }
 
-    await recalcPurchasePayment(payment.supplier_purchase_id);
+    const { error } = await serviceClient
+      .from('manual_supplier_payments')
+      .delete()
+      .eq('id', params.id);
+
+    if (error) {
+      console.error('DELETE /api/manual-payments/[id]:', error);
+      return NextResponse.json({ error: 'Failed to delete payment' }, { status: 500 });
+    }
+
+    await recalcPurchasePayment(payment.supplier_purchase_id, serviceClient);
 
     return NextResponse.json({ success: true, message: 'Payment deleted' });
   } catch (err) {
+    console.error('DELETE /api/manual-payments/[id]:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

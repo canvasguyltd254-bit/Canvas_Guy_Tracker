@@ -3,7 +3,6 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const PETTY_CASH_CATEGORIES = ["Transport","Fuel","Lunch","Airtime","Casual wages","Workshop supplies","Other"];
 const PAYMENT_METHODS = ["Cash","M-Pesa","Bank Transfer","Other"];
 
 const STATUS_META = {
@@ -165,21 +164,37 @@ function SuggestionChip({ supplier, confidence, onAccept }) {
 // ── MATCH MODAL ───────────────────────────────────────────────────────────────
 
 function MatchModal({ tx, suppliers, onClose, onSaved }) {
+  // Compute remaining unallocated amount (for smart default)
+  const alreadyAllocated = useMemo(() =>
+    (tx.chatpesa_payment_allocations || []).reduce((s, a) => s + parseFloat(a.amount || 0), 0),
+    [tx]
+  );
+  const defaultAmount = String(Math.max(0, parseFloat(tx.amount || 0) - alreadyAllocated));
+
   const [allocations, setAllocations] = useState([
-    { _key: 1, type: "supplier_purchase", supplier_id: tx.suggested_supplier_id || "", purchase_id: "", petty_cash_category: "", amount: String(tx.amount || ""), note: "" }
+    { _key: 1, type: "supplier_purchase", supplier_id: tx.suggested_supplier_id || "", purchase_id: "", petty_cash_category: "", accounting_category_id: "", amount: defaultAmount, note: "" }
   ]);
   const [purchaseCache, setPurchaseCache]   = useState({});  // { supplierId: purchases[] }
+  const [pettyCashCategories, setPettyCashCategories] = useState([]);
   const [saving, setSaving]                 = useState(false);
   const [error, setError]                   = useState("");
   const nextKey = useRef(2);
 
+  // Load petty cash accounting categories from the API
+  useEffect(() => {
+    fetch("/api/accounting-categories?for_petty_cash=true")
+      .then(r => r.json())
+      .then(j => setPettyCashCategories(j.data || []))
+      .catch(() => {});
+  }, []);
+
   const totalAllocated  = allocations.reduce((s,a) => s + (parseFloat(a.amount)||0), 0);
-  const remaining       = parseFloat(tx.amount||0) - totalAllocated;
+  const remaining       = parseFloat(tx.amount||0) - alreadyAllocated - totalAllocated;
   const canSave         = allocations.every(a => {
     if ((parseFloat(a.amount)||0) <= 0) return false;
     if (a.type === "supplier_purchase") return !!a.purchase_id;
     if (a.type === "opening_balance")   return !!a.supplier_id;
-    if (a.type === "petty_cash")        return !!a.petty_cash_category;
+    if (a.type === "petty_cash")        return !!a.petty_cash_category && !!a.accounting_category_id;
     return false;
   });
 
@@ -202,7 +217,7 @@ function MatchModal({ tx, suppliers, onClose, onSaved }) {
   };
 
   const addAlloc = () => {
-    setAllocations(prev => [...prev, { _key: nextKey.current++, type:"supplier_purchase", supplier_id:"", purchase_id:"", petty_cash_category:"", amount:"", note:"" }]);
+    setAllocations(prev => [...prev, { _key: nextKey.current++, type:"supplier_purchase", supplier_id:"", purchase_id:"", petty_cash_category:"", accounting_category_id:"", amount:"", note:"" }]);
   };
 
   const removeAlloc = (key) => {
@@ -211,20 +226,40 @@ function MatchModal({ tx, suppliers, onClose, onSaved }) {
 
   const handleSave = async () => {
     setError("");
+
+    // Validate all allocations before submitting any (prevents partial-save on split)
+    for (const alloc of allocations) {
+      if ((parseFloat(alloc.amount) || 0) <= 0) { setError("All allocations must have a positive amount."); return; }
+      if (alloc.type === "supplier_purchase" && !alloc.purchase_id)   { setError("Select a purchase for every supplier_purchase allocation."); return; }
+      if (alloc.type === "opening_balance"   && !alloc.supplier_id)   { setError("Select a supplier for every opening_balance allocation."); return; }
+      if (alloc.type === "petty_cash" && !alloc.petty_cash_category)  { setError("Select a category for every petty cash allocation."); return; }
+      if (alloc.type === "petty_cash" && !alloc.accounting_category_id) { setError("Select an accounting category for every petty cash allocation."); return; }
+    }
+    if (totalAllocated + alreadyAllocated > parseFloat(tx.amount) + 0.01) { setError("Total allocated exceeds transaction amount."); return; }
+
     setSaving(true);
+    const successIds = [];
     try {
       for (const alloc of allocations) {
         const body = {
-          allocation_type:      alloc.type,
-          supplier_purchase_id: alloc.type === "supplier_purchase" ? alloc.purchase_id   : undefined,
-          supplier_id:          alloc.type === "opening_balance"   ? alloc.supplier_id   : undefined,
-          petty_cash_category:  alloc.type === "petty_cash"        ? alloc.petty_cash_category : undefined,
-          amount:               parseFloat(alloc.amount),
-          note:                 alloc.note || undefined,
+          allocation_type:        alloc.type,
+          supplier_purchase_id:   alloc.type === "supplier_purchase" ? alloc.purchase_id          : undefined,
+          supplier_id:            alloc.type === "opening_balance"   ? alloc.supplier_id           : undefined,
+          petty_cash_category:    alloc.type === "petty_cash"        ? alloc.petty_cash_category   : undefined,
+          accounting_category_id: alloc.type === "petty_cash"        ? alloc.accounting_category_id : undefined,
+          amount:                 parseFloat(alloc.amount),
+          note:                   alloc.note || undefined,
         };
         const res  = await fetch(`/api/chatpesa/transactions/${tx.id}/allocations`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
         const json = await res.json();
-        if (!json.success) throw new Error(json.error || "Allocation failed");
+        if (!json.success) {
+          // Rollback: delete any allocations that already succeeded in this batch
+          for (const id of successIds) {
+            await fetch(`/api/chatpesa/transactions/${tx.id}/allocations?allocation_id=${id}`, { method:"DELETE" });
+          }
+          throw new Error(json.detail || json.error || "Allocation failed");
+        }
+        successIds.push(json.data.id);
       }
       onSaved();
       onClose();
@@ -345,14 +380,16 @@ function MatchModal({ tx, suppliers, onClose, onSaved }) {
                       <label style={ss.label}>Purchase</label>
                       <select style={ss.input} value={alloc.purchase_id} onChange={e => updateAlloc(alloc._key, "purchase_id", e.target.value)}>
                         <option value="">— Select purchase —</option>
-                        {(purchaseCache[alloc.supplier_id] || []).map(p => {
-                          const balance = parseFloat(p.total_amount||0) - parseFloat(p.amount_paid||0);
-                          return (
-                            <option key={p.id} value={p.id}>
-                              {p.purchase_date} · {p.items_bought?.slice(0,40) || "No description"} · Bal: KSh {balance.toLocaleString()}
-                            </option>
-                          );
-                        })}
+                        {(purchaseCache[alloc.supplier_id] || [])
+                          .filter(p => parseFloat(p.total_amount||0) - parseFloat(p.amount_paid||0) > 0.01)
+                          .map(p => {
+                            const balance = parseFloat(p.total_amount||0) - parseFloat(p.amount_paid||0);
+                            return (
+                              <option key={p.id} value={p.id}>
+                                {p.purchase_date} · {p.items_bought?.slice(0,40) || "No description"} · Bal: KSh {Math.round(balance).toLocaleString()}
+                              </option>
+                            );
+                          })}
                       </select>
                       {alloc.supplier_id && !purchaseCache[alloc.supplier_id] && (
                         <div style={{ fontSize:"11px", color:"#999", marginTop:"4px" }}>Loading purchases…</div>
@@ -368,7 +405,14 @@ function MatchModal({ tx, suppliers, onClose, onSaved }) {
                   <label style={ss.label}>Supplier</label>
                   <select style={ss.input} value={alloc.supplier_id} onChange={e => updateAlloc(alloc._key, "supplier_id", e.target.value)}>
                     <option value="">— Select supplier —</option>
-                    {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    {suppliers.map(s => {
+                      const ob = parseFloat(s.opening_balance || 0);
+                      return (
+                        <option key={s.id} value={s.id}>
+                          {s.name}{ob > 0 ? ` — OB: KSh ${Math.round(ob).toLocaleString()}` : " — No OB"}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
               )}
@@ -376,11 +420,25 @@ function MatchModal({ tx, suppliers, onClose, onSaved }) {
               {/* Petty Cash */}
               {alloc.type === "petty_cash" && (
                 <div style={{ marginBottom:"8px" }}>
-                  <label style={ss.label}>Category</label>
-                  <select style={ss.input} value={alloc.petty_cash_category} onChange={e => updateAlloc(alloc._key, "petty_cash_category", e.target.value)}>
-                    <option value="">— Select category —</option>
-                    {PETTY_CASH_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
+                  <label style={ss.label}>Accounting category</label>
+                  {pettyCashCategories.length > 0 ? (
+                    <select style={ss.input} value={alloc.accounting_category_id} onChange={e => {
+                      const cat = pettyCashCategories.find(c => c.id === e.target.value);
+                      setAllocations(prev => prev.map(a => a._key !== alloc._key ? a : {
+                        ...a,
+                        accounting_category_id: e.target.value,
+                        petty_cash_category:    cat?.label || "",
+                      }));
+                    }}>
+                      <option value="">— Select category —</option>
+                      {pettyCashCategories.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                    </select>
+                  ) : (
+                    <select style={ss.input} value={alloc.petty_cash_category} onChange={e => updateAlloc(alloc._key, "petty_cash_category", e.target.value)}>
+                      <option value="">— Select category —</option>
+                      {["Transport","Fuel","Lunch","Airtime","Casual wages","Workshop supplies","Other"].map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  )}
                 </div>
               )}
 
@@ -585,7 +643,7 @@ function ManualPaymentModal({ suppliers, presetSupplierId, onClose, onSaved }) {
     try {
       const res  = await fetch("/api/manual-payments", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ ...form, supplier_purchase_id: form.purchase_id || null }) });
       const json = await res.json();
-      if (!json.success) throw new Error(json.error || "Failed");
+      if (!json.success) throw new Error(json.detail || json.error || "Failed");
       onSaved();
       onClose();
     } catch (err) {
@@ -617,10 +675,12 @@ function ManualPaymentModal({ suppliers, presetSupplierId, onClose, onSaved }) {
               <label style={ss.label}>Link to purchase (optional)</label>
               <select style={ss.input} value={form.purchase_id} onChange={e => setForm({...form, purchase_id:e.target.value})}>
                 <option value="">— None —</option>
-                {purchases.map(p => {
-                  const bal = parseFloat(p.total_amount||0) - parseFloat(p.amount_paid||0);
-                  return <option key={p.id} value={p.id}>{p.purchase_date} · {p.items_bought?.slice(0,40)} · Bal {fmt(bal)}</option>;
-                })}
+                {purchases
+                  .filter(p => parseFloat(p.total_amount||0) - parseFloat(p.amount_paid||0) > 0.01)
+                  .map(p => {
+                    const bal = parseFloat(p.total_amount||0) - parseFloat(p.amount_paid||0);
+                    return <option key={p.id} value={p.id}>{p.purchase_date} · {p.items_bought?.slice(0,40)} · Bal {fmt(bal)}</option>;
+                  })}
               </select>
             </div>
           )}

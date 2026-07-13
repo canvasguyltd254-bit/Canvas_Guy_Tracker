@@ -447,17 +447,20 @@ export const ALLOWED_FIELDS = {
       'invoice_path',
       'invoice_name',
       'notes',
+      'accounting_category_id',  // optional; drives journal DR account
     ],
     update: [
       'purchase_date',
       'items_bought',
-      'total_amount',
+      'total_amount',            // blocked via API if journal_entry_id IS NOT NULL
       'amount_paid',
       'payment_status',
       'invoice_path',
       'invoice_name',
       'notes',
+      'accounting_category_id',  // blocked via API if journal_entry_id IS NOT NULL
     ],
+    // journal_entry_id: written server-side only after journal commit — never in body
   },
 
   chatpesa_imports: {
@@ -499,11 +502,13 @@ export const ALLOWED_FIELDS = {
       'supplier_purchase_id',
       'supplier_id',
       'petty_cash_category',
+      'accounting_category_id',  // optional; used to determine expense account for petty_cash journal
       'amount',
       'note',
       'created_by',
     ],
     // Allocations are immutable — delete and re-add to correct.
+    // journal_entry_id: written server-side only after journal commit — never in body
   },
 
   manual_supplier_payments: {

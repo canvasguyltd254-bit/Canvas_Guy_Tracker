@@ -3,7 +3,10 @@
  *
  * POST /api/suppliers/:id/payments
  * Record a manual cash/bank/M-Pesa payment to a supplier.
- * Optionally links to a specific purchase and updates its amount_paid.
+ * Optionally links to a specific purchase and recalculates its amount_paid.
+ *
+ * IMPORTANT: Never increment amount_paid directly. Always use recalcPurchasePayment
+ * so the value is always SUM(manual_payments) + SUM(chatpesa_allocations).
  */
 
 export const runtime = 'nodejs';
@@ -11,6 +14,8 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
+import { recalcPurchasePayment } from '@/shared/lib/recalcPurchasePayment';
+import { postManualPaymentJournal } from '@/shared/lib/accountingService';
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales'];
 
@@ -46,14 +51,14 @@ export async function POST(request, { params }) {
 
     // Build the payment record
     const paymentData = pick({
-      supplier_id:         params.id,
+      supplier_id:          params.id,
       supplier_purchase_id: supplier_purchase_id || null,
       payment_date,
-      amount:              parseFloat(amount),
-      payment_method:      payment_method || 'Cash',
-      reference:           reference?.trim() || null,
-      note:                note?.trim()      || null,
-      created_by:          user.id,
+      amount:               parseFloat(amount),
+      payment_method:       payment_method || 'Cash',
+      reference:            reference?.trim() || null,
+      note:                 note?.trim()      || null,
+      created_by:           user.id,
     }, ALLOWED_FIELDS.manual_supplier_payments.insert);
 
     const { data: payment, error: payErr } = await serviceClient
@@ -63,30 +68,35 @@ export async function POST(request, { params }) {
       .single();
 
     if (payErr) {
-      console.error('INSERT manual_supplier_payments:', payErr);
-      return NextResponse.json({ error: 'Failed to record payment' }, { status: 500 });
+      console.error('POST /api/suppliers/[id]/payments — INSERT error:', payErr.code, payErr.message, payErr.details);
+      return NextResponse.json(
+        { error: 'Failed to record payment', detail: payErr.message },
+        { status: 500 },
+      );
     }
 
-    // If linked to a specific purchase, update amount_paid and payment_status on that purchase
+    // Recalculate from payment tables — never increment amount_paid directly
     if (supplier_purchase_id) {
-      const { data: purchase } = await serviceClient
-        .from('supplier_purchases')
-        .select('total_amount, amount_paid')
-        .eq('id', supplier_purchase_id)
-        .eq('supplier_id', params.id)
-        .maybeSingle();
+      await recalcPurchasePayment(supplier_purchase_id, serviceClient);
+    }
 
-      if (purchase) {
-        const newAmountPaid = parseFloat(purchase.amount_paid || 0) + parseFloat(amount);
-        const total         = parseFloat(purchase.total_amount || 0);
-        const capped        = Math.min(newAmountPaid, total); // never exceed total
-        const newStatus     = capped >= total ? 'Paid' : capped > 0 ? 'Part Paid' : 'Unpaid';
-
-        await serviceClient
-          .from('supplier_purchases')
-          .update({ amount_paid: capped, payment_status: newStatus })
-          .eq('id', supplier_purchase_id);
-      }
+    // Accounting: post payment journal (fire-and-forget — payment is already saved)
+    // 'Other' payment method has no account mapping and returns a SKIP error — expected, not logged.
+    const { id: jId, error: jErr } = await postManualPaymentJournal({
+      paymentId:     payment.id,
+      paymentDate:   payment_date,
+      amount:        parseFloat(amount),
+      paymentMethod: payment_method || 'Cash',
+      postedBy:      user.id,
+      client:        serviceClient,
+    });
+    if (jId) {
+      await serviceClient
+        .from('manual_supplier_payments')
+        .update({ journal_entry_id: jId })
+        .eq('id', payment.id);
+    } else if (jErr && !jErr.startsWith('SKIP:')) {
+      console.error('POST /api/suppliers/[id]/payments — accounting post failed:', jErr);
     }
 
     return NextResponse.json({ success: true, data: payment });

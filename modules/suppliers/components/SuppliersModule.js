@@ -23,7 +23,10 @@ const EMPTY_SUPPLIER = {
 const EMPTY_PURCHASE = {
   supplier_id: "", order_ids: [], purchase_date: new Date().toISOString().split("T")[0],
   items_bought: "", total_amount: "", amount_paid: "", notes: "",
+  accounting_category_id: "", initial_payment_method: "Cash", initial_payment_reference: "",
 };
+
+const PAYMENT_METHODS = ["Cash", "M-Pesa", "Bank Transfer", "Other"];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -88,9 +91,10 @@ export default function SuppliersModule() {
   const [loaded, setLoaded] = useState(false);
 
   // Data
-  const [suppliers, setSuppliers]   = useState([]);
-  const [purchases, setPurchases]   = useState([]);
-  const [orders, setOrders]         = useState([]);
+  const [suppliers, setSuppliers]             = useState([]);
+  const [purchases, setPurchases]             = useState([]);
+  const [orders, setOrders]                   = useState([]);
+  const [accountingCategories, setAccountingCategories] = useState([]);
 
   // Supplier list state
   const [supplierSearch, setSupplierSearch] = useState("");
@@ -130,8 +134,13 @@ export default function SuppliersModule() {
   const [showOrderPicker, setShowOrderPicker] = useState(false);
   const [orderPickerSearch, setOrderPickerSearch] = useState("");
 
-  // Delete confirm
-  const [deleteTarget, setDeleteTarget] = useState(null); // { type, id, label }
+  // Delete confirm + reversal flow
+  const [deleteTarget, setDeleteTarget]       = useState(null); // { type, id, label }
+  const [deleteError, setDeleteError]         = useState("");
+  const [deleteJournalId, setDeleteJournalId] = useState(null);
+  const [showReversalInput, setShowReversalInput] = useState(false);
+  const [reversalReason, setReversalReason]   = useState("");
+  const [reversing, setReversing]             = useState(false);
 
   const canWrite  = WRITE_ROLES.includes(userRole);
   const canDelete = ["admin"].includes(userRole);
@@ -148,7 +157,7 @@ export default function SuppliersModule() {
         const { data: profile } = await sb.from("user_profiles").select("role").eq("id", user.id).single();
         if (profile) setUserRole(profile.role);
       }
-      await Promise.all([loadSuppliers(), loadPurchases(), loadOrders()]);
+      await Promise.all([loadSuppliers(), loadPurchases(), loadOrders(), loadAccountingCategories()]);
       setLoaded(true);
     })();
   }, []);
@@ -172,6 +181,12 @@ export default function SuppliersModule() {
       .order("created_at", { ascending: false })
       .limit(200);
     setOrders(data || []);
+  };
+
+  const loadAccountingCategories = async () => {
+    const res  = await fetch("/api/accounting-categories?for_purchases=true");
+    const json = await res.json();
+    setAccountingCategories(json.data || []);
   };
 
   // ── Derived data ───────────────────────────────────────────────────────────
@@ -253,13 +268,17 @@ export default function SuppliersModule() {
   const openEditPurchase = (p, e) => {
     e.stopPropagation();
     setPurchaseForm({
-      supplier_id:    p.supplier_id || "",
-      order_ids:      (p.purchase_order_links || []).map(l => l.order_id),
-      purchase_date:  p.purchase_date || new Date().toISOString().split("T")[0],
-      items_bought:   p.items_bought || "",
-      total_amount:   p.total_amount || "",
-      amount_paid:    p.amount_paid || "",
-      notes:          p.notes || "",
+      supplier_id:             p.supplier_id || "",
+      order_ids:               (p.purchase_order_links || []).map(l => l.order_id),
+      purchase_date:           p.purchase_date || new Date().toISOString().split("T")[0],
+      items_bought:            p.items_bought || "",
+      total_amount:            p.total_amount || "",
+      amount_paid:             p.amount_paid || "",
+      notes:                   p.notes || "",
+      accounting_category_id:  p.accounting_category_id || "",
+      // Do not resend initial_payment fields on edit — the payment already exists
+      initial_payment_method:  "Cash",
+      initial_payment_reference: "",
     });
     setEditingPurchaseId(p.id);
     setShowPurchaseForm(true);
@@ -267,13 +286,29 @@ export default function SuppliersModule() {
 
   const savePurchase = async () => {
     if (!purchaseForm.supplier_id) { alert("Please select a supplier."); return; }
-    if (!purchaseForm.total_amount || parseFloat(purchaseForm.total_amount) < 0) { alert("Total amount is required."); return; }
+    if (!purchaseForm.total_amount || parseFloat(purchaseForm.total_amount) <= 0) { alert("Total amount must be greater than zero."); return; }
     setSavingPurchase(true);
     try {
       const url    = editingPurchaseId ? `/api/purchases/${editingPurchaseId}` : "/api/purchases";
       const method = editingPurchaseId ? "PATCH" : "POST";
-      const res    = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(purchaseForm) });
-      const json   = await res.json();
+
+      // For posted purchases, only send editable fields — locked fields (supplier_id,
+      // purchase_date, total_amount, amount_paid, accounting_category_id) are rejected
+      // with a 409 if sent while a journal entry exists.
+      let body = purchaseForm;
+      if (editingPurchaseId) {
+        const existing = purchases.find(p => p.id === editingPurchaseId);
+        if (existing?.journal_entry_id) {
+          body = {
+            items_bought: purchaseForm.items_bought,
+            notes:        purchaseForm.notes,
+            order_ids:    purchaseForm.order_ids,
+          };
+        }
+      }
+
+      const res  = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const json = await res.json();
       if (!json.success) throw new Error(json.error || "Save failed");
       setShowPurchaseForm(false);
       setEditingPurchaseId(null);
@@ -286,14 +321,28 @@ export default function SuppliersModule() {
 
   // ── Delete ─────────────────────────────────────────────────────────────────
 
+  const openDeleteModal = (target) => {
+    setDeleteTarget(target);
+    setDeleteError("");
+    setDeleteJournalId(null);
+    setShowReversalInput(false);
+    setReversalReason("");
+  };
+
   const confirmDelete = async () => {
     if (!deleteTarget) return;
+    setDeleteError("");
     try {
       const url = deleteTarget.type === "supplier"
         ? `/api/suppliers/${deleteTarget.id}`
         : `/api/purchases/${deleteTarget.id}`;
       const res  = await fetch(url, { method: "DELETE" });
       const json = await res.json();
+      if (res.status === 409) {
+        setDeleteError(json.error || "Cannot delete — there is a posted journal entry.");
+        if (json.journal_entry_id) setDeleteJournalId(json.journal_entry_id);
+        return;
+      }
       if (!json.success) throw new Error(json.error || "Delete failed");
       setDeleteTarget(null);
       if (deleteTarget.type === "supplier") {
@@ -303,8 +352,31 @@ export default function SuppliersModule() {
         setExpandedPurchase(null);
       }
     } catch (err) {
-      alert("Error: " + err.message);
+      setDeleteError("Error: " + err.message);
     }
+  };
+
+  const confirmReversal = async () => {
+    if (!deleteJournalId || !reversalReason.trim()) return;
+    setReversing(true);
+    setDeleteError("");
+    try {
+      const res  = await fetch(`/api/journal-entries/${deleteJournalId}/reverse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: reversalReason.trim() }),
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || "Reversal failed");
+      // Reversal succeeded — now retry the delete
+      setDeleteJournalId(null);
+      setShowReversalInput(false);
+      setReversalReason("");
+      await confirmDelete();
+    } catch (err) {
+      setDeleteError("Reversal failed: " + err.message);
+    }
+    setReversing(false);
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -537,6 +609,10 @@ export default function SuppliersModule() {
                           {balance > 0 && <div style={{ fontSize: "11px", color: "#92400E" }}>{fmt(balance)} owed</div>}
                         </div>
                         <StatusBadge status={p.payment_status} />
+                        {p.journal_entry_id
+                          ? <span style={{ fontSize: "10px", fontWeight: 700, color: "#065F46", background: "#D1FAE5", border: "1px solid #6EE7B7", padding: "2px 7px", borderRadius: "4px", whiteSpace: "nowrap" }}>Posted</span>
+                          : <span style={{ fontSize: "10px", fontWeight: 600, color: "#92400E", background: "#FEF3C7", border: "1px solid #FCD34D", padding: "2px 7px", borderRadius: "4px", whiteSpace: "nowrap" }}>Unposted</span>
+                        }
                       </div>
                       <span style={{ fontSize: "16px", color: "#ccc", transition: "transform 0.15s", transform: isExpanded ? "rotate(180deg)" : "rotate(0)" }}>▾</span>
                     </div>
@@ -563,6 +639,19 @@ export default function SuppliersModule() {
                           )}
                           {p.items_bought && <div style={{ gridColumn: "1 / -1" }}><div style={ss.label}>Items bought</div><div style={{ fontSize: "13px", color: "#333", whiteSpace: "pre-line" }}>{p.items_bought}</div></div>}
                           {p.notes && <div style={{ gridColumn: "1 / -1" }}><div style={ss.label}>Notes</div><div style={{ fontSize: "13px", color: "#666", fontStyle: "italic" }}>{p.notes}</div></div>}
+                          {(() => {
+                            const cat = accountingCategories.find(c => c.id === p.accounting_category_id);
+                            return cat ? (
+                              <div><div style={ss.label}>Accounting category</div><div style={{ fontSize: "13px", color: "#333" }}>{cat.label}</div></div>
+                            ) : null;
+                          })()}
+                          <div>
+                            <div style={ss.label}>Journal entry</div>
+                            {p.journal_entry_id
+                              ? <span style={{ fontSize: "12px", fontWeight: 700, color: "#065F46", background: "#D1FAE5", border: "1px solid #6EE7B7", padding: "3px 8px", borderRadius: "4px" }}>✓ Posted</span>
+                              : <span style={{ fontSize: "12px", fontWeight: 600, color: "#92400E", background: "#FEF3C7", border: "1px solid #FCD34D", padding: "3px 8px", borderRadius: "4px" }}>Not posted</span>
+                            }
+                          </div>
                         </div>
 
                         {/* Actions */}
@@ -573,7 +662,7 @@ export default function SuppliersModule() {
                             </button>
                           )}
                           {canDelete && (
-                            <button onClick={e => { e.stopPropagation(); setDeleteTarget({ type: "purchase", id: p.id, label: `${p.suppliers?.name} — ${p.purchase_date}` }); }} style={{ padding: "7px 14px", borderRadius: "6px", border: "1.5px solid #FFCDD2", background: "#FFF5F5", color: "#C62828", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+                            <button onClick={e => { e.stopPropagation(); openDeleteModal({ type: "purchase", id: p.id, label: `${p.suppliers?.name} — ${p.purchase_date}` }); }} style={{ padding: "7px 14px", borderRadius: "6px", border: "1.5px solid #FFCDD2", background: "#FFF5F5", color: "#C62828", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
                               Delete
                             </button>
                           )}
@@ -628,23 +717,38 @@ export default function SuppliersModule() {
                 <textarea style={ss.textarea} value={supplierForm.notes} onChange={e => setSupplierForm({ ...supplierForm, notes: e.target.value })} placeholder="e.g. Best pricing on bulk orders above 50 boards" />
               </div>
               {/* ── Opening balance (existing debt before tracker was set up) ── */}
-              <div style={{ gridColumn: "1 / -1", borderTop: "1px dashed #e0e0e0", paddingTop: "14px", marginTop: "4px" }}>
-                <div style={{ fontSize: "11px", fontWeight: 600, color: "#999", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "12px" }}>Opening Balance (optional)</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
-                  <div>
-                    <label style={ss.label}>Amount owed (KSh)</label>
-                    <input style={ss.input} type="number" min="0" step="1" value={supplierForm.opening_balance} onChange={e => setSupplierForm({ ...supplierForm, opening_balance: e.target.value })} placeholder="0" />
+              {(() => {
+                const editingSupplier = editingSupplierId ? suppliers.find(s => s.id === editingSupplierId) : null;
+                const obPosted = !!(editingSupplier?.opening_balance_journal_entry_id);
+                const obInputStyle = { ...ss.input, ...(obPosted ? { opacity: 0.5, cursor: "not-allowed", background: "#f5f5f5" } : {}) };
+                return (
+                  <div style={{ gridColumn: "1 / -1", borderTop: "1px dashed #e0e0e0", paddingTop: "14px", marginTop: "4px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "12px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: 600, color: "#999", textTransform: "uppercase", letterSpacing: "0.5px" }}>Opening Balance (optional)</span>
+                      {obPosted && <span style={{ fontSize: "10px", fontWeight: 700, color: "#065F46", background: "#D1FAE5", border: "1px solid #6EE7B7", padding: "2px 7px", borderRadius: "4px" }}>Posted — read only</span>}
+                    </div>
+                    {obPosted && (
+                      <div style={{ fontSize: "12px", color: "#92400E", background: "#FEF3C7", border: "1px solid #FCD34D", borderRadius: "6px", padding: "8px 12px", marginBottom: "10px" }}>
+                        This opening balance has been posted to the General Ledger. To change it, create a reversal entry from the journal.
+                      </div>
+                    )}
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
+                      <div>
+                        <label style={ss.label}>Amount owed (KSh)</label>
+                        <input style={obInputStyle} type="number" min="0" step="1" readOnly={obPosted} value={supplierForm.opening_balance} onChange={e => !obPosted && setSupplierForm({ ...supplierForm, opening_balance: e.target.value })} placeholder="0" />
+                      </div>
+                      <div>
+                        <label style={ss.label}>As of date</label>
+                        <input style={obInputStyle} type="date" readOnly={obPosted} value={supplierForm.opening_balance_date} onChange={e => !obPosted && setSupplierForm({ ...supplierForm, opening_balance_date: e.target.value })} />
+                      </div>
+                      <div style={{ gridColumn: "1 / -1" }}>
+                        <label style={ss.label}>Notes on opening balance</label>
+                        <input style={obInputStyle} readOnly={obPosted} value={supplierForm.opening_balance_notes} onChange={e => !obPosted && setSupplierForm({ ...supplierForm, opening_balance_notes: e.target.value })} placeholder="e.g. Balance carried forward from before Jan 2025" />
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <label style={ss.label}>As of date</label>
-                    <input style={ss.input} type="date" value={supplierForm.opening_balance_date} onChange={e => setSupplierForm({ ...supplierForm, opening_balance_date: e.target.value })} />
-                  </div>
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <label style={ss.label}>Notes on opening balance</label>
-                    <input style={ss.input} value={supplierForm.opening_balance_notes} onChange={e => setSupplierForm({ ...supplierForm, opening_balance_notes: e.target.value })} placeholder="e.g. Balance carried forward from before Jan 2025" />
-                  </div>
-                </div>
-              </div>
+                );
+              })()}
             </div>
             <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end", marginTop: "20px" }}>
               <button onClick={() => { setShowSupplierForm(false); setEditingSupplierId(null); }} style={{ padding: "10px 20px", borderRadius: "8px", border: "1.5px solid #e0e0e0", background: "#fff", color: "#666", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>Cancel</button>
@@ -665,6 +769,11 @@ export default function SuppliersModule() {
             <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "20px" }}>
               {editingPurchaseId ? "Edit Purchase" : "Record Purchase"}
             </h2>
+            {editingPurchaseId && purchases.find(p => p.id === editingPurchaseId)?.journal_entry_id && (
+              <div style={{ background: "#FEF3C7", border: "1px solid #FCD34D", borderRadius: "7px", padding: "10px 14px", marginBottom: "16px", fontSize: "12px", color: "#92400E" }}>
+                <strong>Posted purchase — </strong>supplier, date, amounts and category are locked by the General Ledger. Only description, notes and linked orders can be changed.
+              </div>
+            )}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }} className="form-grid">
               <div style={{ gridColumn: "1 / -1" }}>
                 <label style={ss.label}>Supplier *</label>
@@ -714,9 +823,16 @@ export default function SuppliersModule() {
                 <label style={ss.label}>Items bought</label>
                 <textarea style={ss.textarea} value={purchaseForm.items_bought} onChange={e => setPurchaseForm({ ...purchaseForm, items_bought: e.target.value })} placeholder="e.g. 20 boards Mahogany 2×4, 5 sheets MDF 18mm" rows={3} />
               </div>
+              <div style={{ gridColumn: "1 / -1" }}>
+                <label style={ss.label}>Accounting category</label>
+                <select style={ss.input} value={purchaseForm.accounting_category_id} onChange={e => setPurchaseForm({ ...purchaseForm, accounting_category_id: e.target.value })}>
+                  <option value="">— Select category (optional) —</option>
+                  {accountingCategories.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                </select>
+              </div>
               <div>
                 <label style={ss.label}>Total amount (KSh) *</label>
-                <input style={ss.input} type="number" min="0" step="1" value={purchaseForm.total_amount} onChange={e => setPurchaseForm({ ...purchaseForm, total_amount: e.target.value })} placeholder="0" />
+                <input style={ss.input} type="number" min="0.01" step="1" value={purchaseForm.total_amount} onChange={e => setPurchaseForm({ ...purchaseForm, total_amount: e.target.value })} placeholder="0" />
               </div>
               <div>
                 <label style={ss.label}>Amount paid (KSh)</label>
@@ -736,6 +852,21 @@ export default function SuppliersModule() {
                     </strong>
                   </div>
                 </div>
+              )}
+              {/* Initial payment method — only shown for new purchases when amount_paid > 0 */}
+              {!editingPurchaseId && parseFloat(purchaseForm.amount_paid) > 0 && (
+                <>
+                  <div>
+                    <label style={ss.label}>Payment method</label>
+                    <select style={ss.input} value={purchaseForm.initial_payment_method} onChange={e => setPurchaseForm({ ...purchaseForm, initial_payment_method: e.target.value })}>
+                      {PAYMENT_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={ss.label}>Payment reference</label>
+                    <input style={ss.input} value={purchaseForm.initial_payment_reference} onChange={e => setPurchaseForm({ ...purchaseForm, initial_payment_reference: e.target.value })} placeholder="e.g. QDK91XMPL" />
+                  </div>
+                </>
               )}
               <div style={{ gridColumn: "1 / -1" }}>
                 <label style={ss.label}>Notes</label>
@@ -913,21 +1044,59 @@ export default function SuppliersModule() {
       {/* ── DELETE CONFIRM ────────────────────────────────────────── */}
       {deleteTarget && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}
-          onClick={() => setDeleteTarget(null)}>
-          <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "100%", maxWidth: "380px" }}
+          onClick={() => { if (!reversing) { setDeleteTarget(null); setDeleteError(""); setDeleteJournalId(null); setShowReversalInput(false); setReversalReason(""); } }}>
+          <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "100%", maxWidth: "400px" }}
             onClick={e => e.stopPropagation()}>
             <div style={{ fontSize: "24px", marginBottom: "12px" }}>⚠️</div>
             <h3 style={{ fontSize: "16px", fontWeight: 700, marginBottom: "8px" }}>
               Delete {deleteTarget.type === "supplier" ? "Supplier" : "Purchase"}
             </h3>
-            <p style={{ fontSize: "13px", color: "#666", marginBottom: "20px" }}>
+            <p style={{ fontSize: "13px", color: "#666", marginBottom: "16px" }}>
               Delete <strong>{deleteTarget.label}</strong>? This cannot be undone.
               {deleteTarget.type === "supplier" && " Suppliers with purchases cannot be deleted."}
             </p>
-            <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
-              <button onClick={() => setDeleteTarget(null)} style={{ padding: "9px 18px", borderRadius: "8px", border: "1.5px solid #e0e0e0", background: "#fff", color: "#666", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>Cancel</button>
-              <button onClick={confirmDelete} style={{ padding: "9px 18px", borderRadius: "8px", border: "none", background: "#C62828", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>Delete</button>
-            </div>
+
+            {/* 409 error — journal entry blocks deletion */}
+            {deleteError && !showReversalInput && (
+              <div style={{ background: "#FEF3C7", border: "1px solid #FCD34D", borderRadius: "7px", padding: "12px 14px", marginBottom: "14px" }}>
+                <div style={{ fontSize: "12px", color: "#92400E", marginBottom: deleteJournalId ? "10px" : 0 }}>{deleteError}</div>
+                {deleteJournalId && (
+                  <button
+                    onClick={() => { setShowReversalInput(true); setDeleteError(""); }}
+                    style={{ padding: "6px 14px", borderRadius: "6px", border: "none", background: "#92400E", color: "#fff", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>
+                    Reverse journal entry first
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Reversal reason input */}
+            {showReversalInput && (
+              <div style={{ background: "#f9f9f7", border: "1px solid #e0e0e0", borderRadius: "7px", padding: "12px 14px", marginBottom: "14px" }}>
+                <div style={{ fontSize: "12px", fontWeight: 600, color: "#333", marginBottom: "8px" }}>Why are you reversing this journal entry?</div>
+                <textarea
+                  autoFocus
+                  style={{ ...ss.textarea, minHeight: "50px", marginBottom: "10px" }}
+                  value={reversalReason}
+                  onChange={e => setReversalReason(e.target.value)}
+                  placeholder="e.g. Wrong category — re-posting with correct account"
+                />
+                {deleteError && <div style={{ fontSize: "12px", color: "#C62828", marginBottom: "8px" }}>{deleteError}</div>}
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button onClick={() => { setShowReversalInput(false); setDeleteError(""); setReversalReason(""); }} style={{ flex: 1, padding: "7px", borderRadius: "6px", border: "1.5px solid #e0e0e0", background: "#fff", color: "#666", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}>Back</button>
+                  <button onClick={confirmReversal} disabled={reversing || !reversalReason.trim()} style={{ flex: 2, padding: "7px", borderRadius: "6px", border: "none", background: reversalReason.trim() && !reversing ? "#1a1a1a" : "#ccc", color: "#fff", fontSize: "12px", fontWeight: 600, cursor: reversalReason.trim() && !reversing ? "pointer" : "not-allowed" }}>
+                    {reversing ? "Reversing…" : "Reverse & delete"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {!showReversalInput && (
+              <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+                <button onClick={() => { setDeleteTarget(null); setDeleteError(""); setDeleteJournalId(null); }} style={{ padding: "9px 18px", borderRadius: "8px", border: "1.5px solid #e0e0e0", background: "#fff", color: "#666", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+                {!deleteError && <button onClick={confirmDelete} style={{ padding: "9px 18px", borderRadius: "8px", border: "none", background: "#C62828", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>Delete</button>}
+              </div>
+            )}
           </div>
         </div>
       )}

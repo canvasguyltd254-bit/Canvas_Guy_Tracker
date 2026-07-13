@@ -302,8 +302,7 @@ function AttachmentsPanel({ orderId, userRole }) {
 const CAN_ADD_PAYMENT    = ['admin', 'production_manager', 'head_of_sales', 'sales'];
 const CAN_DELETE_PAYMENT = ['admin'];
 
-function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, userRole, orderStatus }) {
-  const [payments, setPayments]   = useState([]);
+function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, userRole, orderStatus, payments, setPayments }) {
   const [loading, setLoading]     = useState(true);
   const [amt, setAmt]             = useState('');
   const [desc, setDesc]           = useState('');
@@ -315,7 +314,7 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
     const { data } = await supabase.from('order_payments').select('*').eq('order_id', orderId).order('payment_date');
     setPayments(data || []);
     setLoading(false);
-  }, [orderId]);
+  }, [orderId, setPayments]);
 
   useEffect(() => { loadPayments(); }, [loadPayments]);
 
@@ -555,6 +554,158 @@ function ActivityLog({ orderId }) {
   );
 }
 
+// ── P&L Tab ───────────────────────────────────────────────────────────────────
+function PnLTab({ orderId, contractTotal, itemsSubtotal, chargeItems, payments }) {
+  const [purchases, setPurchases]   = useState([]);
+  const [totals, setTotals]         = useState({ totalCost: 0, totalPaidAP: 0, outstandingAP: 0 });
+  const [loading, setLoading]       = useState(true);
+  const [fetchError, setFetchError] = useState(null);
+
+  useEffect(() => {
+    fetch(`/api/orders/${orderId}/pnl`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.success) {
+          setPurchases(d.purchases || []);
+          setTotals(d.totals || { totalCost: 0, totalPaidAP: 0, outstandingAP: 0 });
+        } else {
+          setFetchError(d.error || 'Failed to load P&L data');
+        }
+        setLoading(false);
+      })
+      .catch(() => { setFetchError('Failed to load P&L data'); setLoading(false); });
+  }, [orderId]);
+
+  const totalPaid   = (payments || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+  const totalCost   = totals.totalCost;
+  const grossProfit = contractTotal - totalCost;
+  const margin      = contractTotal > 0 ? (grossProfit / contractTotal) * 100 : 0;
+  const profitColor = grossProfit >= 0 ? '#16a34a' : '#dc2626';
+  const chargesSubtotalLocal = (chargeItems || []).reduce((s, i) => s + (parseFloat(i.unit_price) || 0), 0);
+  void chargesSubtotalLocal; // used via chargeItems map below
+
+  const kpiCard = (label, value, color = '#111', sub = null) => (
+    <div style={{ background: '#fff', border: '1px solid #e8e8e5', borderRadius: '10px', padding: '16px 18px', textAlign: 'center', flex: '1 1 0' }}>
+      <div style={{ fontSize: '10px', color: '#6b7280', fontWeight: 700, textTransform: 'uppercase', marginBottom: '6px', letterSpacing: '0.05em' }}>{label}</div>
+      <div style={{ fontSize: '20px', fontWeight: 800, fontFamily: 'monospace', color }}>{value}</div>
+      {sub && <div style={{ fontSize: '10px', color: '#9ca3af', marginTop: '4px' }}>{sub}</div>}
+    </div>
+  );
+
+  if (loading) return <p style={{ fontSize: '13px', color: '#bbb', padding: '24px 0' }}>Loading P&L data...</p>;
+  if (fetchError) return <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '8px', padding: '12px 16px', fontSize: '13px', color: '#dc2626' }}>⚠ {fetchError}</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+      {/* KPI row */}
+      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+        {kpiCard('Contract Total', fmtKES(contractTotal))}
+        {kpiCard('Total Costs', fmtKES(totalCost), '#E8512A')}
+        {kpiCard('Gross Profit', fmtKES(grossProfit), profitColor)}
+        {kpiCard('Gross Margin', `${Math.round(margin)}%`, profitColor, grossProfit < 0 ? 'Loss-making' : margin >= 50 ? 'Healthy' : 'Low margin')}
+      </div>
+
+      {/* Revenue breakdown */}
+      <div style={{ background: '#fff7ed', border: '2px solid #E8512A', borderRadius: '10px', padding: '18px 22px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 700, color: '#92400e', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px' }}>Revenue</div>
+        <div style={{ fontSize: '13px', color: '#374151' }}>
+          {itemsSubtotal > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+              <span>Items subtotal</span>
+              <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>KES {Math.round(itemsSubtotal).toLocaleString('en-KE')}</span>
+            </div>
+          )}
+          {(chargeItems || []).map((ci, idx) => (
+            <div key={ci.id || idx} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
+              <span>{ci.category}</span>
+              <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>KES {Math.round(parseFloat(ci.unit_price) || 0).toLocaleString('en-KE')}</span>
+            </div>
+          ))}
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, borderTop: '1px solid #fbd5b0', paddingTop: '8px', marginTop: '4px', marginBottom: '12px' }}>
+            <span>Contract Total</span>
+            <span style={{ fontFamily: 'monospace' }}>KES {Math.round(contractTotal).toLocaleString('en-KE')}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px', color: '#16a34a' }}>
+            <span>Received from client</span>
+            <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>KES {Math.round(totalPaid).toLocaleString('en-KE')}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', color: contractTotal - totalPaid > 0.01 ? '#E8512A' : '#16a34a' }}>
+            <span>Outstanding (receivable)</span>
+            <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>KES {Math.round(Math.max(0, contractTotal - totalPaid)).toLocaleString('en-KE')}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Cost breakdown */}
+      <div style={{ background: '#fff', border: '1px solid #e8e8e5', borderRadius: '10px', padding: '18px 22px' }}>
+        <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '14px' }}>
+          Supplier Costs ({purchases.length} purchase{purchases.length !== 1 ? 's' : ''} linked)
+        </div>
+
+        {purchases.length === 0 ? (
+          <p style={{ fontSize: '13px', color: '#9ca3af', fontStyle: 'italic' }}>
+            No supplier costs linked to this order yet. Link purchases from the Suppliers module.
+          </p>
+        ) : (
+          <>
+            {/* Header row */}
+            <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr 2fr 110px', gap: '8px', fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px', paddingBottom: '6px', borderBottom: '1px solid #f0ede8' }}>
+              <span>Date</span>
+              <span>Supplier</span>
+              <span>Description</span>
+              <span style={{ textAlign: 'right' }}>Amount</span>
+            </div>
+
+            {/* Purchase rows */}
+            {purchases.map(p => (
+              <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '90px 1fr 2fr 110px', gap: '8px', fontSize: '13px', color: '#374151', padding: '8px 0', borderBottom: '1px solid #f9f8f6', alignItems: 'start' }}>
+                <span style={{ fontSize: '11px', color: '#9ca3af' }}>{fmtDate(p.purchase_date)}</span>
+                <span style={{ fontWeight: 600, color: '#111' }}>{p.supplier?.name || '—'}</span>
+                <span style={{ color: '#6b7280', fontSize: '12px' }}>{p.items_bought || '—'}</span>
+                <span style={{ fontFamily: 'monospace', fontWeight: 700, textAlign: 'right' }}>
+                  KES {Math.round(p.total_amount).toLocaleString('en-KE')}
+                </span>
+              </div>
+            ))}
+
+            {/* Total row */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: '14px', paddingTop: '12px', marginTop: '4px', borderTop: '2px solid #e8e8e5' }}>
+              <span style={{ color: '#374151' }}>Total Costs</span>
+              <span style={{ fontFamily: 'monospace', color: '#E8512A' }}>KES {Math.round(totalCost).toLocaleString('en-KE')}</span>
+            </div>
+
+            {/* AP status note */}
+            {totals.outstandingAP > 0.01 && (
+              <div style={{ marginTop: '10px', fontSize: '12px', color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '6px', padding: '8px 12px' }}>
+                ⚠ KES {Math.round(totals.outstandingAP).toLocaleString('en-KE')} still owed to suppliers (outstanding AP)
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Bottom profit summary */}
+      {contractTotal > 0 && (
+        <div style={{ background: grossProfit >= 0 ? '#f0fdf4' : '#fef2f2', border: `2px solid ${profitColor}`, borderRadius: '10px', padding: '16px 22px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: grossProfit >= 0 ? '#15803d' : '#b91c1c', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '4px' }}>
+              {grossProfit >= 0 ? '✓ Gross Profit' : '✗ Gross Loss'}
+            </div>
+            <div style={{ fontSize: '22px', fontWeight: 900, fontFamily: 'monospace', color: profitColor }}>
+              KES {Math.round(Math.abs(grossProfit)).toLocaleString('en-KE')}
+            </div>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', marginBottom: '4px' }}>Gross Margin</div>
+            <div style={{ fontSize: '32px', fontWeight: 900, fontFamily: 'monospace', color: profitColor }}>{Math.round(margin)}%</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN PAGE
 // ─────────────────────────────────────────────────────────────────────────────
@@ -576,6 +727,9 @@ export default function OrderFormPage() {
   const [editedDeliveryContact, setEditedDeliveryContact]           = useState('');
   const [editedDeliveryInstructions, setEditedDeliveryInstructions] = useState('');
   const [saving, setSaving]           = useState(false);
+
+  // Payments state — lifted from PaymentPanel so PnLTab can read totalPaid
+  const [payments, setPayments]       = useState([]);
 
   // Modal state
   const [modal, setModal]             = useState(null); // null | 'rework' | 'refund' | 'repair' | 'credit' | 'quote'
@@ -722,15 +876,18 @@ export default function OrderFormPage() {
   const isCredit = ['reseller', 'commercial'].includes(order.customer_type)
     && CREDIT_TERMS.includes(order.payment_terms);
 
-  const BATCH_ROLES   = ['admin', 'head_of_sales', 'production_manager'];
+  const BATCH_ROLES    = ['admin', 'head_of_sales', 'production_manager'];
   const canToggleBatch = BATCH_ROLES.includes(userRole);
-  const totalQty      = items.filter(i => !isChargeItem(i)).reduce((s, i) => s + (parseInt(i.quantity) || 1), 0);
-  const batchWarning  = !order.batch_delivery && canToggleBatch && (contractTotal >= 500000 || totalQty >= 100);
+  const totalQty       = items.filter(i => !isChargeItem(i)).reduce((s, i) => s + (parseInt(i.quantity) || 1), 0);
+  // Eligible: physical qty > 20 OR order value >= KES 500,000 (charges excluded from qty)
+  const batchEligible  = totalQty > 20 || contractTotal >= 500000;
+  const batchWarning   = !order.batch_delivery && canToggleBatch && (contractTotal >= 500000 || totalQty >= 100);
 
-  // Build status list: always exclude "Cancelled / Refunded", also exclude "Partially Delivered" if not batch
+  // Build status list: exclude "Cancelled / Refunded" always; exclude "Partially Delivered" always
+  // (batch orders stay in Production until full completion — no Partially Delivered intermediate state)
   const sList = (() => {
     let base = getStatusList(order.order_type);
-    if (!order.batch_delivery) base = base.filter(s => s !== 'Partially Delivered');
+    base = base.filter(s => s !== 'Partially Delivered');
     return base;
   })();
   const cIdx  = sList.indexOf(order.status);
@@ -1195,6 +1352,7 @@ export default function OrderFormPage() {
           {[
             { id: 'info',     label: 'Info',     icon: '📋' },
             { id: 'payments', label: 'Payments', icon: '💰' },
+            { id: 'pnl',      label: 'P&L',      icon: '📊' },
             { id: 'delivery', label: 'Delivery', icon: '🚚' },
             { id: 'drawings', label: 'Files',    icon: '📐' },
             { id: 'activity', label: 'Activity', icon: '🕐' },
@@ -1264,7 +1422,7 @@ export default function OrderFormPage() {
                   <div style={{ gridColumn: '1/-1' }}>
                     <div style={{ display: 'inline-block', background: '#dcfce7', color: '#166534', fontSize: '10px', fontWeight: 700, padding: '3px 8px', borderRadius: '4px' }}>✓ Batch delivery</div>
                   </div>
-                ) : canToggleBatch && (
+                ) : canToggleBatch && batchEligible && (
                   <div style={{ gridColumn: '1/-1' }}>
                     {!batchConfirm ? (
                       <button
@@ -1536,10 +1694,28 @@ export default function OrderFormPage() {
               chargeItems={displayItems.filter(i => isChargeItem(i))}
               userRole={userRole}
               orderStatus={order.status}
+              payments={payments}
+              setPayments={setPayments}
             />
           </div>
           <div style={sectionLabel}>💬 Notes</div>
           <div style={card}><NotesThread orderId={id} /></div>
+        </>)}
+
+        {/* ═══════════════════════════════════════════════════
+            TAB: P&L
+            ═══════════════════════════════════════════════════ */}
+        {activeTab === 'pnl' && (<>
+          <div style={sectionLabel}>📊 Project P&amp;L</div>
+          <div style={card}>
+            <PnLTab
+              orderId={id}
+              contractTotal={contractTotal}
+              itemsSubtotal={itemsSubtotal}
+              chargeItems={displayItems.filter(i => isChargeItem(i))}
+              payments={payments}
+            />
+          </div>
         </>)}
 
         {/* ═══════════════════════════════════════════════════

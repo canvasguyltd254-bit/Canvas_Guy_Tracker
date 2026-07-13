@@ -157,7 +157,7 @@ export async function POST(request, { params }) {
     const batchInsert = pick(
       {
         order_id: orderId,
-        status: 'Planned',
+        status: 'Quality Control',   // batches begin at QC before planning
         created_by: user.id,
         ...batchFields,
       },
