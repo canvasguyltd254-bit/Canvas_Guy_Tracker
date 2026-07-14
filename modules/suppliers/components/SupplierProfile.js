@@ -17,7 +17,7 @@ function fmtDate(s) {
   }
 }
 
-const PAYMENT_METHODS = ["Cash", "Bank Transfer", "M-Pesa", "Cheque", "Other"];
+const PAYMENT_METHODS = ["Cash", "M-Pesa", "Bank Transfer", "Other"];
 
 const WRITE_ROLES = ["admin", "production_manager", "head_of_sales"];
 
@@ -68,7 +68,7 @@ function StatCard({ label, value, color = "#1a1a1a", sub }) {
 
 // ── Overview Tab ──────────────────────────────────────────────────────────────
 
-function OverviewTab({ supplier, stats, canWrite, onEdit }) {
+function OverviewTab({ supplier, stats, canWrite, canReverseOB, onEdit, onReverseOB }) {
   return (
     <div>
       {/* Stats */}
@@ -133,12 +133,264 @@ function OverviewTab({ supplier, stats, canWrite, onEdit }) {
           )}
           {supplier.opening_balance > 0 && (
             <div style={{ gridColumn: "1 / -1", background: "#f9f9f7", borderRadius: "8px", padding: "12px" }}>
-              <div style={ss.label}>Opening balance</div>
-              <div style={{ fontSize: "14px", fontWeight: 700, color: "#92400E" }}>{fmt(supplier.opening_balance)}</div>
-              {supplier.opening_balance_date && <div style={{ fontSize: "12px", color: "#999", marginTop: "2px" }}>As of {fmtDate(supplier.opening_balance_date)}</div>}
-              {supplier.opening_balance_notes && <div style={{ fontSize: "12px", color: "#666", marginTop: "4px", fontStyle: "italic" }}>{supplier.opening_balance_notes}</div>}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
+                <div style={{ flex: 1 }}>
+                  <div style={ss.label}>Opening balance</div>
+                  <div style={{ fontSize: "14px", fontWeight: 700, color: "#92400E" }}>{fmt(supplier.opening_balance)}</div>
+                  {supplier.opening_balance_date && <div style={{ fontSize: "12px", color: "#999", marginTop: "2px" }}>As of {fmtDate(supplier.opening_balance_date)}</div>}
+                  {supplier.opening_balance_notes && <div style={{ fontSize: "12px", color: "#666", marginTop: "4px", fontStyle: "italic" }}>{supplier.opening_balance_notes}</div>}
+                  {supplier.opening_balance_journal_entry_id && (
+                    <div style={{ fontSize: "11px", color: "#065F46", background: "#D1FAE5", border: "1px solid #6EE7B7", borderRadius: "4px", padding: "2px 7px", marginTop: "6px", display: "inline-block" }}>
+                      ✓ Posted to GL
+                    </div>
+                  )}
+                </div>
+                {canReverseOB && supplier.opening_balance_journal_entry_id && (
+                  <button
+                    onClick={onReverseOB}
+                    style={{ flexShrink: 0, padding: "6px 12px", borderRadius: "6px", border: "1.5px solid #FCA5A5", background: "#FEF2F2", color: "#991B1B", fontSize: "12px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
+                  >
+                    Reverse & Correct
+                  </button>
+                )}
+              </div>
             </div>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Reverse Opening Balance Modal ─────────────────────────────────────────────
+
+function ReverseOBModal({ supplier, onClose, onSuccess }) {
+  const [reason, setReason]   = useState("");
+  const [saving, setSaving]   = useState(false);
+  const [error,  setError]    = useState("");
+
+  const handleReverse = async () => {
+    const trimmed = reason.trim();
+    if (!trimmed) { setError("Please enter a reason for the reversal."); return; }
+    setSaving(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/journal-entries/${supplier.opening_balance_journal_entry_id}/reverse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: trimmed }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || "Reversal failed");
+      onSuccess();
+    } catch (err) {
+      setError(err.message);
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}
+      onClick={onClose}
+    >
+      <div
+        style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "100%", maxWidth: "440px" }}
+        onClick={e => e.stopPropagation()}
+      >
+        <h2 style={{ fontSize: "17px", fontWeight: 700, margin: "0 0 6px" }}>Reverse Opening Balance</h2>
+        <p style={{ fontSize: "13px", color: "#666", margin: "0 0 18px", lineHeight: 1.5 }}>
+          This will create an equal-and-opposite journal entry and unlock the opening balance so you can correct it.
+          The original posted amount was <strong>KSh {Number(supplier.opening_balance || 0).toLocaleString("en-KE")}</strong>.
+        </p>
+
+        <label style={ss.label}>Reason for reversal *</label>
+        <textarea
+          value={reason}
+          onChange={e => setReason(e.target.value)}
+          placeholder="e.g. Opening balance corrected from 788,347 to 673,652"
+          rows={3}
+          style={{ ...ss.textarea, marginBottom: "16px" }}
+        />
+
+        {error && (
+          <div style={{ fontSize: "13px", color: "#C62828", background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: "6px", padding: "8px 12px", marginBottom: "14px" }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+          <button
+            onClick={onClose}
+            disabled={saving}
+            style={{ padding: "8px 18px", borderRadius: "7px", border: "1.5px solid #e0e0e0", background: "#fff", color: "#333", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleReverse}
+            disabled={saving || !reason.trim()}
+            style={{ padding: "8px 18px", borderRadius: "7px", border: "none", background: saving ? "#ccc" : "#C62828", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: saving ? "not-allowed" : "pointer" }}
+          >
+            {saving ? "Reversing…" : "Confirm Reversal"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Edit Supplier Modal ───────────────────────────────────────────────────────
+
+function EditSupplierModal({ supplier, onClose, onSaved }) {
+  const obPosted = !!(supplier.opening_balance_journal_entry_id);
+
+  const [form, setForm]   = useState({
+    name:                  supplier.name                  || "",
+    contact_person:        supplier.contact_person        || "",
+    phone:                 supplier.phone                 || "",
+    email:                 supplier.email                 || "",
+    materials_supplied:    supplier.materials_supplied    || "",
+    notes:                 supplier.notes                 || "",
+    opening_balance:       supplier.opening_balance       || "",
+    opening_balance_date:  supplier.opening_balance_date  || "",
+    opening_balance_notes: supplier.opening_balance_notes || "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [error,  setError]  = useState("");
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const save = async () => {
+    if (!form.name.trim()) { setError("Supplier name is required."); return; }
+    setSaving(true);
+    setError("");
+    try {
+      const body = {
+        name:                  form.name.trim(),
+        contact_person:        form.contact_person.trim()        || null,
+        phone:                 form.phone.trim()                 || null,
+        email:                 form.email.trim()                 || null,
+        materials_supplied:    form.materials_supplied.trim()    || null,
+        notes:                 form.notes.trim()                 || null,
+        opening_balance_notes: form.opening_balance_notes.trim() || null,
+        // Only send OB fields if not posted to GL
+        ...(!obPosted && {
+          opening_balance:      parseFloat(form.opening_balance)      || null,
+          opening_balance_date: form.opening_balance_date             || null,
+        }),
+      };
+      const res  = await fetch(`/api/suppliers/${supplier.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || "Save failed");
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+    }
+    setSaving(false);
+  };
+
+  const inputStyle  = { ...ss.input };
+  const lockedStyle = { ...ss.input, opacity: 0.55, cursor: "not-allowed", background: "#f5f5f5" };
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "100%", maxWidth: "520px", maxHeight: "90vh", overflowY: "auto" }}
+        onClick={e => e.stopPropagation()}
+      >
+        <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "20px" }}>Edit Supplier</h2>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }} className="form-grid">
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={ss.label}>Supplier name *</label>
+            <input style={inputStyle} type="text" value={form.name} onChange={e => set("name", e.target.value)} placeholder="e.g. Timber Express" />
+          </div>
+          <div>
+            <label style={ss.label}>Contact person</label>
+            <input style={inputStyle} type="text" value={form.contact_person} onChange={e => set("contact_person", e.target.value)} placeholder="Full name" />
+          </div>
+          <div>
+            <label style={ss.label}>Phone</label>
+            <input style={inputStyle} type="tel" value={form.phone} onChange={e => set("phone", e.target.value)} placeholder="+254 7xx xxx xxx" />
+          </div>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={ss.label}>Email</label>
+            <input style={inputStyle} type="email" value={form.email} onChange={e => set("email", e.target.value)} placeholder="email@example.com" />
+          </div>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={ss.label}>Materials supplied</label>
+            <input style={inputStyle} type="text" value={form.materials_supplied} onChange={e => set("materials_supplied", e.target.value)} placeholder="e.g. Timber, MDF, Upholstery fabric" />
+          </div>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={ss.label}>Notes</label>
+            <textarea style={ss.textarea} value={form.notes} onChange={e => set("notes", e.target.value)} placeholder="Payment terms, lead times, etc." rows={3} />
+          </div>
+
+          {/* Opening balance — locked when posted to GL */}
+          <div style={{ gridColumn: "1 / -1", borderTop: "1px dashed #e0e0e0", paddingTop: "14px", marginTop: "4px" }}>
+            <div style={{ fontSize: "12px", fontWeight: 700, color: "#555", marginBottom: "10px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Opening balance</div>
+            {obPosted && (
+              <div style={{ fontSize: "12px", color: "#92400E", background: "#FEF3C7", border: "1px solid #FCD34D", borderRadius: "6px", padding: "8px 12px", marginBottom: "10px" }}>
+                Posted to GL — go to Overview tab and click <strong>Reverse & Correct</strong> to change the amount.
+              </div>
+            )}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
+              <div>
+                <label style={ss.label}>Amount (KSh)</label>
+                <input
+                  style={obPosted ? lockedStyle : inputStyle}
+                  type="number" min="0" step="1"
+                  value={form.opening_balance}
+                  onChange={e => set("opening_balance", e.target.value)}
+                  placeholder="0"
+                  disabled={obPosted}
+                />
+              </div>
+              <div>
+                <label style={ss.label}>As of date</label>
+                <input
+                  style={obPosted ? lockedStyle : inputStyle}
+                  type="date"
+                  value={form.opening_balance_date}
+                  onChange={e => set("opening_balance_date", e.target.value)}
+                  disabled={obPosted}
+                />
+              </div>
+              <div style={{ gridColumn: "1 / -1" }}>
+                <label style={ss.label}>Notes on opening balance</label>
+                <input
+                  style={inputStyle}
+                  type="text"
+                  value={form.opening_balance_notes}
+                  onChange={e => set("opening_balance_notes", e.target.value)}
+                  placeholder="e.g. Pre-tracker debt from invoices Jan–Mar"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ fontSize: "13px", color: "#C62828", background: "#FEF2F2", border: "1px solid #FCA5A5", borderRadius: "6px", padding: "8px 12px", marginTop: "14px" }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end", marginTop: "20px" }}>
+          <button onClick={onClose} disabled={saving} style={{ padding: "10px 20px", borderRadius: "8px", border: "1.5px solid #e0e0e0", background: "#fff", color: "#666", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
+            Cancel
+          </button>
+          <button onClick={save} disabled={saving} style={{ padding: "10px 24px", borderRadius: "8px", border: "none", background: saving ? "#ccc" : "#1a1a1a", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: saving ? "not-allowed" : "pointer" }}>
+            {saving ? "Saving…" : "Save changes"}
+          </button>
         </div>
       </div>
     </div>
@@ -360,9 +612,218 @@ function AddPurchaseModal({ supplier, onClose, onSaved }) {
   );
 }
 
+// ── Link Orders Modal ─────────────────────────────────────────────────────────
+//
+// Option B — each order link carries its own allocated amount.
+// State: orderLinks = [{ order_id, amount }]
+// The sum of amounts shows against the purchase total so the user can
+// see exactly how much is allocated vs. unallocated.
+
+function LinkOrdersModal({ purchase, onClose, onSaved }) {
+  // Initialise from existing links; carry forward any saved amounts
+  const existingLinks = (purchase.purchase_order_links || []).map(l => ({
+    order_id: l.order_id,
+    amount:   l.amount != null ? String(l.amount) : "",
+  }));
+  const [orderLinks, setOrderLinks] = useState(existingLinks);
+  const [orders,     setOrders]     = useState([]);
+  const [search,     setSearch]     = useState("");
+  const [saving,     setSaving]     = useState(false);
+  const [error,      setError]      = useState("");
+
+  const purchaseTotal = parseFloat(purchase.total_amount || 0);
+
+  useEffect(() => {
+    fetch("/api/orders?status=all&limit=200")
+      .then(r => r.json())
+      .then(d => { if (d.success) setOrders(d.data || []); })
+      .catch(() => {});
+  }, []);
+
+  const linkedIds = orderLinks.map(l => l.order_id);
+  const linked    = orders.filter(o => linkedIds.includes(o.id));
+  const filtered  = orders.filter(o =>
+    !linkedIds.includes(o.id) &&
+    ((o.order_num || "").toLowerCase().includes(search.toLowerCase()) ||
+     (o.client    || "").toLowerCase().includes(search.toLowerCase()))
+  ).slice(0, 40);
+
+  // Running allocation total
+  const allocated = orderLinks.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+  const remaining = purchaseTotal - allocated;
+  const overAlloc = remaining < -0.01;
+
+  const addOrder  = (orderId) => {
+    // Pre-fill with remaining unallocated amount (capped at 0)
+    const pre = Math.max(remaining, 0);
+    setOrderLinks(ls => [...ls, { order_id: orderId, amount: pre > 0 ? String(Math.round(pre)) : "" }]);
+    setSearch("");
+  };
+  const removeOrder = (orderId) => setOrderLinks(ls => ls.filter(l => l.order_id !== orderId));
+  const setAmount   = (orderId, val) => setOrderLinks(ls => ls.map(l => l.order_id === orderId ? { ...l, amount: val } : l));
+
+  const save = async () => {
+    setError("");
+    if (overAlloc) { setError(`Allocated (${fmt(allocated)}) exceeds purchase total (${fmt(purchaseTotal)}). Reduce one or more amounts.`); return; }
+    setSaving(true);
+    try {
+      const order_links = orderLinks.map(l => ({
+        order_id: l.order_id,
+        amount:   l.amount !== "" && l.amount !== null ? parseFloat(l.amount) : null,
+      }));
+      const res  = await fetch(`/api/purchases/${purchase.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order_links }),
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || "Save failed");
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        style={{ background: "#fff", borderRadius: "12px", width: "100%", maxWidth: "520px", maxHeight: "90vh", display: "flex", flexDirection: "column", overflow: "hidden" }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid #f0ede8" }}>
+          <div style={{ fontSize: "16px", fontWeight: 700, marginBottom: "2px" }}>Split Purchase Across Orders</div>
+          <div style={{ fontSize: "12px", color: "#999" }}>
+            {fmtDate(purchase.purchase_date)}
+            {purchase.items_bought ? ` · ${purchase.items_bought.slice(0, 55)}${purchase.items_bought.length > 55 ? "…" : ""}` : ""}
+          </div>
+          {/* Allocation progress bar */}
+          <div style={{ marginTop: "12px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "5px" }}>
+              <span style={{ fontSize: "11px", color: "#888", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.4px" }}>Allocated</span>
+              <span style={{ fontSize: "12px", fontWeight: 700, color: overAlloc ? "#C62828" : allocated > 0 ? "#065F46" : "#999" }}>
+                {fmt(allocated)} / {fmt(purchaseTotal)}
+              </span>
+            </div>
+            <div style={{ height: "5px", background: "#f0ede8", borderRadius: "3px", overflow: "hidden" }}>
+              <div style={{
+                height: "100%", borderRadius: "3px", transition: "width 0.2s, background 0.2s",
+                width: purchaseTotal > 0 ? `${Math.min(allocated / purchaseTotal * 100, 100)}%` : "0%",
+                background: overAlloc ? "#C62828" : allocated >= purchaseTotal - 0.01 ? "#065F46" : "#E8512A",
+              }} />
+            </div>
+            {purchaseTotal > 0 && Math.abs(remaining) > 0.01 && (
+              <div style={{ fontSize: "11px", marginTop: "4px", color: overAlloc ? "#C62828" : "#999" }}>
+                {overAlloc ? `⚠ Over by ${fmt(Math.abs(remaining))}` : `${fmt(remaining)} unallocated`}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
+          {/* Linked orders with amount inputs */}
+          {linked.length > 0 && (
+            <div style={{ marginBottom: "16px" }}>
+              <div style={{ fontSize: "11px", fontWeight: 700, color: "#888", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>Linked orders</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {linked.map(o => {
+                  const link = orderLinks.find(l => l.order_id === o.id);
+                  return (
+                    <div key={o.id} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "9px 12px", border: "1.5px solid #E8512A", borderRadius: "8px", background: "#fff8f6" }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: "13px", fontWeight: 700, color: "#E8512A" }}>{o.order_num}</div>
+                        {o.client && <div style={{ fontSize: "11px", color: "#666", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.client}</div>}
+                      </div>
+                      {/* Amount input */}
+                      <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                        <span style={{ fontSize: "11px", color: "#888" }}>KSh</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={link?.amount ?? ""}
+                          onChange={e => setAmount(o.id, e.target.value)}
+                          placeholder="amount"
+                          style={{ width: "100px", padding: "5px 8px", border: "1.5px solid #e0e0e0", borderRadius: "5px", fontSize: "13px", fontFamily: "inherit", textAlign: "right" }}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeOrder(o.id)}
+                        style={{ background: "none", border: "none", cursor: "pointer", color: "#ccc", fontSize: "16px", padding: "0 2px", lineHeight: 1, flexShrink: 0 }}
+                        title="Remove"
+                      >✕</button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Search to add more orders */}
+          <div style={{ fontSize: "11px", fontWeight: 700, color: "#888", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "8px" }}>
+            {linked.length > 0 ? "Add another order" : "Search orders"}
+          </div>
+          <input
+            type="text"
+            placeholder="Search order number or client…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            autoFocus={linked.length === 0}
+            style={{ width: "100%", padding: "9px 12px", border: "1.5px solid #e0e0e0", borderRadius: "7px", fontSize: "14px", background: "#fafafa", boxSizing: "border-box", fontFamily: "inherit", marginBottom: "8px" }}
+          />
+          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+            {filtered.length === 0 ? (
+              <div style={{ padding: "20px", textAlign: "center", fontSize: "13px", color: "#bbb" }}>
+                {search ? "No orders match" : "No orders available"}
+              </div>
+            ) : filtered.map(o => (
+              <button
+                key={o.id}
+                type="button"
+                onClick={() => addOrder(o.id)}
+                style={{ display: "flex", alignItems: "center", gap: "10px", width: "100%", padding: "9px 10px", border: "none", borderRadius: "6px", background: "none", cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}
+                onMouseEnter={e => e.currentTarget.style.background = "#f9f8f6"}
+                onMouseLeave={e => e.currentTarget.style.background = "none"}
+              >
+                <span style={{ fontSize: "13px", fontWeight: 700, color: "#1a1a1a", minWidth: "70px" }}>{o.order_num}</span>
+                <span style={{ fontSize: "12px", color: "#666", flex: 1 }}>{o.client}</span>
+                <span style={{ fontSize: "11px", color: "#bbb" }}>{o.status}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: "14px 20px", borderTop: "1px solid #f0ede8" }}>
+          {error && (
+            <div style={{ fontSize: "12px", color: "#C62828", marginBottom: "10px" }}>{error}</div>
+          )}
+          <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+            <button onClick={onClose} disabled={saving} style={{ padding: "9px 18px", borderRadius: "7px", border: "1.5px solid #e0e0e0", background: "#fff", color: "#333", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
+              Cancel
+            </button>
+            <button
+              onClick={save}
+              disabled={saving || overAlloc}
+              style={{ padding: "9px 20px", borderRadius: "7px", border: "none", background: (saving || overAlloc) ? "#ccc" : "#1a1a1a", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: (saving || overAlloc) ? "not-allowed" : "pointer" }}
+            >
+              {saving ? "Saving…" : "Save links"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Purchases Tab ─────────────────────────────────────────────────────────────
 
-function PurchasesTab({ purchases, canWrite, onAddPurchase }) {
+function PurchasesTab({ purchases, canWrite, onAddPurchase, onLinkOrders }) {
   if (!purchases.length) {
     return (
       <div style={{ padding: "60px 20px", textAlign: "center" }}>
@@ -419,6 +880,17 @@ function PurchasesTab({ purchases, canWrite, onAddPurchase }) {
                 <div style={{ marginTop: "4px" }}><StatusBadge status={p.payment_status} /></div>
               </div>
             </div>
+            {/* Order link button */}
+            {canWrite && p.id && (
+              <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #f0ede8" }}>
+                <button
+                  onClick={() => onLinkOrders(p)}
+                  style={{ padding: "5px 12px", borderRadius: "5px", border: "1.5px solid #e0e0e0", background: "none", color: "#555", fontSize: "12px", fontWeight: 600, cursor: "pointer" }}
+                >
+                  {linkedOrders.length > 0 ? "✏ Edit order links" : "+ Link to order"}
+                </button>
+              </div>
+            )}
           </div>
         );
       })}
@@ -878,14 +1350,18 @@ export default function SupplierProfile({ supplierId }) {
   const [error, setError]       = useState(null);
   const [tab, setTab]           = useState("overview");
   const [userRole, setUserRole] = useState("viewer");
-  const [showPaymentModal, setShowPaymentModal]   = useState(false);
-  const [showPurchaseModal, setShowPurchaseModal] = useState(false);
-  const [exportingPDF, setExportingPDF]           = useState(false);
+  const [showEditModal, setShowEditModal]             = useState(false);
+  const [showPaymentModal, setShowPaymentModal]       = useState(false);
+  const [showPurchaseModal, setShowPurchaseModal]     = useState(false);
+  const [showReverseOBModal, setShowReverseOBModal]   = useState(false);
+  const [linkingPurchase, setLinkingPurchase]         = useState(null); // purchase being order-linked
+  const [exportingPDF, setExportingPDF]               = useState(false);
 
   const canWrite = WRITE_ROLES.includes(userRole);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // silent=true → background refresh; skips the skeleton so open modals aren't torn down
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const res = await fetch(`/api/suppliers/${supplierId}`);
@@ -896,7 +1372,7 @@ export default function SupplierProfile({ supplierId }) {
     } catch (err) {
       setError(err.message);
     }
-    setLoading(false);
+    if (!silent) setLoading(false);
   }, [supplierId]);
 
   useEffect(() => {
@@ -1089,7 +1565,9 @@ export default function SupplierProfile({ supplierId }) {
           supplier={data}
           stats={data.stats}
           canWrite={canWrite}
-          onEdit={() => router.push("/suppliers")} // opens list with edit modal — simplest approach
+          canReverseOB={userRole === "admin"}
+          onEdit={() => setShowEditModal(true)}
+          onReverseOB={() => setShowReverseOBModal(true)}
         />
       )}
       {tab === "purchases" && (
@@ -1097,6 +1575,7 @@ export default function SupplierProfile({ supplierId }) {
           purchases={data.purchases || []}
           canWrite={canWrite}
           onAddPurchase={() => setShowPurchaseModal(true)}
+          onLinkOrders={p => setLinkingPurchase(p)}
         />
       )}
       {tab === "statement" && (
@@ -1128,6 +1607,45 @@ export default function SupplierProfile({ supplierId }) {
           onSaved={async () => {
             setShowPurchaseModal(false);
             await load();
+          }}
+        />
+      )}
+
+      {/* Link orders modal */}
+      {linkingPurchase && (
+        <LinkOrdersModal
+          purchase={linkingPurchase}
+          onClose={() => setLinkingPurchase(null)}
+          onSaved={async () => {
+            setLinkingPurchase(null);
+            await load();
+          }}
+        />
+      )}
+
+      {/* Edit supplier modal */}
+      {showEditModal && (
+        <EditSupplierModal
+          supplier={data}
+          onClose={() => setShowEditModal(false)}
+          onSaved={async () => {
+            setShowEditModal(false);
+            await load();
+          }}
+        />
+      )}
+
+      {/* Reverse opening balance modal */}
+      {showReverseOBModal && (
+        <ReverseOBModal
+          supplier={data}
+          onClose={() => setShowReverseOBModal(false)}
+          onSuccess={async () => {
+            setShowReverseOBModal(false);
+            // Silent reload so the page doesn't skeleton-flash while we
+            // immediately open the Edit modal with the OB fields now unlocked.
+            await load(true);
+            setShowEditModal(true);
           }}
         />
       )}

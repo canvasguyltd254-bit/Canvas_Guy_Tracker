@@ -556,10 +556,11 @@ function ActivityLog({ orderId }) {
 
 // ── P&L Tab ───────────────────────────────────────────────────────────────────
 function PnLTab({ orderId, contractTotal, itemsSubtotal, chargeItems, payments }) {
-  const [purchases, setPurchases]   = useState([]);
-  const [totals, setTotals]         = useState({ totalCost: 0, totalPaidAP: 0, outstandingAP: 0 });
-  const [loading, setLoading]       = useState(true);
-  const [fetchError, setFetchError] = useState(null);
+  const [purchases, setPurchases]               = useState([]);
+  const [totals, setTotals]                     = useState({ totalCost: 0, totalPaidAP: 0, outstandingAP: 0 });
+  const [hasUnallocatedPurchases, setHasUnallocated] = useState(false);
+  const [loading, setLoading]                   = useState(true);
+  const [fetchError, setFetchError]             = useState(null);
 
   useEffect(() => {
     fetch(`/api/orders/${orderId}/pnl`)
@@ -568,6 +569,7 @@ function PnLTab({ orderId, contractTotal, itemsSubtotal, chargeItems, payments }
         if (d.success) {
           setPurchases(d.purchases || []);
           setTotals(d.totals || { totalCost: 0, totalPaidAP: 0, outstandingAP: 0 });
+          setHasUnallocated(!!d.hasUnallocatedPurchases);
         } else {
           setFetchError(d.error || 'Failed to load P&L data');
         }
@@ -597,6 +599,14 @@ function PnLTab({ orderId, contractTotal, itemsSubtotal, chargeItems, payments }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+      {/* Unallocated-purchase warning — shown when any linked purchase has no split amounts */}
+      {hasUnallocatedPurchases && (
+        <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', padding: '10px 14px', fontSize: '12px', color: '#92400e', lineHeight: 1.5 }}>
+          ⚠ One or more linked purchases have no cost split set. The full purchase amount is shown here, which may overstate costs if the purchase is shared across multiple orders.
+          Go to the <strong>Supplier profile → Purchases tab</strong> and click <strong>Edit order links</strong> to allocate amounts.
+        </div>
+      )}
 
       {/* KPI row */}
       <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
@@ -663,9 +673,17 @@ function PnLTab({ orderId, contractTotal, itemsSubtotal, chargeItems, payments }
                 <span style={{ fontSize: '11px', color: '#9ca3af' }}>{fmtDate(p.purchase_date)}</span>
                 <span style={{ fontWeight: 600, color: '#111' }}>{p.supplier?.name || '—'}</span>
                 <span style={{ color: '#6b7280', fontSize: '12px' }}>{p.items_bought || '—'}</span>
-                <span style={{ fontFamily: 'monospace', fontWeight: 700, textAlign: 'right' }}>
-                  KES {Math.round(p.total_amount).toLocaleString('en-KE')}
-                </span>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontFamily: 'monospace', fontWeight: 700 }}>
+                    KES {Math.round(p.total_amount).toLocaleString('en-KE')}
+                  </div>
+                  {/* Hint when this is a split allocation, not the full purchase */}
+                  {p.allocated_amount != null && p.purchase_total > p.allocated_amount + 0.01 && (
+                    <div style={{ fontSize: '10px', color: '#9ca3af', marginTop: '1px' }}>
+                      of {Math.round(p.purchase_total).toLocaleString('en-KE')} total
+                    </div>
+                  )}
+                </div>
               </div>
             ))}
 

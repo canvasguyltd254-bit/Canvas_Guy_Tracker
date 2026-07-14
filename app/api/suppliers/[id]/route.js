@@ -34,7 +34,7 @@ export async function GET(request, { params }) {
     // Fetch purchases (with linked order numbers)
     const { data: purchases } = await serviceClient
       .from('supplier_purchases')
-      .select('*, purchase_order_links(order_id, orders(order_num, client))')
+      .select('*, purchase_order_links(order_id, amount, orders(order_num, client))')
       .eq('supplier_id', params.id)
       .order('purchase_date', { ascending: true });
 

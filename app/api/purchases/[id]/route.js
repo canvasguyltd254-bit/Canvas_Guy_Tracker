@@ -29,7 +29,7 @@ export async function GET(request, { params }) {
 
     const { data, error } = await serviceClient
       .from('supplier_purchases')
-      .select('*, suppliers(id, name, phone, email), purchase_order_links(order_id, orders(id, order_num, client))')
+      .select('*, suppliers(id, name, phone, email), purchase_order_links(order_id, amount, orders(id, order_num, client))')
       .eq('id', params.id)
       .single();
 
@@ -105,35 +105,91 @@ export async function PATCH(request, { params }) {
 
     safe.payment_status = deriveStatus(finalTotal, finalPaid);
 
-    if (Object.keys(safe).length <= 1) { // only payment_status
+    const hasLinkUpdate    = Array.isArray(body.order_links) || Array.isArray(body.order_ids);
+    const hasPurchaseFields = Object.keys(safe).length > 1; // more than just payment_status
+
+    if (!hasPurchaseFields && !hasLinkUpdate) {
       return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 });
     }
 
-    const { error: updateError } = await serviceClient
-      .from('supplier_purchases')
-      .update(safe)
-      .eq('id', params.id);
+    // Only touch the purchase row when there are actual field changes
+    if (hasPurchaseFields) {
+      const { error: updateError } = await serviceClient
+        .from('supplier_purchases')
+        .update(safe)
+        .eq('id', params.id);
 
-    if (updateError) {
-      console.error('PATCH /api/purchases/[id]:', updateError);
-      return NextResponse.json({ error: 'Failed to update purchase' }, { status: 500 });
-    }
-
-    // Replace order links if order_ids provided in body
-    if (Array.isArray(body.order_ids)) {
-      await serviceClient.from('purchase_order_links').delete().eq('purchase_id', params.id);
-      const orderIds = body.order_ids.filter(Boolean);
-      if (orderIds.length > 0) {
-        const links = orderIds.map(oid => ({ purchase_id: params.id, order_id: oid }));
-        const { error: linkError } = await serviceClient.from('purchase_order_links').insert(links);
-        if (linkError) console.error('PATCH /api/purchases/[id] — link insert:', linkError);
+      if (updateError) {
+        console.error('PATCH /api/purchases/[id]:', updateError);
+        return NextResponse.json({ error: 'Failed to update purchase' }, { status: 500 });
       }
     }
 
-    // Re-fetch with full relations
+    // Replace order links
+    // Prefer order_links: [{ order_id, amount }] (Option B split-amount mode).
+    // Fall back to order_ids: string[] for backwards compat with AddPurchaseModal.
+    //
+    // Both paths use the replace_purchase_order_links RPC so that delete + insert
+    // run inside a single PostgreSQL transaction — if the insert fails, the delete
+    // is automatically rolled back and no data is lost.
+    if (Array.isArray(body.order_links)) {
+      const validLinks = body.order_links.filter(l => l && l.order_id);
+
+      // Validate allocated total against the effective purchase total.
+      // Use finalTotal (safe.total_amount ?? current.total_amount) so that a request
+      // which updates total_amount and order_links in the same call uses the NEW total.
+      const purchaseTotal = parseFloat(finalTotal ?? 0);
+      let totalAllocated  = 0;
+      for (const l of validLinks) {
+        if (l.amount != null && l.amount !== '') {
+          const amt = parseFloat(l.amount);
+          if (!isFinite(amt) || amt < 0) {
+            return NextResponse.json(
+              { error: `Invalid amount "${l.amount}" — must be a non-negative number.` },
+              { status: 400 },
+            );
+          }
+          totalAllocated += amt;
+        }
+      }
+      if (totalAllocated > purchaseTotal + 0.01) {
+        return NextResponse.json(
+          { error: `Allocated total (${totalAllocated.toFixed(2)}) exceeds purchase total (${purchaseTotal.toFixed(2)}).` },
+          { status: 400 },
+        );
+      }
+
+      // Atomic replace via RPC (delete + insert in one transaction)
+      const rpcLinks = validLinks.map(l => ({
+        order_id: l.order_id,
+        amount:   l.amount != null && l.amount !== '' ? parseFloat(l.amount) : null,
+      }));
+      const { error: rpcError } = await serviceClient.rpc('replace_purchase_order_links', {
+        p_purchase_id: params.id,
+        p_links:       rpcLinks,
+      });
+      if (rpcError) {
+        console.error('PATCH /api/purchases/[id] — replace_purchase_order_links RPC:', rpcError);
+        return NextResponse.json({ error: 'Failed to update order links' }, { status: 500 });
+      }
+
+    } else if (Array.isArray(body.order_ids)) {
+      // Legacy path — no amounts; convert to RPC format with amount: null
+      const rpcLinks = body.order_ids.filter(Boolean).map(oid => ({ order_id: oid, amount: null }));
+      const { error: rpcError } = await serviceClient.rpc('replace_purchase_order_links', {
+        p_purchase_id: params.id,
+        p_links:       rpcLinks,
+      });
+      if (rpcError) {
+        console.error('PATCH /api/purchases/[id] — replace_purchase_order_links RPC (legacy):', rpcError);
+        return NextResponse.json({ error: 'Failed to update order links' }, { status: 500 });
+      }
+    }
+
+    // Re-fetch with full relations (include amount from purchase_order_links)
     const { data, error: fetchError } = await serviceClient
       .from('supplier_purchases')
-      .select('*, suppliers(id, name), purchase_order_links(order_id, orders(id, order_num, client))')
+      .select('*, suppliers(id, name), purchase_order_links(order_id, amount, orders(id, order_num, client))')
       .eq('id', params.id)
       .single();
 

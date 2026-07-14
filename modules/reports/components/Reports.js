@@ -141,10 +141,12 @@ export default function Reports() {
         })));
       }
 
-      // Fetch purchase→order links with full purchase details for P&L
+      // Fetch purchase→order links with full purchase details for P&L.
+      // Option B: use l.amount (per-link allocation) when set; fall back to
+      // sp.total_amount for legacy links that have no split amount.
       const { data: linkData } = await sb
         .from("purchase_order_links")
-        .select("order_id, supplier_purchases(id, total_amount, items_bought, purchase_date, suppliers(name))")
+        .select("order_id, amount, supplier_purchases(id, total_amount, items_bought, purchase_date, suppliers(name))")
         .order("supplier_purchases(purchase_date)", { ascending: true });
       if (linkData) {
         const costs = {};
@@ -152,14 +154,16 @@ export default function Reports() {
         linkData.forEach((l) => {
           const sp = l.supplier_purchases;
           if (!sp) return;
-          const amt = parseFloat(sp.total_amount || 0);
+          const fullAmt = parseFloat(sp.total_amount || 0);
+          const amt     = l.amount != null ? parseFloat(l.amount) : fullAmt;
           costs[l.order_id] = (costs[l.order_id] || 0) + amt;
           if (!purchases[l.order_id]) purchases[l.order_id] = [];
           purchases[l.order_id].push({
-            supplier_name: sp.suppliers?.name || "Unknown",
-            items_bought:  sp.items_bought  || "—",
-            total_amount:  amt,
-            purchase_date: sp.purchase_date || null,
+            supplier_name:    sp.suppliers?.name || "Unknown",
+            items_bought:     sp.items_bought  || "—",
+            total_amount:     amt,        // allocated cost for this order
+            purchase_total:   fullAmt,    // full purchase total (for reference)
+            purchase_date:    sp.purchase_date || null,
           });
         });
         setPnlCosts(costs);

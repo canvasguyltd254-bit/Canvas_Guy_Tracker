@@ -1,6 +1,10 @@
 /**
  * app/api/orders/route.js
  *
+ * GET   /api/orders  — list orders for pickers/dropdowns
+ *   ?status=all|<status>   filter by status (default: all)
+ *   ?limit=<n>             max rows (default 200)
+ *
  * POST  /api/orders  — create a new order (with line items + activity log)
  *
  * Roles: admin, production_manager, head_of_sales, sales
@@ -11,6 +15,38 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
+
+export async function GET(request) {
+  try {
+    const { user } = await getAuthContext();
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+    const { searchParams } = new URL(request.url);
+    const status = searchParams.get('status') || 'all';
+    const limit  = Math.min(parseInt(searchParams.get('limit') || '200', 10), 500);
+
+    let query = serviceClient
+      .from('orders')
+      .select('id, order_num, client, status')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (status && status !== 'all') {
+      query = query.eq('status', status);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      console.error('GET /api/orders:', error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ success: true, data: data || [] });
+  } catch (err) {
+    console.error('GET /api/orders:', err);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
 
 export async function POST(request) {
   try {
