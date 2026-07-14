@@ -28,6 +28,9 @@ const PDFKIT_MODULES = [
   './node_modules/base64-js/**/*',
   './node_modules/browserify-zlib/**/*',
   './node_modules/pako/**/*',
+  // @swc/helpers (fontkit's nested copy) resolves these from top-level node_modules
+  './node_modules/tslib/**/*',
+  './node_modules/@swc/counter/**/*',
 ];
 
 const PDF_ROUTES_INCLUDES = [

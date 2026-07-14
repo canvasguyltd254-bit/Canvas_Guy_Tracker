@@ -172,7 +172,10 @@ export async function POST(request, { params }) {
 
     if (batchErr) {
       console.error('POST /batches — batch insert:', batchErr);
-      return NextResponse.json({ error: 'Failed to create batch.' }, { status: 500 });
+      return NextResponse.json(
+        { error: 'Failed to create batch.', detail: batchErr.message },
+        { status: 500 },
+      );
     }
 
     // 7. Insert batch_items

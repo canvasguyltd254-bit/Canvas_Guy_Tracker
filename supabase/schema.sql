@@ -535,8 +535,9 @@ CREATE TABLE IF NOT EXISTS public.delivery_batches (
   order_id             uuid        NOT NULL REFERENCES public.orders(id) ON DELETE CASCADE,
   batch_number         integer     NOT NULL,
 
-  status               text        NOT NULL DEFAULT 'Planned'
+  status               text        NOT NULL DEFAULT 'Quality Control'
                                    CHECK (status IN (
+                                     'Quality Control',
                                      'Planned', 'Picking', 'Loaded',
                                      'Out for Delivery', 'Delivered', 'Signed',
                                      'Cancelled', 'Rejected', 'Returned'
