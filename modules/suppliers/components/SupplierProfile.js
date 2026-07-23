@@ -17,7 +17,7 @@ function fmtDate(s) {
   }
 }
 
-const PAYMENT_METHODS = ["Cash", "M-Pesa", "Bank Transfer", "Other"];
+const PAYMENT_METHODS = ["Cash", "M-Pesa", "Bank Transfer", "Cheque", "Other"];
 
 const WRITE_ROLES = ["admin", "production_manager", "head_of_sales"];
 

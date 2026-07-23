@@ -210,15 +210,25 @@ export async function DELETE(request, { params }) {
     }
 
     // 1. Verify user from cookies
-    const { user, role } = await getAuthContext();
-    const deleteRoles = ['admin', 'production_manager'];
+    const { user, role, displayName } = await getAuthContext();
+    const deleteRoles = ['admin', 'production_manager', 'head_of_sales'];
     const authError = requireRole(user, role, deleteRoles);
     if (authError) return authError;
 
-    // 3. Verify drawing belongs to this order
+    // 2. Require a deletion reason
+    let reason = '';
+    try {
+      const body = await request.json();
+      reason = (body?.reason || '').trim();
+    } catch { /* body may not be parseable */ }
+    if (!reason) {
+      return NextResponse.json({ error: 'A reason is required to delete a file' }, { status: 400 });
+    }
+
+    // 3. Verify drawing belongs to this order (also fetch file_name for the log)
     const { data: drawing } = await serviceClient
       .from('drawings')
-      .select('id, order_id, deleted_at')
+      .select('id, order_id, deleted_at, file_name')
       .eq('id', drawingId)
       .eq('order_id', orderId)
       .single();
@@ -241,7 +251,22 @@ export async function DELETE(request, { params }) {
       return NextResponse.json({ error: 'Failed to delete drawing' }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, message: 'Drawing deleted successfully' });
+    // 5. Log to order_activities — best-effort
+    const { error: actError } = await serviceClient.from('order_activities').insert({
+      order_id:      orderId,
+      activity_type: 'file_deleted',
+      description:   `File "${drawing.file_name}" deleted by ${displayName}. Reason: ${reason}`,
+      created_by:    user.id,
+    });
+    if (actError) {
+      console.error('DELETE /api/orders/[id]/drawings — activity log failed:', actError.message);
+    }
+
+    return NextResponse.json({
+      success:         true,
+      message:         'Drawing deleted successfully',
+      activity_logged: !actError,
+    });
 
   } catch (err) {
     console.error('DELETE /api/orders/[id]/drawings:', err);

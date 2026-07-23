@@ -34,10 +34,10 @@ export async function middleware(request) {
     return NextResponse.redirect(url);
   }
 
-  // Logged in and on login page → redirect to orders
+  // Logged in and on login page → redirect to home
   if (user && request.nextUrl.pathname.startsWith("/login")) {
     const url = request.nextUrl.clone();
-    url.pathname = "/orders";
+    url.pathname = "/";
     return NextResponse.redirect(url);
   }
 

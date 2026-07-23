@@ -78,7 +78,7 @@ export async function POST(request) {
       return NextResponse.json({ error: 'amount_paid cannot exceed total_amount' }, { status: 400 });
     }
 
-    const INITIAL_PAYMENT_METHODS = ['Cash', 'M-Pesa', 'Bank Transfer', 'Other'];
+    const INITIAL_PAYMENT_METHODS = ['Cash', 'M-Pesa', 'Bank Transfer', 'Cheque', 'Other'];
     const initPaymentMethod    = body.initial_payment_method || 'Cash';
     const initPaymentReference = body.initial_payment_reference?.trim() || null;
     if (!INITIAL_PAYMENT_METHODS.includes(initPaymentMethod)) {

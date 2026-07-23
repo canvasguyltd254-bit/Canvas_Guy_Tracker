@@ -31,6 +31,7 @@
  *   Cash          → 1000 Cash on Hand
  *   M-Pesa        → 1010 Chatpesa / M-Pesa Float
  *   Bank Transfer → 1020 Default Bank Account (ABSA)
+ *   Cheque        → 1020 Default Bank Account (ABSA) — cheques drawn on bank
  *   Other         → no mapping; caller must skip or handle manually
  */
 
@@ -95,6 +96,7 @@ const PAYMENT_ACCOUNT_CODE = {
   'Cash':          '1000',
   'M-Pesa':        '1010',
   'Bank Transfer': '1020',
+  'Cheque':        '1020',  // cheques drawn on the Default Bank account
 };
 
 // ── Internal helper — fetch one account ID by code ───────────
@@ -178,7 +180,7 @@ export async function postPurchaseJournal({
 //   paymentId     — manual_supplier_payments.id
 //   paymentDate   — 'YYYY-MM-DD'
 //   amount        — numeric
-//   paymentMethod — 'Cash' | 'M-Pesa' | 'Bank Transfer' | 'Other'
+//   paymentMethod — 'Cash' | 'M-Pesa' | 'Bank Transfer' | 'Cheque' | 'Other'
 //   postedBy      — auth.users.id
 //   client        — serviceClient
 // ─────────────────────────────────────────────────────────────

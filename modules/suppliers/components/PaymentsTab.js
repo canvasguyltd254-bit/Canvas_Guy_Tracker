@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const PAYMENT_METHODS = ["Cash","M-Pesa","Bank Transfer","Other"];
+const PAYMENT_METHODS = ["Cash","M-Pesa","Bank Transfer","Cheque","Other"];
 
 const STATUS_META = {
   unmatched: { label: "Unmatched", bg: "#FEF3C7", text: "#92400E", border: "#FCD34D" },
@@ -238,29 +238,28 @@ function MatchModal({ tx, suppliers, onClose, onSaved }) {
     if (totalAllocated + alreadyAllocated > parseFloat(tx.amount) + 0.01) { setError("Total allocated exceeds transaction amount."); return; }
 
     setSaving(true);
-    const successIds = [];
     try {
-      for (const alloc of allocations) {
-        const body = {
-          allocation_type:        alloc.type,
-          supplier_purchase_id:   alloc.type === "supplier_purchase" ? alloc.purchase_id          : undefined,
-          supplier_id:            alloc.type === "opening_balance"   ? alloc.supplier_id           : undefined,
-          petty_cash_category:    alloc.type === "petty_cash"        ? alloc.petty_cash_category   : undefined,
-          accounting_category_id: alloc.type === "petty_cash"        ? alloc.accounting_category_id : undefined,
-          amount:                 parseFloat(alloc.amount),
-          note:                   alloc.note || undefined,
-        };
-        const res  = await fetch(`/api/chatpesa/transactions/${tx.id}/allocations`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
-        const json = await res.json();
-        if (!json.success) {
-          // Rollback: delete any allocations that already succeeded in this batch
-          for (const id of successIds) {
-            await fetch(`/api/chatpesa/transactions/${tx.id}/allocations?allocation_id=${id}`, { method:"DELETE" });
-          }
-          throw new Error(json.detail || json.error || "Allocation failed");
-        }
-        successIds.push(json.data.id);
-      }
+      // Send all allocations in a single atomic request.
+      // The split-allocations endpoint inserts all rows together — if the insert
+      // fails nothing is saved, so no compensating deletes are ever needed.
+      const payload = allocations.map(alloc => ({
+        allocation_type:        alloc.type,
+        supplier_purchase_id:   alloc.type === "supplier_purchase" ? alloc.purchase_id           : undefined,
+        supplier_id:            alloc.type === "opening_balance"   ? alloc.supplier_id            : undefined,
+        petty_cash_category:    alloc.type === "petty_cash"        ? alloc.petty_cash_category    : undefined,
+        accounting_category_id: alloc.type === "petty_cash"        ? alloc.accounting_category_id : undefined,
+        amount:                 parseFloat(alloc.amount),
+        note:                   alloc.note || undefined,
+      }));
+
+      const res  = await fetch(`/api/chatpesa/transactions/${tx.id}/split-allocations`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ allocations: payload }),
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || "Allocation failed");
+
       onSaved();
       onClose();
     } catch (err) {

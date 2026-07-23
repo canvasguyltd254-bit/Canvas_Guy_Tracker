@@ -1,4 +1,7 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+/* Fonts are served by next/font (self-hosted from /_next/static/media/).
+   The @import to fonts.googleapis.com has been removed — it was a blocking
+   external request on every page load. CSS variables injected by next/font
+   are available as --font-dm-sans, --font-dm-mono, --font-space-grotesk. */
 
 :root {
   --bg: #EDEAE6;
@@ -28,7 +31,7 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body {
-  font-family: 'DM Sans', -apple-system, sans-serif;
+  font-family: var(--font-dm-sans, 'DM Sans', -apple-system, sans-serif);
   background: var(--bg);
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;

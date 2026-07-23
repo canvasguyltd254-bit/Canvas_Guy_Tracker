@@ -9,6 +9,7 @@ export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { calcCustomerStats } from '@/shared/lib/customerBalance';
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales', 'sales'];
 
@@ -41,15 +42,16 @@ export async function GET(request) {
 
     if (!customers?.length) return NextResponse.json({ success: true, data: [] });
 
-    // Fetch lightweight order stats for all customers in one query
+    // Fetch lightweight order stats for all customers in one query.
+    // `id` must be included — it is the key used to map payments per order.
     const customerIds = customers.map(c => c.id);
 
     const [{ data: orders }, { data: payments }] = await Promise.all([
       serviceClient
         .from('orders')
-        .select('customer_id, total_value, status, payment_due_date, created_at')
+        .select('id, customer_id, total_value, status, payment_due_date, created_at')
         .in('customer_id', customerIds)
-        .not('status', 'in', '("Cancelled","Cancelled/Refunded","Refunded")'),
+        .not('status', 'eq', 'Cancelled / Refunded'),
       serviceClient
         .from('order_payments')
         .select('order_id, amount, orders!inner(customer_id)')
@@ -58,47 +60,34 @@ export async function GET(request) {
 
     const today = new Date().toISOString().split('T')[0];
 
-    // Build per-customer stats
+    // Build per-customer order index
     const ordersByCustomer = {};
     for (const o of orders || []) {
       if (!ordersByCustomer[o.customer_id]) ordersByCustomer[o.customer_id] = [];
       ordersByCustomer[o.customer_id].push(o);
     }
 
+    // Build payment totals keyed by order_id
     const paymentsByOrder = {};
     for (const p of payments || []) {
       if (!paymentsByOrder[p.order_id]) paymentsByOrder[p.order_id] = 0;
       paymentsByOrder[p.order_id] += parseFloat(p.amount || 0);
     }
 
-    const ACTIVE_STATUSES    = ['Inquiry','Quoted','Quote Approved','Deposit Paid','In Production','Quality Check','Ready for Delivery','Out for Delivery'];
-    const DELIVERED_STATUSES = ['Partially Delivered', 'Delivered', 'Closed'];
-    const CLOSED_STATUSES    = ['Closed', 'Cancelled', 'Cancelled/Refunded', 'Refunded'];
-
+    // NOTE: the orders query already excludes 'Cancelled / Refunded', so
+    // every order in cOrders is non-cancelled — pass directly to calcCustomerStats.
     const enriched = customers.map(c => {
       const cOrders = ordersByCustomer[c.id] || [];
-      const totalSales = cOrders.reduce((s, o) => s + parseFloat(o.total_value || 0), 0);
-      const totalPaid  = cOrders.reduce((s, o) => s + (paymentsByOrder[o.id] || 0), 0);
-      const outstanding = parseFloat(c.opening_balance || 0) + totalSales - totalPaid;
-      const overdue = cOrders
-        .filter(o => o.payment_due_date && o.payment_due_date < today && DELIVERED_STATUSES.includes(o.status))
-        .reduce((s, o) => {
-          const paid = paymentsByOrder[o.id] || 0;
-          const bal  = parseFloat(o.total_value || 0) - paid;
-          return s + Math.max(0, bal);
-        }, 0);
-      // Active work value: total order value for orders not yet closed/cancelled
-      const activeWorkValue = cOrders
-        .filter(o => !CLOSED_STATUSES.includes(o.status))
-        .reduce((s, o) => s + parseFloat(o.total_value || 0), 0);
-      const lastOrder = cOrders.sort((a, b) => b.created_at > a.created_at ? 1 : -1)[0];
-      const activeOrders = cOrders.filter(o => ACTIVE_STATUSES.includes(o.status)).length;
+      const { totalSales, totalPaid, outstanding, overdue, activeWorkValue, activeOrders } =
+        calcCustomerStats(c, cOrders, paymentsByOrder, today);
+      const lastOrder = [...cOrders].sort((a, b) => b.created_at > a.created_at ? 1 : -1)[0];
 
       return {
         ...c,
         _stats: {
           total_orders:      cOrders.length,
           total_sales:       totalSales,
+          total_paid:        totalPaid,
           outstanding,
           overdue,
           active_orders:     activeOrders,

@@ -26,7 +26,7 @@ const EMPTY_PURCHASE = {
   accounting_category_id: "", initial_payment_method: "Cash", initial_payment_reference: "",
 };
 
-const PAYMENT_METHODS = ["Cash", "M-Pesa", "Bank Transfer", "Other"];
+const PAYMENT_METHODS = ["Cash", "M-Pesa", "Bank Transfer", "Cheque", "Other"];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

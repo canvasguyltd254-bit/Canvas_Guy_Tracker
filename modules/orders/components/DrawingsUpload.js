@@ -31,12 +31,15 @@ function getFileIcon(fileName) {
   }
 }
 
-export function DrawingsUpload({ orderId, drawings = [], onDrawingsUpdated, readOnly = false }) {
-  const [uploading, setUploading] = useState(false);
+export function DrawingsUpload({ orderId, drawings = [], onDrawingsUpdated, readOnly = false, canDelete = false }) {
+  const [uploading, setUploading]         = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [error, setError] = useState(null);
-  const [dragActive, setDragActive] = useState(false);
+  const [error, setError]                 = useState(null);
+  const [dragActive, setDragActive]       = useState(false);
   const [activeDrawings, setActiveDrawings] = useState([]);
+  const [deleteTarget, setDeleteTarget]   = useState(null); // {id, file_name}
+  const [deleteReason, setDeleteReason]   = useState('');
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   // Filter out soft-deleted drawings
   useEffect(() => {
@@ -140,26 +143,36 @@ export function DrawingsUpload({ orderId, drawings = [], onDrawingsUpdated, read
     }
   };
 
-  const handleDelete = async (drawingId, fileName) => {
-    if (!confirm(`Delete "${fileName}"?`)) return;
+  // Opens the reason modal; actual deletion happens in confirmDelete
+  const handleDelete = (drawingId, fileName) => {
+    setDeleteTarget({ id: drawingId, file_name: fileName });
+    setDeleteReason('');
+    setError(null);
+  };
 
+  const confirmDelete = async () => {
+    if (!deleteReason.trim() || !deleteTarget) return;
+    const target = deleteTarget;
+    setDeleteLoading(true);
+    setDeleteTarget(null);
+    setDeleteReason('');
     try {
-      const response = await fetch(`/api/orders/${orderId}/drawings?drawing_id=${drawingId}`, {
+      const response = await fetch(`/api/orders/${orderId}/drawings?drawing_id=${target.id}`, {
         method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: deleteReason.trim() }),
       });
-
       if (!response.ok) {
         const data = await response.json();
         throw new Error(data.error || 'Delete failed');
       }
-
-      const updated = activeDrawings.filter(d => d.id !== drawingId);
+      const updated = activeDrawings.filter(d => d.id !== target.id);
       setActiveDrawings(updated);
       if (onDrawingsUpdated) onDrawingsUpdated(updated);
-
     } catch (err) {
       setError(err.message);
     }
+    setDeleteLoading(false);
   };
 
   const handleDownload = async (drawingId, fileName) => {
@@ -293,7 +306,7 @@ export function DrawingsUpload({ orderId, drawings = [], onDrawingsUpdated, read
                       >
                         ↓
                       </button>
-                      {!readOnly && (
+                      {canDelete && (
                         <button
                           onClick={() => handleDelete(drawing.id, drawing.file_name)}
                           title="Delete"
@@ -321,6 +334,44 @@ export function DrawingsUpload({ orderId, drawings = [], onDrawingsUpdated, read
       {readOnly && activeDrawings.length > 0 && (
         <div style={{ padding: '8px 12px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '6px', fontSize: '12px', color: '#1d4ed8' }}>
           📎 {activeDrawings.length} drawing{activeDrawings.length !== 1 ? 's' : ''} attached to this order
+        </div>
+      )}
+
+      {/* ── Delete File Modal ── */}
+      {deleteTarget && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
+          <div style={{ background: '#fff', borderRadius: '12px', padding: '28px', width: '100%', maxWidth: '420px', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+            <div style={{ fontSize: '16px', fontWeight: 700, color: '#111', marginBottom: '4px' }}>Delete File</div>
+            <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '20px', wordBreak: 'break-all' }}>
+              <strong>{deleteTarget.file_name}</strong>
+            </div>
+            <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
+              Reason for deletion <span style={{ color: '#dc2626' }}>*</span>
+            </label>
+            <textarea
+              value={deleteReason}
+              onChange={e => setDeleteReason(e.target.value)}
+              placeholder="Explain why this file is being deleted…"
+              rows={3}
+              autoFocus
+              style={{ width: '100%', padding: '10px 12px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', outline: 'none', boxSizing: 'border-box', resize: 'vertical', fontFamily: 'inherit' }}
+            />
+            <div style={{ display: 'flex', gap: '10px', marginTop: '18px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => { setDeleteTarget(null); setDeleteReason(''); }}
+                style={{ padding: '9px 20px', borderRadius: '7px', border: '1.5px solid #e0e0e0', background: '#fff', fontSize: '13px', fontWeight: 600, cursor: 'pointer', color: '#374151' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={!deleteReason.trim() || deleteLoading}
+                style={{ padding: '9px 20px', borderRadius: '7px', border: 'none', background: deleteReason.trim() && !deleteLoading ? '#dc2626' : '#fca5a5', color: '#fff', fontSize: '13px', fontWeight: 700, cursor: deleteReason.trim() && !deleteLoading ? 'pointer' : 'not-allowed' }}
+              >
+                {deleteLoading ? 'Deleting…' : 'Delete File'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

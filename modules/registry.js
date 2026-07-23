@@ -5,4 +5,5 @@ export { default as reports } from "./reports/config";
 export { default as customers } from "./customers/config";
 export { default as contacts } from "./contacts/config";
 export { default as suppliers } from "./suppliers/config";
+export { default as accounting } from "./accounting/config";
 export { default as admin } from "./admin/config";

@@ -157,7 +157,7 @@ function NotesThread({ orderId }) {
 const DOC_TYPES     = ['Invoice', 'Quotation', 'Delivery Sheet', 'Job Card', 'Other'];
 const DOC_ICONS_MAP = { 'Delivery Sheet': '🚚', 'Invoice': '🧾', 'Quotation': '💰', 'Job Card': '🔧', 'Other': '📎' };
 const UPLOAD_ROLES  = ['admin', 'production_manager', 'head_of_sales', 'sales', 'production_staff'];
-const DELETE_ROLES  = ['admin', 'production_manager'];
+const DELETE_ROLES  = ['admin', 'production_manager', 'head_of_sales'];
 
 function fmtFileSize(b) {
   if (!b) return '';
@@ -175,6 +175,9 @@ function AttachmentsPanel({ orderId, userRole }) {
   const [docType, setDocType]   = useState('Invoice');
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState(null);
+  const [docDeleteTarget, setDocDeleteTarget]   = useState(null); // doc object awaiting reason
+  const [docDeleteReason, setDocDeleteReason]   = useState('');
+  const [docDeleteLoading, setDocDeleteLoading] = useState(false);
 
   const canUpload = UPLOAD_ROLES.includes(userRole);
   const canDelete = DELETE_ROLES.includes(userRole);
@@ -219,11 +222,33 @@ function AttachmentsPanel({ orderId, userRole }) {
     }
   };
 
-  const deleteDocument = async (doc) => {
-    if (!confirm(`Delete "${doc.name}"?`)) return;
-    await supabase.storage.from('order-documents').remove([doc.file_path]);
-    await supabase.from('order_documents').delete().eq('id', doc.id);
-    await loadDocuments();
+  const deleteDocument = (doc) => {
+    setDocDeleteTarget(doc);
+    setDocDeleteReason('');
+  };
+
+  const confirmDeleteDocument = async () => {
+    if (!docDeleteReason.trim() || !docDeleteTarget) return;
+    const doc = docDeleteTarget;
+    setDocDeleteLoading(true);
+    setDocDeleteTarget(null);
+    setDocDeleteReason('');
+    try {
+      const res = await fetch(`/api/orders/${orderId}/documents?doc_id=${doc.id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: docDeleteReason.trim() }),
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error || 'Failed to delete document');
+      }
+      await loadDocuments();
+    } catch (err) {
+      alert('Delete failed: ' + err.message);
+      await loadDocuments();
+    }
+    setDocDeleteLoading(false);
   };
 
   const tabBtn = (key, label) => (
@@ -291,8 +316,46 @@ function AttachmentsPanel({ orderId, userRole }) {
         drawingsLoading ? (
           <p style={{ fontSize: '12px', color: '#bbb' }}>Loading drawings...</p>
         ) : (
-          <DrawingsUpload orderId={orderId} drawings={drawings} onDrawingsUpdated={setDrawings} readOnly={!canUpload} />
+          <DrawingsUpload orderId={orderId} drawings={drawings} onDrawingsUpdated={setDrawings} readOnly={!canUpload} canDelete={canDelete} />
         )
+      )}
+
+      {/* ── Delete Document Modal ── */}
+      {docDeleteTarget && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
+          <div style={{ background: '#fff', borderRadius: '12px', padding: '28px', width: '100%', maxWidth: '420px', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+            <div style={{ fontSize: '16px', fontWeight: 700, color: '#111', marginBottom: '4px' }}>Delete Document</div>
+            <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '20px', wordBreak: 'break-all' }}>
+              <strong>{docDeleteTarget.name}</strong>
+            </div>
+            <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
+              Reason for deletion <span style={{ color: '#dc2626' }}>*</span>
+            </label>
+            <textarea
+              value={docDeleteReason}
+              onChange={e => setDocDeleteReason(e.target.value)}
+              placeholder="Explain why this document is being deleted…"
+              rows={3}
+              autoFocus
+              style={{ width: '100%', padding: '10px 12px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', outline: 'none', boxSizing: 'border-box', resize: 'vertical', fontFamily: 'inherit' }}
+            />
+            <div style={{ display: 'flex', gap: '10px', marginTop: '18px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => { setDocDeleteTarget(null); setDocDeleteReason(''); }}
+                style={{ padding: '9px 20px', borderRadius: '7px', border: '1.5px solid #e0e0e0', background: '#fff', fontSize: '13px', fontWeight: 600, cursor: 'pointer', color: '#374151' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeleteDocument}
+                disabled={!docDeleteReason.trim() || docDeleteLoading}
+                style={{ padding: '9px 20px', borderRadius: '7px', border: 'none', background: docDeleteReason.trim() && !docDeleteLoading ? '#dc2626' : '#fca5a5', color: '#fff', fontSize: '13px', fontWeight: 700, cursor: docDeleteReason.trim() && !docDeleteLoading ? 'pointer' : 'not-allowed' }}
+              >
+                {docDeleteLoading ? 'Deleting…' : 'Delete Document'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -300,15 +363,19 @@ function AttachmentsPanel({ orderId, userRole }) {
 
 // ── Payment Panel ────────────────────────────────────────────────────────────
 const CAN_ADD_PAYMENT    = ['admin', 'production_manager', 'head_of_sales', 'sales'];
-const CAN_DELETE_PAYMENT = ['admin'];
+const CAN_DELETE_PAYMENT = ['admin', 'head_of_sales'];
 
 function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, userRole, orderStatus, payments, setPayments }) {
-  const [loading, setLoading]     = useState(true);
-  const [amt, setAmt]             = useState('');
-  const [desc, setDesc]           = useState('');
-  const [payDate, setPayDate]     = useState(new Date().toISOString().split('T')[0]);
-  const [adding, setAdding]       = useState(false);
-  const [addError, setAddError]   = useState('');
+  const [loading, setLoading]         = useState(true);
+  const [amt, setAmt]                 = useState('');
+  const [desc, setDesc]               = useState('');
+  const [payDate, setPayDate]         = useState(new Date().toISOString().split('T')[0]);
+  const [adding, setAdding]           = useState(false);
+  const [addError, setAddError]       = useState('');
+  const [pendingDelete, setPendingDelete] = useState(null); // payment obj awaiting reason
+  const [deleteReason, setDeleteReason]   = useState('');
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError]     = useState('');
 
   const loadPayments = useCallback(async () => {
     const { data } = await supabase.from('order_payments').select('*').eq('order_id', orderId).order('payment_date');
@@ -366,15 +433,36 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
     setAdding(false);
   };
 
-  const deletePayment = async (p) => {
-    if (!confirm(`Delete payment of KES ${parseFloat(p.amount).toLocaleString()}?`)) return;
+  // Opens the reason modal; actual deletion happens in confirmDeletePayment
+  const deletePayment = (p) => {
+    setPendingDelete(p);
+    setDeleteReason('');
+  };
+
+  const confirmDeletePayment = async () => {
+    if (!deleteReason.trim() || !pendingDelete) return;
+    const p = pendingDelete;
+    const reason = deleteReason.trim();
+    setDeleteLoading(true);
+    setDeleteError('');
     setPayments(prev => prev.filter(x => x.id !== p.id));
+    setPendingDelete(null);
+    setDeleteReason('');
     try {
-      const res = await fetch(`/api/orders/${orderId}/payments?payment_id=${p.id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Failed to delete payment');
-    } catch {
+      const res = await fetch(`/api/orders/${orderId}/payments?payment_id=${p.id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error || 'Failed to delete payment');
+      }
+    } catch (err) {
+      setDeleteError(err.message);
       await loadPayments();
     }
+    setDeleteLoading(false);
   };
 
   return (
@@ -447,6 +535,12 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
       </div>
 
       {/* Payment list */}
+      {deleteError && (
+        <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '6px', padding: '8px 12px', marginBottom: '10px', fontSize: '12px', color: '#dc2626', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>⚠ {deleteError}</span>
+          <button onClick={() => setDeleteError('')} style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: '14px', lineHeight: 1, padding: '0 2px' }}>×</button>
+        </div>
+      )}
       {loading && <p style={{ fontSize: '12px', color: '#bbb', marginBottom: '12px' }}>Loading payments...</p>}
       {!loading && payments.length === 0 && (
         <p style={{ fontSize: '13px', color: '#9ca3af', fontStyle: 'italic', marginBottom: '14px' }}>No payments recorded yet.</p>
@@ -505,18 +599,60 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
           </div>
         </div>
       )}
+
+      {/* ── Delete Payment Modal ── */}
+      {pendingDelete && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
+          <div style={{ background: '#fff', borderRadius: '12px', padding: '28px', width: '100%', maxWidth: '420px', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
+            <div style={{ fontSize: '16px', fontWeight: 700, color: '#111', marginBottom: '4px' }}>Delete Payment</div>
+            <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '20px' }}>
+              <strong>KES {parseFloat(pendingDelete.amount).toLocaleString('en-KE')}</strong>
+              {pendingDelete.payment_method ? ` · ${pendingDelete.payment_method}` : ''}
+              {pendingDelete.description ? ` · ${pendingDelete.description}` : ''}
+            </div>
+            <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
+              Reason for deletion <span style={{ color: '#dc2626' }}>*</span>
+            </label>
+            <textarea
+              value={deleteReason}
+              onChange={e => setDeleteReason(e.target.value)}
+              placeholder="Explain why this payment is being deleted…"
+              rows={3}
+              autoFocus
+              style={{ width: '100%', padding: '10px 12px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', outline: 'none', boxSizing: 'border-box', resize: 'vertical', fontFamily: 'inherit' }}
+            />
+            <div style={{ display: 'flex', gap: '10px', marginTop: '18px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => { setPendingDelete(null); setDeleteReason(''); }}
+                style={{ padding: '9px 20px', borderRadius: '7px', border: '1.5px solid #e0e0e0', background: '#fff', fontSize: '13px', fontWeight: 600, cursor: 'pointer', color: '#374151' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeletePayment}
+                disabled={!deleteReason.trim() || deleteLoading}
+                style={{ padding: '9px 20px', borderRadius: '7px', border: 'none', background: deleteReason.trim() && !deleteLoading ? '#dc2626' : '#fca5a5', color: '#fff', fontSize: '13px', fontWeight: 700, cursor: deleteReason.trim() && !deleteLoading ? 'pointer' : 'not-allowed' }}
+              >
+                {deleteLoading ? 'Deleting…' : 'Delete Payment'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // ── Activity Log ─────────────────────────────────────────────────────────────
 const ACT_ICONS = {
-  status_change: '🔄',
-  qc_approved:   '✅',
-  rework:        '↩️',
-  refund:        '💸',
-  repair:        '🔧',
-  payment:       '💰',
+  status_change:   '🔄',
+  qc_approved:     '✅',
+  rework:          '↩️',
+  refund:          '💸',
+  repair:          '🔧',
+  payment:         '💰',
+  payment_deleted: '🗑️',
+  file_deleted:    '🗑️',
 };
 
 function ActivityLog({ orderId }) {
@@ -555,12 +691,38 @@ function ActivityLog({ orderId }) {
 }
 
 // ── P&L Tab ───────────────────────────────────────────────────────────────────
-function PnLTab({ orderId, contractTotal, itemsSubtotal, chargeItems, payments }) {
+const PDF_ALLOWED_ROLES = ['admin', 'production_manager', 'head_of_sales'];
+
+function PnLTab({ orderId, contractTotal, itemsSubtotal, chargeItems, payments, userRole }) {
   const [purchases, setPurchases]               = useState([]);
   const [totals, setTotals]                     = useState({ totalCost: 0, totalPaidAP: 0, outstandingAP: 0 });
   const [hasUnallocatedPurchases, setHasUnallocated] = useState(false);
   const [loading, setLoading]                   = useState(true);
   const [fetchError, setFetchError]             = useState(null);
+  const [pdfLoading, setPdfLoading]             = useState(false);
+
+  const exportPdf = async () => {
+    setPdfLoading(true);
+    try {
+      const res = await fetch(`/api/orders/${orderId}/pnl/pdf`);
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error || 'PDF generation failed');
+      }
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      const cd   = res.headers.get('content-disposition') || '';
+      const match = cd.match(/filename="?([^"]+)"?/);
+      a.download  = match ? match[1] : `${orderId}_PnL.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert('PDF export failed: ' + err.message);
+    }
+    setPdfLoading(false);
+  };
 
   useEffect(() => {
     fetch(`/api/orders/${orderId}/pnl`)
@@ -599,6 +761,19 @@ function PnLTab({ orderId, contractTotal, itemsSubtotal, chargeItems, payments }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+      {/* Export button — only for admin, production_manager, head_of_sales */}
+      {PDF_ALLOWED_ROLES.includes(userRole) && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button
+            onClick={exportPdf}
+            disabled={pdfLoading}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '7px', border: '1.5px solid #E8512A', background: pdfLoading ? '#f9fafb' : '#fff', color: pdfLoading ? '#aaa' : '#E8512A', fontWeight: 700, fontSize: '13px', cursor: pdfLoading ? 'default' : 'pointer' }}
+          >
+            {pdfLoading ? 'Generating…' : '↓ Export PDF'}
+          </button>
+        </div>
+      )}
 
       {/* Unallocated-purchase warning — shown when any linked purchase has no split amounts */}
       {hasUnallocatedPurchases && (
@@ -746,8 +921,18 @@ export default function OrderFormPage() {
   const [editedDeliveryInstructions, setEditedDeliveryInstructions] = useState('');
   const [saving, setSaving]           = useState(false);
 
-  // Payments state — lifted from PaymentPanel so PnLTab can read totalPaid
+  // Payments state — lifted from PaymentPanel so PnLTab can read totalPaid.
+  // Fetched here at the parent level so P&L has accurate data no matter which
+  // tab the user visits first (PaymentPanel also refreshes on its own mount).
   const [payments, setPayments]       = useState([]);
+  useEffect(() => {
+    supabase
+      .from('order_payments')
+      .select('*')
+      .eq('order_id', id)
+      .order('payment_date')
+      .then(({ data }) => setPayments(data || []));
+  }, [id]);
 
   // Modal state
   const [modal, setModal]             = useState(null); // null | 'rework' | 'refund' | 'repair' | 'credit' | 'quote'
@@ -1732,6 +1917,7 @@ export default function OrderFormPage() {
               itemsSubtotal={itemsSubtotal}
               chargeItems={displayItems.filter(i => isChargeItem(i))}
               payments={payments}
+              userRole={userRole}
             />
           </div>
         </>)}

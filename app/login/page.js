@@ -20,7 +20,7 @@ export default function LoginPage() {
       setError(error.message);
       setLoading(false);
     } else {
-      window.location.href = "/orders";
+      window.location.href = "/";
     }
   };
 

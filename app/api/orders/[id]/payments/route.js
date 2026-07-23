@@ -3,7 +3,7 @@
  *
  * GET    /api/orders/:id/payments           — list all payments (any authenticated user)
  * POST   /api/orders/:id/payments           — add payment
- * DELETE /api/orders/:id/payments?payment_id — delete payment (admin only)
+ * DELETE /api/orders/:id/payments?payment_id — delete payment (admin, head_of_sales) with required reason; logs to order_activities
  */
 
 export const runtime = 'nodejs';
@@ -96,36 +96,63 @@ export async function DELETE(request, { params }) {
       return NextResponse.json({ error: 'Missing payment_id query param' }, { status: 400 });
     }
 
-    // 1. Auth — admin only for deletes
-    const { user, role } = await getAuthContext();
-    const authError = requireRole(user, role, ['admin']);
+    // 1. Auth — admin + head_of_sales can delete payments
+    const { user, role, displayName } = await getAuthContext();
+    const authError = requireRole(user, role, ['admin', 'head_of_sales']);
     if (authError) return authError;
 
-    // 2. Verify payment belongs to this order
-    const { data: payment } = await serviceClient
+    // 2. Require a deletion reason
+    let reason = '';
+    try {
+      const body = await request.json();
+      reason = (body?.reason || '').trim();
+    } catch { /* body may not be parseable */ }
+    if (!reason) {
+      return NextResponse.json({ error: 'A reason is required to delete a payment' }, { status: 400 });
+    }
+
+    // 3. Verify payment belongs to this order — fetch only columns that exist
+    const { data: payment, error: fetchErr } = await serviceClient
       .from('order_payments')
-      .select('id, order_id')
+      .select('id, order_id, amount, description')
       .eq('id', paymentId)
       .eq('order_id', orderId)
       .single();
 
-    if (!payment) {
+    if (fetchErr || !payment) {
       return NextResponse.json({ error: 'Payment not found' }, { status: 404 });
     }
 
-    // 3. Delete
-    const { error } = await serviceClient
+    // 4. Hard delete
+    const { error: delError } = await serviceClient
       .from('order_payments')
       .delete()
       .eq('id', paymentId)
       .eq('order_id', orderId);
 
-    if (error) {
-      console.error('DELETE /api/orders/[id]/payments:', error);
+    if (delError) {
+      console.error('DELETE /api/orders/[id]/payments:', delError);
       return NextResponse.json({ error: 'Failed to delete payment' }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, message: 'Payment deleted' });
+    // 5. Log to order_activities — best-effort (payment is already gone if this fails)
+    const amt  = parseFloat(payment.amount || 0).toLocaleString('en-KE');
+    const desc = payment.description ? ` — "${payment.description}"` : '';
+    const { error: actError } = await serviceClient.from('order_activities').insert({
+      order_id:      orderId,
+      activity_type: 'payment_deleted',
+      description:   `Payment of KES ${amt}${desc} deleted by ${displayName}. Reason: ${reason}`,
+      created_by:    user.id,
+    });
+    if (actError) {
+      console.error('DELETE /api/orders/[id]/payments — activity log failed:', actError.message);
+    }
+
+    return NextResponse.json({
+      success:          true,
+      message:          'Payment deleted',
+      activity_logged:  !actError,
+    });
 
   } catch (err) {
     console.error('DELETE /api/orders/[id]/payments:', err);

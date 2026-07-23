@@ -50,6 +50,7 @@ const nextConfig = {
     outputFileTracingIncludes: {
       '/api/reports/pdf':                   PDF_ROUTES_INCLUDES,
       '/api/orders/[id]/delivery-note/pdf': PDF_ROUTES_INCLUDES,
+      '/api/orders/[id]/pnl/pdf':           PDF_ROUTES_INCLUDES,
     },
   },
 };

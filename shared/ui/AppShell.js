@@ -1,37 +1,51 @@
 "use client";
 import { useState, useEffect } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/shared/supabase/client";
 import * as modules from "@/modules/registry";
+import { useAuth } from "@/shared/context/AuthContext";
 
 const moduleList = Object.values(modules);
+// NOTE: modules without an allowedRoles array are hidden for ALL roles.
+// Every module config MUST declare allowedRoles to appear in nav and on Home.
 
 export default function AppShell({ children }) {
   const pathname = usePathname();
-  const [user, setUser] = useState(null);
+  const router   = useRouter();
+
+  // Auth comes from context — fetched once in AuthProvider (app/layout.js),
+  // not re-fetched on every AppShell mount. This eliminates the nav-bar flash
+  // and the two Supabase round-trips that previously happened on every navigation.
+  const { user, userRole, displayName, loaded } = useAuth();
+
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [userRole, setUserRole] = useState("viewer");
-  const [displayName, setDisplayName] = useState("");
+  const [moreOpen,       setMoreOpen]       = useState(false);
 
+  // Prefetch all permitted module routes as soon as auth resolves.
+  // This loads the JS chunk for each page in the background so the first
+  // click into any module is near-instant rather than waiting for the chunk.
   useEffect(() => {
-    const supabase = createClient();
-    supabase.auth.getUser().then(async ({ data }) => {
-      setUser(data.user);
-      if (data.user) {
-        const { data: profile } = await supabase.from("user_profiles").select("role, display_name").eq("id", data.user.id).single();
-        if (profile) { setUserRole(profile.role); setDisplayName(profile.display_name || ""); }
-      }
-    });
-  }, []);
+    if (!loaded) return;
+    moduleList
+      .filter(mod => mod.allowedRoles?.includes(userRole))
+      .forEach(mod => mod.navItems?.forEach(item => router.prefetch(item.path)));
+  }, [loaded, userRole]);
 
-  useEffect(() => { setMobileMenuOpen(false); }, [pathname]);
+  useEffect(() => { setMobileMenuOpen(false); setMoreOpen(false); }, [pathname]);
 
   const handleLogout = async () => {
     const supabase = createClient();
     await supabase.auth.signOut();
     window.location.href = "/login";
   };
+
+  // Nav layout: Modules home + 3 primary links + More dropdown for the rest
+  const PRIMARY_MODULE_IDS = ['dashboard', 'orders', 'production'];
+  const accessibleModules = moduleList.filter(mod => mod.allowedRoles?.includes(userRole));
+  const primaryModules    = accessibleModules.filter(mod => PRIMARY_MODULE_IDS.includes(mod.id));
+  const moreModules       = accessibleModules.filter(mod => !PRIMARY_MODULE_IDS.includes(mod.id));
+  const moreActive        = moreModules.some(mod => mod.navItems?.some(item => pathname.startsWith(item.path)));
 
   return (
     <div style={{ minHeight: "100vh", background: "#f7f7f5" }}>
@@ -55,17 +69,31 @@ export default function AppShell({ children }) {
           </Link>
         </div>
 
-        {/* Desktop nav */}
-        <nav className="desktop-nav" style={{ display: "flex", gap: "4px", alignItems: "center" }}>
-          {moduleList.filter(mod => mod.id !== "admin" || userRole === "admin").map((mod) =>
+        {/* Desktop nav — Modules | Dashboard · Orders · Production | More ▾ */}
+        <nav className="desktop-nav" style={{ display: "flex", gap: "2px", alignItems: "center" }}>
+
+          {/* Home / Modules link */}
+          <Link href="/" style={{
+            padding: "6px 14px", borderRadius: "4px", background: "transparent",
+            color: pathname === "/" ? "#fff" : "#999",
+            textDecoration: "none", fontSize: "13px",
+            fontWeight: pathname === "/" ? 700 : 500,
+            borderBottom: pathname === "/" ? "2px solid #E8512A" : "2px solid transparent",
+            transition: "all 0.15s",
+          }}>
+            Modules
+          </Link>
+
+          {/* Primary module links */}
+          {primaryModules.map((mod) =>
             mod.navItems.map((item) => {
               const active = pathname.startsWith(item.path);
               return (
                 <Link key={item.path} href={item.path} style={{
-                  padding: "6px 14px", borderRadius: "4px",
-                  background: "transparent",
+                  padding: "6px 14px", borderRadius: "4px", background: "transparent",
                   color: active ? "#fff" : "#999",
-                  textDecoration: "none", fontSize: "13px", fontWeight: active ? 700 : 500,
+                  textDecoration: "none", fontSize: "13px",
+                  fontWeight: active ? 700 : 500,
                   borderBottom: active ? "2px solid #E8512A" : "2px solid transparent",
                   transition: "all 0.15s",
                 }}>
@@ -74,6 +102,67 @@ export default function AppShell({ children }) {
                 </Link>
               );
             })
+          )}
+
+          {/* More ▾ dropdown — remaining permitted modules */}
+          {moreModules.length > 0 && (
+            <div style={{ position: "relative" }}>
+              <button
+                onClick={() => setMoreOpen(o => !o)}
+                style={{
+                  padding: "6px 14px", borderRadius: "4px", background: "transparent",
+                  color: (moreOpen || moreActive) ? "#fff" : "#999",
+                  border: "none", fontSize: "13px",
+                  fontWeight: (moreOpen || moreActive) ? 700 : 500,
+                  cursor: "pointer", display: "flex", alignItems: "center", gap: "4px",
+                  borderBottom: moreActive ? "2px solid #E8512A" : "2px solid transparent",
+                  transition: "all 0.15s",
+                }}
+              >
+                <span className="nav-label">More</span>
+                <span style={{ fontSize: "10px", opacity: 0.7, marginLeft: "2px" }}>▾</span>
+              </button>
+
+              {moreOpen && (
+                <>
+                  {/* Invisible backdrop closes dropdown on outside click */}
+                  <div
+                    style={{ position: "fixed", inset: 0, zIndex: 199 }}
+                    onClick={() => setMoreOpen(false)}
+                  />
+                  <div style={{
+                    position: "absolute", top: "calc(100% + 6px)", left: "50%",
+                    transform: "translateX(-50%)",
+                    background: "#252525", border: "1px solid #333",
+                    borderRadius: "8px", padding: "6px",
+                    minWidth: "176px", zIndex: 200,
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                  }}>
+                    {moreModules.map((mod) =>
+                      mod.navItems.map((item) => {
+                        const active = pathname.startsWith(item.path);
+                        return (
+                          <Link key={item.path} href={item.path}
+                            style={{
+                              display: "flex", alignItems: "center", gap: "10px",
+                              padding: "9px 12px", borderRadius: "6px",
+                              color: active ? "#fff" : "#bbb",
+                              textDecoration: "none", fontSize: "13px",
+                              fontWeight: active ? 700 : 400,
+                              background: active ? "rgba(232,81,42,0.15)" : "transparent",
+                            }}
+                            onClick={() => setMoreOpen(false)}
+                          >
+                            <span>{mod.icon}</span>
+                            <span>{item.label}</span>
+                          </Link>
+                        );
+                      })
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </nav>
 
@@ -116,7 +205,7 @@ export default function AppShell({ children }) {
             background: "#1a1a1a", padding: "12px",
             borderBottom: "1px solid #333",
           }} onClick={e => e.stopPropagation()}>
-            {moduleList.filter(mod => mod.id !== "admin" || userRole === "admin").map((mod) =>
+            {moduleList.filter(mod => mod.allowedRoles?.includes(userRole)).map((mod) =>
               mod.navItems.map((item) => {
                 const active = pathname.startsWith(item.path);
                 return (

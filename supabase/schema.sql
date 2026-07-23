@@ -1,7 +1,22 @@
 -- ════════════════════════════════════════════════════════════
 -- CANVAS GUY TRACKER — COMPLETE DATABASE SCHEMA
 -- Paste entire file into Supabase SQL Editor → Run
--- Safe to rerun — uses DROP IF EXISTS for policies.
+--
+-- ⚠  DANGER — DO NOT RERUN ON AN EXISTING PRODUCTION DATABASE ⚠
+--
+-- The policy section (line ~167) previously contained a loop that
+-- dropped EVERY RLS policy in the public schema before recreating
+-- only those defined here.  That loop silently wiped policies from:
+--   • suppliers_module.sql
+--   • payments_module.sql   (Chatpesa + manual payments)
+--   • accounting_foundation.sql
+--   • customers_module.sql
+--   • purchase_order_links.sql
+--
+-- The loop is now scoped to the 8 tables schema.sql owns.
+-- If you ever rerun schema.sql on production, immediately follow it
+-- with supabase/migrations/restore_rls_policies.sql to restore the
+-- policies that live in the migration files above.
 -- ════════════════════════════════════════════════════════════
 
 
@@ -163,10 +178,29 @@ ALTER TABLE public.order_deliveries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.order_activities ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_profiles ENABLE ROW LEVEL SECURITY;
 
--- ── Drop existing policies (safe rerun) ──
-DO $$ DECLARE pol RECORD; BEGIN
-  FOR pol IN SELECT policyname, tablename FROM pg_policies WHERE schemaname = 'public' LOOP
-    EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', pol.policyname, pol.tablename);
+-- ── Drop existing policies for schema.sql-owned tables only ──
+-- IMPORTANT: The original version was a global loop that dropped EVERY
+-- policy in the public schema — including those from suppliers_module.sql,
+-- payments_module.sql, accounting_foundation.sql, customers_module.sql,
+-- and purchase_order_links.sql.  That silently broke browser-direct access
+-- to all those tables whenever schema.sql was rerun.
+-- Now scoped to the 8 tables this file actually defines.
+DO $$
+DECLARE
+  schema_tables text[] := ARRAY[
+    'orders','order_items','order_documents','order_payments',
+    'order_notes','order_deliveries','order_activities','user_profiles'
+  ];
+  tbl  text;
+  pol  RECORD;
+BEGIN
+  FOREACH tbl IN ARRAY schema_tables LOOP
+    FOR pol IN
+      SELECT policyname FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = tbl
+    LOOP
+      EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', pol.policyname, tbl);
+    END LOOP;
   END LOOP;
 END $$;
 
@@ -412,8 +446,11 @@ CREATE TABLE IF NOT EXISTS public.contacts (
   created_by uuid REFERENCES auth.users(id)
 );
 ALTER TABLE public.contacts ENABLE ROW LEVEL SECURITY;
-CREATE INDEX IF NOT EXISTS idx_contacts_category ON public.contacts(category);
-CREATE INDEX IF NOT EXISTS idx_contacts_company ON public.contacts(company_name);
+-- NOTE: indexes on old contacts columns removed.
+-- idx_contacts_category (contacts.category) and idx_contacts_company (contacts.company_name)
+-- referenced columns that were dropped in the contacts schema migration.
+-- The replacement indexes (idx_contacts_type, idx_contacts_name) are created by
+-- customers_module.sql and will already exist on any up-to-date database.
 DO $$ BEGIN DROP POLICY IF EXISTS "contacts_select" ON public.contacts; DROP POLICY IF EXISTS "contacts_insert" ON public.contacts; DROP POLICY IF EXISTS "contacts_update" ON public.contacts; DROP POLICY IF EXISTS "contacts_delete" ON public.contacts; END $$;
 CREATE POLICY "contacts_select" ON public.contacts FOR SELECT USING (auth.role() = 'authenticated');
 CREATE POLICY "contacts_insert" ON public.contacts FOR INSERT WITH CHECK (auth.role() = 'authenticated' AND get_user_role() IN ('admin','production_manager','sales'));

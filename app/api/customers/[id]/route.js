@@ -10,12 +10,16 @@ export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import {
+  calcCustomerStats,
+  ACTIVE_STATUSES,
+  QUOTE_STATUSES,
+  DELIVERED_STATUSES,
+  CANCELLED_STATUS,
+} from '@/shared/lib/customerBalance';
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales', 'sales'];
 const VALID_TERMS = ['COD', '7 Days', '30 Days', '60 Days'];
-const ACTIVE_STATUSES    = ['Inquiry','Quoted','Quote Approved','Deposit Paid','In Production','Quality Check','Ready for Delivery','Out for Delivery'];
-const QUOTE_STATUSES     = ['Inquiry','Quoted','Quote Approved'];
-const DELIVERED_STATUSES = ['Partially Delivered', 'Delivered', 'Closed'];
 
 export async function GET(request, { params }) {
   try {
@@ -56,21 +60,20 @@ export async function GET(request, { params }) {
 
     const allOrders = orders || [];
 
-    // Compute stats
-    const nonCancelled = allOrders.filter(o => !['Cancelled','Cancelled/Refunded','Refunded'].includes(o.status));
-    const totalSales   = nonCancelled.reduce((s, o) => s + parseFloat(o.total_value || 0), 0);
-    const totalPaid    = nonCancelled.reduce((s, o) => {
-      return s + (o.order_payments || []).reduce((ps, p) => ps + parseFloat(p.amount || 0), 0);
-    }, 0);
-    const outstanding  = parseFloat(customer.opening_balance || 0) + totalSales - totalPaid;
-    const overdue      = nonCancelled
-      .filter(o => o.payment_due_date && o.payment_due_date < today && DELIVERED_STATUSES.includes(o.status))
-      .reduce((s, o) => {
-        const paid = (o.order_payments || []).reduce((ps, p) => ps + parseFloat(p.amount || 0), 0);
-        return s + Math.max(0, parseFloat(o.total_value || 0) - paid);
-      }, 0);
-    const activeOrders  = nonCancelled.filter(o => ACTIVE_STATUSES.includes(o.status)).length;
-    const activeQuotes  = nonCancelled.filter(o => QUOTE_STATUSES.includes(o.status)).length;
+    // Build paymentsByOrder from nested order_payments for use in calcCustomerStats
+    const nonCancelled    = allOrders.filter(o => o.status !== CANCELLED_STATUS);
+    const paymentsByOrder = {};
+    for (const o of nonCancelled) {
+      paymentsByOrder[o.id] = (o.order_payments || []).reduce(
+        (s, p) => s + parseFloat(p.amount || 0),
+        0
+      );
+    }
+
+    const { totalSales, totalPaid, outstanding, overdue, activeOrders } =
+      calcCustomerStats(customer, nonCancelled, paymentsByOrder, today);
+
+    const activeQuotes = nonCancelled.filter(o => QUOTE_STATUSES.includes(o.status)).length;
     const lastOrderDate = allOrders[0]?.created_at?.split('T')[0] || null;
     const firstOrder    = [...allOrders].sort((a, b) => a.created_at > b.created_at ? 1 : -1)[0];
     const customerSince = firstOrder?.created_at?.split('T')[0] || customer.created_at?.split('T')[0];
@@ -80,13 +83,18 @@ export async function GET(request, { params }) {
     const statementEntries = [];
 
     if (parseFloat(customer.opening_balance || 0) !== 0) {
+      // Opening balance is money the customer already owed before using this system.
+      // It is a debit — it increases what they owe, consistent with:
+      //   outstanding = opening_balance + totalSales - totalPaid
+      // Previously this was posted as a credit, which contradicted the KPI calculation.
+      const ob = parseFloat(customer.opening_balance);
       statementEntries.push({
         date:        customer.opening_balance_date || customer.created_at?.split('T')[0],
         type:        'Opening Balance',
         description: 'Opening balance',
-        debit:       0,
-        credit:      parseFloat(customer.opening_balance) > 0 ? parseFloat(customer.opening_balance) : 0,
-        amount:      parseFloat(customer.opening_balance),
+        debit:       ob > 0 ? ob : 0,
+        credit:      ob < 0 ? Math.abs(ob) : 0,
+        amount:      ob,
         reference:   null,
         order_num:   null,
       });

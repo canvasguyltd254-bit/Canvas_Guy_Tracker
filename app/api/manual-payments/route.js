@@ -13,7 +13,7 @@ import { recalcPurchasePayment } from '@/shared/lib/recalcPurchasePayment';
 import { postManualPaymentJournal } from '@/shared/lib/accountingService';
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales'];
-const METHODS = ['Cash', 'M-Pesa', 'Bank Transfer', 'Other'];
+const METHODS = ['Cash', 'M-Pesa', 'Bank Transfer', 'Cheque', 'Other'];
 
 export async function GET(request) {
   try {

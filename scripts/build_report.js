@@ -846,6 +846,212 @@ function buildReportPDF(data) {
         return;
       }
 
+      // ── Single-Order P&L (portrait A4) ───────────────────────────────────
+      const singleOrderPnL = data.singleOrderPnL;
+      if (singleOrderPnL != null) {
+        const order       = singleOrderPnL.order       || {};
+        const purchases   = singleOrderPnL.purchases   || [];
+        const chargeItems = singleOrderPnL.chargeItems || [];
+        const itemsSubtotal    = parseFloat(singleOrderPnL.itemsSubtotal  || 0);
+        const hasUnallocated   = !!singleOrderPnL.hasUnallocated;
+        const { contractTotal, totalCost, grossProfit, margin, totalPaid, outstanding } =
+          singleOrderPnL.totals || {};
+        const userName    = singleOrderPnL.userName || '';
+
+        const profitPos   = parseFloat(grossProfit || 0) >= 0;
+        const summaryClr  = profitPos ? '#16a34a' : '#CC0000';
+        const now         = new Date();
+        const nowStr      = fmtDate(now.toISOString());
+
+        doc = new PDFDocument({ size: [PW, PH], autoFirstPage: false, margin: 0 });
+        doc.on('data', c => chunks.push(c));
+        doc.on('end',  () => resolve(Buffer.concat(chunks)));
+        doc.on('error', reject);
+
+        let pnlPage = 0;
+        function drawPnLHeader() {
+          pnlPage++;
+          doc.addPage();
+          fillRect(doc, 0, 0, PW, 13 * MM, CORAL);
+          drawLeft(doc, 'CANVAS GUY LIMITED', PM, 4 * MM,
+            { font: 'Helvetica-Bold', size: 10, color: WHITE });
+          drawRight(doc, 'Colorful Spaces  |  1408-01000 Thika  |  Holla@canvasguy.co.ke  |  0713-196-650',
+            PW - PM, 5.5 * MM, { size: 6.5, color: WHITE });
+          let hy = 16 * MM;
+          drawLeft(doc, 'ORDER P&L', PM, hy, { font: 'Helvetica-Bold', size: 11, color: DGRAY });
+          drawRight(doc, `${nowStr}   |   Page ${pnlPage}`, PW - PM, hy, { size: 7, color: DGRAY });
+          hy += 5 * MM;
+          if (userName) drawRight(doc, `Prepared by: ${userName}`, PW - PM, hy, { size: 7, color: DGRAY });
+          hy += 4 * MM;
+          doc.save().moveTo(PM, hy).lineTo(PW - PM, hy).lineWidth(0.4).stroke(MGRAY).restore();
+          hy += 3 * MM;
+          return hy;
+        }
+
+        let y = drawPnLHeader();
+
+        // ── Order info box ──────────────────────────────────────────────
+        const boxH = 18 * MM;
+        fillRect(doc, PM, y, PCW, boxH, LGRAY);
+        drawLeft(doc,
+          `${order.order_num || ''}  —  ${(order.client || '').toUpperCase()}`,
+          PM + 3 * MM, y + 2.5 * MM,
+          { font: 'Helvetica-Bold', size: 9, color: DGRAY });
+        drawLeft(doc, `Status: ${order.status || ''}`,
+          PM + 3 * MM, y + 8 * MM, { size: 7, color: DGRAY });
+        if (order.due_date) {
+          drawLeft(doc, `Due: ${fmtDate(order.due_date)}`,
+            PM + 3 * MM, y + 12.5 * MM, { size: 7, color: DGRAY });
+        }
+        y += boxH + 5 * MM;
+
+        // ── Unallocated warning ─────────────────────────────────────────
+        if (hasUnallocated) {
+          fillRect(doc, PM, y, PCW, 8 * MM, '#FFFBEB');
+          doc.save().rect(PM, y, PCW, 8 * MM).stroke('#FDE68A').restore();
+          drawLeft(doc,
+            '⚠  One or more purchases have no cost split set — costs may be overstated.',
+            PM + 3 * MM, y + 2.5 * MM, { size: 6.5, color: '#92400e' });
+          y += 10 * MM;
+        }
+
+        // ── KPI cards (4 across) ────────────────────────────────────────
+        const cardW = (PCW - 3 * 3 * MM) / 4;
+        const cardH = 18 * MM;
+        const cards = [
+          { label: 'CONTRACT TOTAL', val: `KES ${fmtKes(contractTotal)}`, clr: DGRAY },
+          { label: 'TOTAL COSTS',    val: `KES ${fmtKes(totalCost)}`,     clr: CORAL },
+          { label: grossProfit >= 0 ? 'GROSS PROFIT' : 'GROSS LOSS',
+                                     val: `KES ${fmtKes(Math.abs(grossProfit))}`, clr: summaryClr },
+          { label: 'GROSS MARGIN',   val: `${Math.round(margin)}%`,       clr: summaryClr },
+        ];
+        cards.forEach((c, i) => {
+          const cx = PM + i * (cardW + 3 * MM);
+          fillRect(doc, cx, y, cardW, cardH, LGRAY);
+          fillRect(doc, cx, y, cardW, 2, c.clr);
+          drawCenter(doc, c.label, cx + cardW / 2, y + 4 * MM,
+            { font: 'Helvetica-Bold', size: 5.5, color: '#6b7280' });
+          drawCenter(doc, c.val, cx + cardW / 2, y + 9 * MM,
+            { font: 'Helvetica-Bold', size: 7.5, color: c.clr });
+        });
+        y += cardH + 6 * MM;
+
+        // ── Revenue section ─────────────────────────────────────────────
+        fillRect(doc, PM, y, PCW, 7 * MM, '#000000');
+        drawLeft(doc, 'REVENUE', PM + 2 * MM, y + 1.5 * MM,
+          { font: 'Helvetica-Bold', size: 7.5, color: CORAL });
+        y += 7 * MM + 4 * MM;
+
+        const RL = PM + 3 * MM;   // left x for revenue labels
+        const RR = PW - PM;       // right x for revenue amounts
+        const RH = 5 * MM;        // line height
+
+        if (itemsSubtotal > 0) {
+          drawLeft(doc,  'Items subtotal', RL, y, { size: 7, color: DGRAY });
+          drawRight(doc, `KES ${fmtKes(itemsSubtotal)}`, RR, y, { size: 7, color: DGRAY });
+          y += RH;
+        }
+        chargeItems.forEach(ci => {
+          const amt = (parseFloat(ci.unit_price) || 0) * (parseInt(ci.quantity) || 1);
+          drawLeft(doc,  ci.category || 'Charge', RL, y, { size: 7, color: DGRAY });
+          drawRight(doc, `KES ${fmtKes(amt)}`, RR, y, { size: 7, color: DGRAY });
+          y += RH;
+        });
+        // Divider
+        doc.save().moveTo(RL, y).lineTo(RR, y).lineWidth(0.3).stroke(MGRAY).restore();
+        y += 2 * MM;
+        // Contract Total
+        drawLeft(doc,  'Contract Total', RL, y, { font: 'Helvetica-Bold', size: 7.5, color: DGRAY });
+        drawRight(doc, `KES ${fmtKes(contractTotal)}`, RR, y, { font: 'Helvetica-Bold', size: 7.5, color: DGRAY });
+        y += RH + 1 * MM;
+        // Received
+        drawLeft(doc,  'Received from client', RL, y, { size: 7, color: '#16a34a' });
+        drawRight(doc, `KES ${fmtKes(totalPaid)}`, RR, y, { size: 7, color: '#16a34a' });
+        y += RH;
+        // Outstanding
+        const outClr = outstanding > 0.01 ? CORAL : '#16a34a';
+        drawLeft(doc,  'Outstanding (receivable)', RL, y, { size: 7, color: outClr });
+        drawRight(doc, `KES ${fmtKes(outstanding)}`, RR, y, { size: 7, color: outClr });
+        y += 7 * MM;
+
+        // ── Costs section ───────────────────────────────────────────────
+        fillRect(doc, PM, y, PCW, 7 * MM, '#000000');
+        drawLeft(doc,
+          `SUPPLIER COSTS  —  ${purchases.length} purchase${purchases.length !== 1 ? 's' : ''} linked`,
+          PM + 2 * MM, y + 1.5 * MM,
+          { font: 'Helvetica-Bold', size: 7.5, color: CORAL });
+        y += 7 * MM;
+
+        if (purchases.length === 0) {
+          y += 3 * MM;
+          drawLeft(doc, 'No supplier costs linked to this order yet.', PM + 3 * MM, y,
+            { size: 7, color: '#9ca3af' });
+          y += 8 * MM;
+        } else {
+          const COST_COLS = mmCols([
+            { key: 'date',     header: 'Date',         x:   0, w: 22 },
+            { key: 'supplier', header: 'Supplier',     x:  22, w: 40, bold: true },
+            { key: 'items',    header: 'Items',        x:  62, w: 78 },
+            { key: 'amount',   header: 'Amount (KES)', x: 140, w: 31, right: true, bold: true },
+          ]);
+
+          y += 2 * MM;
+          // Header row
+          fillRect(doc, PM, y, PCW, HDR_H, LGRAY);
+          COST_COLS.forEach(c => {
+            if (c.right)
+              drawRight(doc, c.header, PM + c.x + c.w, y + 1.5 * MM,
+                { font: 'Helvetica-Bold', size: 6.5, color: DGRAY });
+            else
+              drawLeft(doc, c.header, PM + c.x, y + 1.5 * MM,
+                { font: 'Helvetica-Bold', size: 6.5, color: DGRAY });
+          });
+          y += HDR_H;
+
+          purchases.forEach((p, idx) => {
+            if (y + ROW_H > PH - PBOTTOM - 22 * MM) {
+              y = drawPnLHeader();
+            }
+            if (idx % 2 === 1) fillRect(doc, PM, y, PCW, ROW_H, '#FAFAFA');
+            const ry = y + 1.5 * MM;
+            drawLeft(doc,  fmtDate(p.purchase_date), PM + COST_COLS[0].x, ry,
+              { size: 6.5, color: DGRAY });
+            drawLeft(doc,  p.supplier?.name || '—', PM + COST_COLS[1].x, ry,
+              { size: 6.5, color: DGRAY, maxW: COST_COLS[1].w });
+            drawLeft(doc,  p.items_bought || '—', PM + COST_COLS[2].x, ry,
+              { size: 6.5, color: DGRAY, maxW: COST_COLS[2].w });
+            drawRight(doc, fmtKes(p.total_amount),
+              PM + COST_COLS[3].x + COST_COLS[3].w, ry,
+              { font: 'Helvetica-Bold', size: 6.5, color: DGRAY });
+            y += ROW_H;
+          });
+
+          // Total row
+          fillRect(doc, PM, y, PCW, ROW_H, DKROW);
+          drawLeft(doc,  'TOTAL COSTS', PM + 2 * MM, y + 1.5 * MM,
+            { font: 'Helvetica-Bold', size: 6.5, color: WHITE });
+          drawRight(doc, `KES ${fmtKes(totalCost)}`, PW - PM, y + 1.5 * MM,
+            { font: 'Helvetica-Bold', size: 7, color: CORAL });
+          y += ROW_H + 6 * MM;
+        }
+
+        // ── Gross profit / loss bar ─────────────────────────────────────
+        if (y + 18 * MM > PH - PBOTTOM) { y = drawPnLHeader(); }
+        fillRect(doc, PM, y, PCW, 16 * MM, summaryClr);
+        const gpLabel = profitPos ? 'GROSS PROFIT' : 'GROSS LOSS';
+        drawLeft(doc, gpLabel, PM + 4 * MM, y + 3.5 * MM,
+          { font: 'Helvetica-Bold', size: 8, color: WHITE });
+        drawLeft(doc, `KES ${fmtKes(Math.abs(grossProfit))}`, PM + 4 * MM, y + 9 * MM,
+          { font: 'Helvetica-Bold', size: 11, color: WHITE });
+        drawRight(doc, `${Math.round(margin)}%`, PW - PM - 4 * MM, y + 5 * MM,
+          { font: 'Helvetica-Bold', size: 18, color: WHITE });
+        y += 16 * MM + 2.5 * MM;
+        drawRight(doc, 'Gross Margin', PW - PM - 4 * MM, y, { size: 6, color: summaryClr });
+
+        doc.end();
+        return;
+      }
+
       // ── Delivery note (portrait A4) ───────────────────────────────────────
       const deliveryNote = data.deliveryNote;
       if (deliveryNote != null) {
