@@ -1082,8 +1082,10 @@ export default function OrderFormPage() {
   const BATCH_ROLES    = ['admin', 'head_of_sales', 'production_manager'];
   const canToggleBatch = BATCH_ROLES.includes(userRole);
   const totalQty       = items.filter(i => !isChargeItem(i)).reduce((s, i) => s + (parseInt(i.quantity) || 1), 0);
-  // Eligible: physical qty > 20 OR order value >= KES 500,000 (charges excluded from qty)
-  const batchEligible  = totalQty > 20 || contractTotal >= 500000;
+  // Commercial and reseller clients can always use batch delivery;
+  // other orders require qty > 20 OR value >= KES 500,000
+  const isCommercialOrReseller = ['commercial', 'reseller'].includes(order.customer_type);
+  const batchEligible  = isCommercialOrReseller || totalQty > 20 || contractTotal >= 500000;
   const batchWarning   = !order.batch_delivery && canToggleBatch && (contractTotal >= 500000 || totalQty >= 100);
 
   // Build status list: exclude "Cancelled / Refunded" always; exclude "Partially Delivered" always
