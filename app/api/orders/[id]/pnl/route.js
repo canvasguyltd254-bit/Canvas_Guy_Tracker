@@ -123,19 +123,49 @@ export async function GET(request, { params }) {
         };
       });
 
-    const totalCost     = purchases.reduce((s, p) => s + p.total_amount, 0);
-    const totalPaidAP   = purchases.reduce((s, p) => s + p.amount_paid,  0);
-    const outstandingAP = Math.max(0, totalCost - totalPaidAP);
-
-    // Warn the caller when any linked purchase has no allocation amount set.
-    // This means the full purchase cost is counted against this order, which
-    // overstates costs if the purchase is also linked to other orders.
+    const totalPurchaseCost = purchases.reduce((s, p) => s + p.total_amount, 0);
+    const totalPaidAP       = purchases.reduce((s, p) => s + p.amount_paid,  0);
     const hasUnallocatedPurchases = purchases.some(p => p.is_unallocated);
+
+    // Fetch skilled-casual payroll allocations for this order
+    const { data: labourRows, error: labourErr } = await serviceClient
+      .from('payroll_order_allocations')
+      .select(`
+        id, allocated_amount, notes,
+        payroll_entries ( id, snapshot_name, snapshot_type, net_pay, amount_paid,
+          payroll_runs ( run_num, period_start, period_end, status )
+        )
+      `)
+      .eq('order_id', orderId)
+      .order('created_at');
+
+    if (labourErr) {
+      console.error('GET /api/orders/[id]/pnl — labour query error:', labourErr.message);
+      return NextResponse.json({ error: 'Failed to fetch labour cost data' }, { status: 500 });
+    }
+
+    const labourAllocations = (labourRows || []).map(row => ({
+      id:              row.id,
+      allocated_amount: Number(row.allocated_amount || 0),
+      notes:           row.notes,
+      worker_name:     row.payroll_entries?.snapshot_name || '—',
+      entry_id:        row.payroll_entries?.id,
+      amount_paid:     Number(row.payroll_entries?.amount_paid || 0),
+      run_num:         row.payroll_entries?.payroll_runs?.run_num,
+      period_start:    row.payroll_entries?.payroll_runs?.period_start,
+      period_end:      row.payroll_entries?.payroll_runs?.period_end,
+      run_status:      row.payroll_entries?.payroll_runs?.status,
+    }));
+
+    const totalLabourCost = labourAllocations.reduce((s, l) => s + l.allocated_amount, 0);
+    const totalCost       = totalPurchaseCost + totalLabourCost;
+    const outstandingAP   = Math.max(0, totalPurchaseCost - totalPaidAP);
 
     return NextResponse.json({
       success: true,
       purchases,
-      totals: { totalCost, totalPaidAP, outstandingAP },
+      labourAllocations,
+      totals: { totalCost, totalPurchaseCost, totalLabourCost, totalPaidAP, outstandingAP },
       hasUnallocatedPurchases,
     });
   } catch (err) {

@@ -147,23 +147,51 @@ export async function GET(request, { params }) {
         };
       });
 
-    const totalCost   = purchases.reduce((s, p) => s + p.total_amount, 0);
-    const contractTotal = parseFloat(order.total_value || 0);
-    const grossProfit = contractTotal - totalCost;
-    const margin      = contractTotal > 0 ? (grossProfit / contractTotal) * 100 : 0;
-    const outstanding = Math.max(0, contractTotal - totalPaid);
-    const hasUnallocated = purchases.some(p => p.is_unallocated);
+    // ── Fetch skilled-labour allocations ─────────────────────────────────
+    const { data: labourRows, error: labourErr } = await serviceClient
+      .from('payroll_order_allocations')
+      .select(`
+        id, allocated_amount, notes,
+        payroll_entries ( id, snapshot_name,
+          payroll_runs ( run_num, period_start, period_end )
+        )
+      `)
+      .eq('order_id', orderId)
+      .order('created_at');
+
+    if (labourErr) {
+      console.error('GET /api/orders/[id]/pnl/pdf — labour fetch error:', labourErr.message);
+      return NextResponse.json({ error: 'Failed to fetch labour cost data' }, { status: 500 });
+    }
+
+    const labourAllocations = (labourRows || []).map(row => ({
+      id:               row.id,
+      allocated_amount: parseFloat(row.allocated_amount || 0),
+      notes:            row.notes,
+      worker_name:      row.payroll_entries?.snapshot_name || '—',
+      run_num:          row.payroll_entries?.payroll_runs?.run_num,
+    }));
+
+    const totalPurchaseCost = purchases.reduce((s, p) => s + p.total_amount, 0);
+    const totalLabourCost   = labourAllocations.reduce((s, l) => s + l.allocated_amount, 0);
+    const totalCost         = totalPurchaseCost + totalLabourCost;
+    const contractTotal     = parseFloat(order.total_value || 0);
+    const grossProfit       = contractTotal - totalCost;
+    const margin            = contractTotal > 0 ? (grossProfit / contractTotal) * 100 : 0;
+    const outstanding       = Math.max(0, contractTotal - totalPaid);
+    const hasUnallocated    = purchases.some(p => p.is_unallocated);
 
     // ── Build and return PDF ─────────────────────────────────────────────
     const pdfData = {
       singleOrderPnL: {
         order,
         purchases,
+        labourAllocations,
         payments: payments || [],
         chargeItems,
         itemsSubtotal,
         hasUnallocated,
-        totals: { contractTotal, totalCost, grossProfit, margin, totalPaid, outstanding },
+        totals: { contractTotal, totalPurchaseCost, totalLabourCost, totalCost, grossProfit, margin, totalPaid, outstanding },
         userName: displayName,
       },
     };
