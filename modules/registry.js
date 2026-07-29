@@ -7,3 +7,4 @@ export { default as contacts } from "./contacts/config";
 export { default as suppliers } from "./suppliers/config";
 export { default as accounting } from "./accounting/config";
 export { default as admin } from "./admin/config";
+export { default as payroll } from "./payroll/config";

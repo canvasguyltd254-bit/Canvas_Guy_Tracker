@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/shared/supabase/client";
 import * as modules from "@/modules/registry";
@@ -12,7 +12,6 @@ const moduleList = Object.values(modules);
 
 export default function AppShell({ children }) {
   const pathname = usePathname();
-  const router   = useRouter();
 
   // Auth comes from context — fetched once in AuthProvider (app/layout.js),
   // not re-fetched on every AppShell mount. This eliminates the nav-bar flash
@@ -22,15 +21,9 @@ export default function AppShell({ children }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [moreOpen,       setMoreOpen]       = useState(false);
 
-  // Prefetch all permitted module routes as soon as auth resolves.
-  // This loads the JS chunk for each page in the background so the first
-  // click into any module is near-instant rather than waiting for the chunk.
-  useEffect(() => {
-    if (!loaded) return;
-    moduleList
-      .filter(mod => mod.allowedRoles?.includes(userRole))
-      .forEach(mod => mod.navItems?.forEach(item => router.prefetch(item.path)));
-  }, [loaded, userRole]);
+  // Next.js prefetches <Link> hrefs automatically when they enter the viewport.
+  // Blanket programmatic prefetch of all routes on mount competed for bandwidth
+  // and caused large modules to load before the user asked for them — removed.
 
   useEffect(() => { setMobileMenuOpen(false); setMoreOpen(false); }, [pathname]);
 

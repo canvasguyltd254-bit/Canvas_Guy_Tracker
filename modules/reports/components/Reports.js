@@ -2,6 +2,7 @@
 import { useState, useEffect, useMemo, useCallback, Fragment } from "react";
 import { useSearchParams } from "next/navigation";
 import { createClient } from "@/shared/supabase/client";
+import { useAuth } from "@/shared/context/AuthContext";
 import { ALL_STATUS_COLORS, CATEGORIES } from "@/modules/orders/components/constants";
 // PDF generation handled server-side via /api/reports/pdf (build_report.py)
 
@@ -78,13 +79,13 @@ function toInputDate(d) {
 export default function Reports() {
   const searchParams = useSearchParams();
   const initialType = searchParams.get("type") || "production";
+  const { displayName } = useAuth();
 
   const [reportType, setReportType] = useState(initialType);
   const [orders, setOrders] = useState([]);
   const [allItems, setAllItems] = useState({});
   const [payTotals, setPayTotals] = useState({});
   const [loaded, setLoaded] = useState(false);
-  const [userName, setUserName] = useState("");
   const [search, setSearch] = useState("");
   const [clientFilter, setClientFilter] = useState("All");
   const [exporting, setExporting]               = useState(false);
@@ -111,11 +112,6 @@ export default function Reports() {
   // ── Load all data once ──
   useEffect(() => {
     (async () => {
-      const { data: { user } } = await sb.auth.getUser();
-      if (user) {
-        const { data: p } = await sb.from("user_profiles").select("display_name").eq("id", user.id).single();
-        setUserName(p?.display_name || user.email?.split("@")[0] || "");
-      }
       const { data: ord } = await sb.from("orders").select("*").order("due_date", { ascending: true, nullsFirst: false });
       setOrders(ord || []);
       const { data: items } = await sb.from("order_items").select("*").order("sort_order");
@@ -386,13 +382,13 @@ export default function Reports() {
             })),
             dateFrom: showDateRange ? dateFrom.toISOString() : null,
             dateTo:   showDateRange ? dateTo.toISOString()   : null,
-            userName,
+            userName: displayName,
           } : isSupplierReport ? {
             reportLabel:       reportMeta.label,
             supplierPurchases: filtered,
             dateFrom:          showDateRange ? dateFrom.toISOString() : null,
             dateTo:            showDateRange ? dateTo.toISOString()   : null,
-            userName,
+            userName: displayName,
           } : {
             reportLabel:     reportMeta.label,
             orders:          filtered,
@@ -400,7 +396,7 @@ export default function Reports() {
             payTotals,
             dateFrom:        showDateRange ? dateFrom.toISOString() : null,
             dateTo:          showDateRange ? dateTo.toISOString()   : null,
-            userName,
+            userName: displayName,
             showFinancials:  isFinancial,
             workloadSummary: reportType === "workload" ? workloadSummary : null,
           }

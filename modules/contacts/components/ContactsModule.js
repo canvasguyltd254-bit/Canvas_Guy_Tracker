@@ -50,36 +50,37 @@ export default function ContactsModule() {
   const [formError, setFormError]   = useState("");
   const [editContact, setEditContact] = useState(null);
 
-  const loadContacts = async (type = typeFilter) => {
+  // Always load all contacts — filter and count client-side.
+  // This eliminates: (a) the two-effect double-fetch on mount and
+  // (b) a full-directory re-download on every save just to recount.
+  const loadContacts = async () => {
     setLoading(true);
-    const params = new URLSearchParams({ type });
-    if (search) params.set("search", search);
-    const res  = await fetch(`/api/contacts?${params}`);
+    const res  = await fetch("/api/contacts?type=all");
     const json = await res.json();
     setContacts(json.data || []);
     setLoading(false);
   };
 
   useEffect(() => { loadContacts(); }, []);
-  useEffect(() => { loadContacts(typeFilter); }, [typeFilter]);
 
+  // Client-side filtering by type + search
   const filtered = useMemo(() => {
-    if (!search) return contacts;
-    const q = search.toLowerCase();
-    return contacts.filter(c =>
-      [c.name, c.company, c.contact_person, c.phone, c.email].filter(Boolean).join(" ").toLowerCase().includes(q)
-    );
-  }, [contacts, search]);
+    let list = contacts;
+    if (typeFilter !== "all") list = list.filter(c => c.contact_type === typeFilter);
+    if (search) {
+      const q = search.toLowerCase();
+      list = list.filter(c =>
+        [c.name, c.company, c.contact_person, c.phone, c.email].filter(Boolean).join(" ").toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [contacts, typeFilter, search]);
 
-  // Counts per type (from full unfiltered list — reload with "all" for counts)
-  const [counts, setCounts] = useState({});
-  useEffect(() => {
-    fetch("/api/contacts?type=all").then(r => r.json()).then(j => {
-      const all = j.data || [];
-      const c = {};
-      for (const item of all) c[item.contact_type] = (c[item.contact_type] || 0) + 1;
-      setCounts(c);
-    });
+  // Counts computed from the already-loaded full list — no extra network request
+  const counts = useMemo(() => {
+    const c = {};
+    for (const item of contacts) c[item.contact_type] = (c[item.contact_type] || 0) + 1;
+    return c;
   }, [contacts]);
 
   const handleSave = async () => {

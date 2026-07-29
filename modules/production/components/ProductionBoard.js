@@ -1,6 +1,7 @@
 "use client";
 import{useState,useEffect,useCallback}from"react";
 import{createClient}from"@/shared/supabase/client";
+import{useAuth}from"@/shared/context/AuthContext";
 import{ALL_STATUS_COLORS,ss,ROLES_CAN_ADVANCE}from"@/modules/orders/components/constants";
 
 const PROD_STAGES=["Material Check","Production","Quality Control","Ready for Delivery"];
@@ -10,11 +11,11 @@ export default function ProductionBoard(){
   const[orders,setOrders]=useState([]);const[items,setItems]=useState({});const[loaded,setLoaded]=useState(false);
   const[viewMode,setViewMode]=useState("board");const[search,setSearch]=useState("");
   const[qcPrompt,setQcPrompt]=useState(null);const[qcNotes,setQcNotes]=useState("");const[qcBy,setQcBy]=useState("");
-  const[userRole,setUserRole]=useState("viewer");
+  const{userRole='viewer',displayName}=useAuth();
   const[exportMode,setExportMode]=useState(null);const[exportClient,setExportClient]=useState("");const[exportOrder,setExportOrder]=useState("");const[exporting,setExporting]=useState(false);
   const sb=createClient();
 
-  useEffect(()=>{(async()=>{const{data:{user}}=await sb.auth.getUser();if(user){const{data:p}=await sb.from("user_profiles").select("role,display_name").eq("id",user.id).single();if(p){setUserRole(p.role);setQcBy(p.display_name||user.email?.split("@")[0]||"")}}})()},[]);
+  useEffect(()=>{if(displayName)setQcBy(displayName)},[displayName]);
 
   const load=useCallback(async()=>{
     const{data:ord}=await sb.from("orders").select("*").in("status",PROD_STAGES).order("due_date",{ascending:true,nullsFirst:false});setOrders(ord||[]);

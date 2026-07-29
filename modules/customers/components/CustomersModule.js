@@ -2,6 +2,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { createClient } from "@/shared/supabase/client";
 import { useRouter } from "next/navigation";
+import { useAuth } from "@/shared/context/AuthContext";
 
 const WRITE_ROLES = ["admin", "production_manager", "head_of_sales", "sales"];
 const VALID_TERMS = ["COD", "7 Days", "30 Days", "60 Days"];
@@ -69,6 +70,7 @@ function Avatar({ name, size = 38 }) {
 
 // ── CUSTOMER REPORTS TAB ──────────────────────────────────────────────────────
 function CustomerReportsTab({ customers }) {
+  const { displayName }                   = useAuth();
   const [reportType, setReportType]       = useState("customer-receivables");
   const [orders, setOrders]               = useState([]);
   const [payTotals, setPayTotals]         = useState({});
@@ -78,14 +80,6 @@ function CustomerReportsTab({ customers }) {
   const [dateTo, setDateTo]               = useState(new Date());
   const [exporting, setExporting]         = useState(false);
   const [exportError, setExportError]     = useState("");
-  const [userName, setUserName]           = useState("");
-
-  useEffect(() => {
-    const supabase = createClient();
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (user) setUserName(user.email || "");
-    });
-  }, []);
 
   useEffect(() => {
     if (reportType === "customer-orders") fetchOrders();
@@ -178,7 +172,7 @@ function CustomerReportsTab({ customers }) {
           })),
           dateFrom: dateFrom ? dateFrom.toISOString() : null,
           dateTo:   dateTo   ? dateTo.toISOString()   : null,
-          userName,
+          userName: displayName,
         };
       } else {
         body = {
@@ -192,7 +186,7 @@ function CustomerReportsTab({ customers }) {
             credit_limit: parseFloat(c.credit_limit || 0),
             total_orders: c._stats?.total_orders || 0,
           })),
-          userName,
+          userName: displayName,
         };
       }
 
@@ -404,9 +398,9 @@ function CustomerReportsTab({ customers }) {
 // ── MAIN MODULE ───────────────────────────────────────────────────────────────
 export default function CustomersModule() {
   const router = useRouter();
+  const { userRole = '', loaded: authLoaded } = useAuth();
   const [customers, setCustomers]     = useState([]);
   const [loading, setLoading]         = useState(true);
-  const [userRole, setUserRole]       = useState("");
   const [view, setView]               = useState("list");   // "list" | "reports"
   const [search, setSearch]           = useState("");
   const [showForm, setShowForm]       = useState(false);
@@ -415,14 +409,9 @@ export default function CustomersModule() {
   const [formError, setFormError]     = useState("");
 
   useEffect(() => {
-    const supabase = createClient();
-    supabase.auth.getUser().then(async ({ data: { user } }) => {
-      if (!user) return;
-      const { data: profile } = await supabase.from("user_profiles").select("role").eq("id", user.id).single();
-      setUserRole(profile?.role || "");
-    });
+    if (!authLoaded) return;
     loadCustomers();
-  }, []);
+  }, [authLoaded]);
 
   const loadCustomers = async () => {
     setLoading(true);

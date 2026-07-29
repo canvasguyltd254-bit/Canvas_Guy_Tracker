@@ -849,12 +849,14 @@ function buildReportPDF(data) {
       // ── Single-Order P&L (portrait A4) ───────────────────────────────────
       const singleOrderPnL = data.singleOrderPnL;
       if (singleOrderPnL != null) {
-        const order       = singleOrderPnL.order       || {};
-        const purchases   = singleOrderPnL.purchases   || [];
-        const chargeItems = singleOrderPnL.chargeItems || [];
-        const itemsSubtotal    = parseFloat(singleOrderPnL.itemsSubtotal  || 0);
+        const order            = singleOrderPnL.order            || {};
+        const purchases        = singleOrderPnL.purchases        || [];
+        const labourAllocations = singleOrderPnL.labourAllocations || [];
+        const chargeItems      = singleOrderPnL.chargeItems      || [];
+        const itemsSubtotal    = parseFloat(singleOrderPnL.itemsSubtotal || 0);
         const hasUnallocated   = !!singleOrderPnL.hasUnallocated;
-        const { contractTotal, totalCost, grossProfit, margin, totalPaid, outstanding } =
+        const { contractTotal, totalPurchaseCost, totalLabourCost, totalCost,
+                grossProfit, margin, totalPaid, outstanding } =
           singleOrderPnL.totals || {};
         const userName    = singleOrderPnL.userName || '';
 
@@ -974,7 +976,7 @@ function buildReportPDF(data) {
         drawRight(doc, `KES ${fmtKes(outstanding)}`, RR, y, { size: 7, color: outClr });
         y += 7 * MM;
 
-        // ── Costs section ───────────────────────────────────────────────
+        // ── Supplier Costs section ──────────────────────────────────────
         fillRect(doc, PM, y, PCW, 7 * MM, '#000000');
         drawLeft(doc,
           `SUPPLIER COSTS  —  ${purchases.length} purchase${purchases.length !== 1 ? 's' : ''} linked`,
@@ -996,7 +998,6 @@ function buildReportPDF(data) {
           ]);
 
           y += 2 * MM;
-          // Header row
           fillRect(doc, PM, y, PCW, HDR_H, LGRAY);
           COST_COLS.forEach(c => {
             if (c.right)
@@ -1009,9 +1010,7 @@ function buildReportPDF(data) {
           y += HDR_H;
 
           purchases.forEach((p, idx) => {
-            if (y + ROW_H > PH - PBOTTOM - 22 * MM) {
-              y = drawPnLHeader();
-            }
+            if (y + ROW_H > PH - PBOTTOM - 22 * MM) { y = drawPnLHeader(); }
             if (idx % 2 === 1) fillRect(doc, PM, y, PCW, ROW_H, '#FAFAFA');
             const ry = y + 1.5 * MM;
             drawLeft(doc,  fmtDate(p.purchase_date), PM + COST_COLS[0].x, ry,
@@ -1026,14 +1025,80 @@ function buildReportPDF(data) {
             y += ROW_H;
           });
 
-          // Total row
+          // Subtotal row — supplier costs only
           fillRect(doc, PM, y, PCW, ROW_H, DKROW);
-          drawLeft(doc,  'TOTAL COSTS', PM + 2 * MM, y + 1.5 * MM,
+          drawLeft(doc,  'SUPPLIER COSTS TOTAL', PM + 2 * MM, y + 1.5 * MM,
             { font: 'Helvetica-Bold', size: 6.5, color: WHITE });
-          drawRight(doc, `KES ${fmtKes(totalCost)}`, PW - PM, y + 1.5 * MM,
+          drawRight(doc, `KES ${fmtKes(totalPurchaseCost)}`, PW - PM, y + 1.5 * MM,
             { font: 'Helvetica-Bold', size: 7, color: CORAL });
-          y += ROW_H + 6 * MM;
+          y += ROW_H + 4 * MM;
         }
+
+        // ── Labour Costs section ────────────────────────────────────────
+        fillRect(doc, PM, y, PCW, 7 * MM, '#000000');
+        drawLeft(doc,
+          `LABOUR COSTS  —  ${labourAllocations.length} allocation${labourAllocations.length !== 1 ? 's' : ''}`,
+          PM + 2 * MM, y + 1.5 * MM,
+          { font: 'Helvetica-Bold', size: 7.5, color: CORAL });
+        y += 7 * MM;
+
+        if (labourAllocations.length === 0) {
+          y += 3 * MM;
+          drawLeft(doc, 'No skilled-labour costs linked to this order.', PM + 3 * MM, y,
+            { size: 7, color: '#9ca3af' });
+          y += 8 * MM;
+        } else {
+          const LAB_COLS = mmCols([
+            { key: 'worker', header: 'Worker',      x:   0, w: 55, bold: true },
+            { key: 'run',    header: 'Payroll Run', x:  55, w: 45 },
+            { key: 'notes',  header: 'Notes',       x: 100, w: 55 },
+            { key: 'amount', header: 'Amount (KES)',x: 140, w: 31, right: true, bold: true },
+          ]);
+
+          y += 2 * MM;
+          fillRect(doc, PM, y, PCW, HDR_H, LGRAY);
+          LAB_COLS.forEach(c => {
+            if (c.right)
+              drawRight(doc, c.header, PM + c.x + c.w, y + 1.5 * MM,
+                { font: 'Helvetica-Bold', size: 6.5, color: DGRAY });
+            else
+              drawLeft(doc, c.header, PM + c.x, y + 1.5 * MM,
+                { font: 'Helvetica-Bold', size: 6.5, color: DGRAY });
+          });
+          y += HDR_H;
+
+          labourAllocations.forEach((l, idx) => {
+            if (y + ROW_H > PH - PBOTTOM - 22 * MM) { y = drawPnLHeader(); }
+            if (idx % 2 === 1) fillRect(doc, PM, y, PCW, ROW_H, '#FAFAFA');
+            const ry = y + 1.5 * MM;
+            drawLeft(doc,  l.worker_name || '—', PM + LAB_COLS[0].x, ry,
+              { size: 6.5, color: DGRAY, maxW: LAB_COLS[0].w });
+            drawLeft(doc,  l.run_num || '—', PM + LAB_COLS[1].x, ry,
+              { size: 6.5, color: DGRAY });
+            drawLeft(doc,  l.notes || '—', PM + LAB_COLS[2].x, ry,
+              { size: 6.5, color: DGRAY, maxW: LAB_COLS[2].w });
+            drawRight(doc, fmtKes(l.allocated_amount),
+              PM + LAB_COLS[3].x + LAB_COLS[3].w, ry,
+              { font: 'Helvetica-Bold', size: 6.5, color: DGRAY });
+            y += ROW_H;
+          });
+
+          // Labour subtotal
+          fillRect(doc, PM, y, PCW, ROW_H, DKROW);
+          drawLeft(doc,  'LABOUR COSTS TOTAL', PM + 2 * MM, y + 1.5 * MM,
+            { font: 'Helvetica-Bold', size: 6.5, color: WHITE });
+          drawRight(doc, `KES ${fmtKes(totalLabourCost)}`, PW - PM, y + 1.5 * MM,
+            { font: 'Helvetica-Bold', size: 7, color: CORAL });
+          y += ROW_H + 4 * MM;
+        }
+
+        // ── Grand Total Costs ───────────────────────────────────────────
+        fillRect(doc, PM, y, PCW, ROW_H + 1 * MM, '#1f2937');
+        drawLeft(doc,  'TOTAL COSTS (SUPPLIER + LABOUR)', PM + 2 * MM, y + 2 * MM,
+          { font: 'Helvetica-Bold', size: 7, color: WHITE });
+        drawRight(doc, `KES ${fmtKes(totalCost)}`, PW - PM, y + 2 * MM,
+          { font: 'Helvetica-Bold', size: 7.5, color: CORAL });
+        y += ROW_H + 1 * MM + 6 * MM;
 
         // ── Gross profit / loss bar ─────────────────────────────────────
         if (y + 18 * MM > PH - PBOTTOM) { y = drawPnLHeader(); }

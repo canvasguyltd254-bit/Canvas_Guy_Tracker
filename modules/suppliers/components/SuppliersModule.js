@@ -2,6 +2,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/shared/supabase/client";
+import { useAuth } from "@/shared/context/AuthContext";
 import PaymentsTab from "./PaymentsTab";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -86,7 +87,7 @@ function Avatar({ name, size = 40 }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function SuppliersModule() {
-  const [userRole, setUserRole] = useState("viewer");
+  const { userRole = 'viewer', loaded: authLoaded } = useAuth();
   const [tab, setTab] = useState("suppliers");   // "suppliers" | "purchases"
   const [loaded, setLoaded] = useState(false);
 
@@ -151,16 +152,12 @@ export default function SuppliersModule() {
   // ── Load data ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
+    if (!authLoaded) return;
     (async () => {
-      const { data: { user } } = await sb.auth.getUser();
-      if (user) {
-        const { data: profile } = await sb.from("user_profiles").select("role").eq("id", user.id).single();
-        if (profile) setUserRole(profile.role);
-      }
       await Promise.all([loadSuppliers(), loadPurchases(), loadOrders(), loadAccountingCategories()]);
       setLoaded(true);
     })();
-  }, []);
+  }, [authLoaded]);
 
   const loadSuppliers = async () => {
     const res = await fetch("/api/suppliers");
