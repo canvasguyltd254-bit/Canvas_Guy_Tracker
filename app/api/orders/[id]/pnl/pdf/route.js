@@ -78,7 +78,7 @@ export async function GET(request, { params }) {
     // ── Fetch payments ───────────────────────────────────────────────────
     const { data: payments, error: paymentsErr } = await serviceClient
       .from('order_payments')
-      .select('id, amount, payment_date, description')
+      .select('id, amount, payment_date, description, reversed_at')
       .eq('order_id', orderId)
       .order('payment_date');
 
@@ -87,7 +87,9 @@ export async function GET(request, { params }) {
       return NextResponse.json({ error: 'Failed to fetch payments' }, { status: 500 });
     }
 
-    const totalPaid = (payments || []).reduce((s, p) => s + parseFloat(p.amount || 0), 0);
+    // Reversed payments no longer count as received — the reversal journal
+    // already backs the receipt out in the GL.
+    const totalPaid = (payments || []).filter(p => !p.reversed_at).reduce((s, p) => s + parseFloat(p.amount || 0), 0);
 
     // ── Fetch linked supplier purchases via purchase_order_links ─────────
     const { data: links, error: linksErr } = await serviceClient
@@ -172,14 +174,39 @@ export async function GET(request, { params }) {
       run_num:          row.payroll_entries?.payroll_runs?.run_num,
     }));
 
-    const totalPurchaseCost = purchases.reduce((s, p) => s + p.total_amount, 0);
-    const totalLabourCost   = labourAllocations.reduce((s, l) => s + l.allocated_amount, 0);
-    const totalCost         = totalPurchaseCost + totalLabourCost;
-    const contractTotal     = parseFloat(order.total_value || 0);
-    const grossProfit       = contractTotal - totalCost;
-    const margin            = contractTotal > 0 ? (grossProfit / contractTotal) * 100 : 0;
-    const outstanding       = Math.max(0, contractTotal - totalPaid);
-    const hasUnallocated    = purchases.some(p => p.is_unallocated);
+    // ── Fetch direct expenses allocated to this order ─────────────────────
+    const { data: expLinks, error: expErr } = await serviceClient
+      .from('order_direct_expense_links')
+      .select(`
+        allocated_amount,
+        order_direct_expenses (
+          id, expense_date, category, description, amount, reversed_at
+        )
+      `)
+      .eq('order_id', orderId);
+
+    if (expErr) {
+      console.error('GET /api/orders/[id]/pnl/pdf — expenses fetch error:', expErr.message);
+      return NextResponse.json({ error: 'Failed to fetch direct expenses' }, { status: 500 });
+    }
+
+    const directExpenses = (expLinks || [])
+      .filter(l => l.order_direct_expenses && !l.order_direct_expenses.reversed_at)
+      .map(l => ({
+        ...l.order_direct_expenses,
+        allocated_amount: parseFloat(l.allocated_amount),
+      }));
+
+    const totalPurchaseCost   = purchases.reduce((s, p) => s + p.total_amount, 0);
+    const totalLabourCost     = labourAllocations.reduce((s, l) => s + l.allocated_amount, 0);
+    const totalDirectExpenses = directExpenses.reduce((s, e) => s + e.allocated_amount, 0);
+    const totalCost           = totalPurchaseCost + totalLabourCost + totalDirectExpenses;
+    const contractTotal       = parseFloat(order.total_value || 0);
+    const grossProfit         = contractTotal - totalPurchaseCost - totalLabourCost;
+    const orderProfit         = grossProfit - totalDirectExpenses;
+    const margin              = contractTotal > 0 ? (orderProfit / contractTotal) * 100 : 0;
+    const outstanding         = Math.max(0, contractTotal - totalPaid);
+    const hasUnallocated      = purchases.some(p => p.is_unallocated);
 
     // ── Build and return PDF ─────────────────────────────────────────────
     const pdfData = {
@@ -187,11 +214,23 @@ export async function GET(request, { params }) {
         order,
         purchases,
         labourAllocations,
+        directExpenses,
         payments: payments || [],
         chargeItems,
         itemsSubtotal,
         hasUnallocated,
-        totals: { contractTotal, totalPurchaseCost, totalLabourCost, totalCost, grossProfit, margin, totalPaid, outstanding },
+        totals: {
+          contractTotal,
+          totalPurchaseCost,
+          totalLabourCost,
+          totalDirectExpenses,
+          totalCost,
+          grossProfit,
+          orderProfit,
+          margin,
+          totalPaid,
+          outstanding,
+        },
         userName: displayName,
       },
     };

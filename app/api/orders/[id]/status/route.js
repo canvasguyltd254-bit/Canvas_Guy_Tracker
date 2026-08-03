@@ -66,10 +66,10 @@ export async function POST(request, { params }) {
       );
     }
 
-    // 4. Fetch current order
+    // 4. Fetch current order (include fields needed for GL + isCreditOrder)
     const { data: order, error: fetchErr } = await serviceClient
       .from('orders')
-      .select('id, status, order_num, client, total_value')
+      .select('id, status, order_num, client, total_value, customer_type, payment_terms, invoice_journal_entry_id')
       .eq('id', orderId)
       .single();
 
@@ -100,7 +100,8 @@ export async function POST(request, { params }) {
         const { data: payments } = await serviceClient
           .from('order_payments')
           .select('amount')
-          .eq('order_id', orderId);
+          .eq('order_id', orderId)
+          .is('reversed_at', null);
 
         const totalPaid = (payments || []).reduce(
           (sum, p) => sum + (parseFloat(p.amount) || 0), 0
@@ -118,49 +119,50 @@ export async function POST(request, { params }) {
       }
     }
 
-    // 6. Build DB update — only include optional fields when they have a value
-    //    (sending null for a column that doesn't exist yet would cause a 500)
-    const dbUpdateRaw = { status: newStatus };
-    if (refundReference) dbUpdateRaw.refund_reference = refundReference;
-    if (creditApprovalRef) dbUpdateRaw.credit_approval_ref = creditApprovalRef;
+    // 6. For forward moves, use the atomic advance_order_status RPC which posts
+    //    GL journals AND updates the order status inside a single PostgreSQL
+    //    transaction — eliminating the split-brain where GL posts but the status
+    //    update fails (or vice-versa). For rework (backward) moves there is no GL
+    //    side-effect, so we keep a direct row update.
+    if (!isRework) {
+      const extra = {};
+      if (refundReference)   extra.refund_reference    = refundReference;
+      if (creditApprovalRef) extra.credit_approval_ref = creditApprovalRef;
 
-    const STATUS_UPDATE_FIELDS = ['status', 'refund_reference', 'credit_approval_ref'];
-    const safeUpdate = pick(dbUpdateRaw, STATUS_UPDATE_FIELDS);
+      const { error: rpcErr } = await serviceClient.rpc(
+        'advance_order_status',
+        {
+          p_order_id:   orderId,
+          p_new_status: newStatus,
+          p_posted_by:  user.id,
+          p_extra:      Object.keys(extra).length ? extra : {},
+        },
+      );
 
-    const { error: updateErr } = await serviceClient
-      .from('orders')
-      .update(safeUpdate)
-      .eq('id', orderId);
+      if (rpcErr) {
+        const msg = rpcErr.message || '';
+        if (msg.includes('ORDER_NOT_FOUND'))  return NextResponse.json({ error: 'Order not found' }, { status: 404 });
+        if (msg.includes('SAME_STATUS'))      return NextResponse.json({ error: 'Order is already in that status' }, { status: 422 });
+        console.error('advance_order_status RPC failed:', orderId, msg);
+        return NextResponse.json({ error: `Failed to advance status: ${msg}` }, { status: 500 });
+      }
+    } else {
+      // Rework (backward move) — no GL side-effects; direct row update is fine.
+      const dbUpdateRaw = { status: newStatus };
+      if (refundReference)   dbUpdateRaw.refund_reference    = refundReference;
+      if (creditApprovalRef) dbUpdateRaw.credit_approval_ref = creditApprovalRef;
 
-    if (updateErr) {
-      console.error('POST /api/orders/[id]/status — update:', updateErr);
-      return NextResponse.json({ error: 'Failed to update status' }, { status: 500 });
-    }
+      const STATUS_UPDATE_FIELDS = ['status', 'refund_reference', 'credit_approval_ref'];
+      const safeUpdate = pick(dbUpdateRaw, STATUS_UPDATE_FIELDS);
 
-    // 7. Credit approval side-effect — update client_profiles.current_exposure server-side
-    //    Only fires when creditApprovalRef is present (credit gate bypass flow).
-    //    Server computes new exposure from authoritative DB values — client arithmetic is ignored.
-    if (creditApprovalRef) {
-      const { data: orderRow } = await serviceClient
+      const { error: updateErr } = await serviceClient
         .from('orders')
-        .select('total_value, client')
-        .eq('id', orderId)
-        .single();
+        .update(safeUpdate)
+        .eq('id', orderId);
 
-      if (orderRow?.client && orderRow?.total_value) {
-        const { data: profile } = await serviceClient
-          .from('client_profiles')
-          .select('current_exposure')
-          .eq('client_name', orderRow.client)
-          .maybeSingle();
-
-        const currentExposure = parseFloat(profile?.current_exposure) || 0;
-        const newExposure = currentExposure + (parseFloat(orderRow.total_value) || 0);
-
-        await serviceClient
-          .from('client_profiles')
-          .update({ current_exposure: newExposure })
-          .eq('client_name', orderRow.client);
+      if (updateErr) {
+        console.error('POST /api/orders/[id]/status — rework update:', updateErr);
+        return NextResponse.json({ error: 'Failed to update status' }, { status: 500 });
       }
     }
 

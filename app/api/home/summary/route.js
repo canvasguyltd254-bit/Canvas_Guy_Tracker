@@ -76,14 +76,17 @@ export async function GET() {
     if (CAN_SEE_CUSTOMERS.includes(role)) {
       queries.customers = serviceClient
         .from('orders')
-        .select('id, total_value, order_payments(amount)')
+        .select('id, total_value, order_payments(amount, reversed_at)')
         .in('status', DELIVERED_STATUSES)
         .not('payment_due_date', 'is', null)
         .lt('payment_due_date', today)
         .then(({ data, error }) => {
           if (error) { console.error('home/summary customers:', error.message); return null; }
           const overdue = (data || []).filter(order => {
+            // Reversed payments no longer count as paid — the reversal journal
+            // already backs the receipt out in the GL.
             const paid = (order.order_payments || [])
+              .filter(p => !p.reversed_at)
               .reduce((s, p) => s + parseFloat(p.amount || 0), 0);
             return paid < parseFloat(order.total_value || 0) - 0.01;
           }).length;

@@ -2,21 +2,22 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/shared/context/AuthContext';
+import { C, PageHeader, TabBar } from '@/shared/ui/ds';
 
 // ── Role constants ────────────────────────────────────────────
-const PAYROLL_ROLES  = ['admin', 'production_manager'];
+const PAYROLL_ROLES  = ['admin', 'head_of_sales', 'production_manager'];
 const ADMIN_ONLY     = ['admin'];
 
-// ── Colours ──────────────────────────────────────────────────
-const CORAL  = '#E8512A';
-const DARK   = '#1a1a1a';
-const LIGHT  = '#f5f5f5';
-const BORDER = '#e0e0e0';
-const GREEN  = '#22a06b';
-const AMBER  = '#f59e0b';
-const RED    = '#ef4444';
-const BLUE   = '#3b82f6';
-const PURPLE = '#8b5cf6';
+// ── Colour aliases — map legacy names to design tokens ───────
+const CORAL  = C.coral;
+const DARK   = C.ink;
+const LIGHT  = C.bg;
+const BORDER = C.line;
+const GREEN  = C.green;
+const AMBER  = C.amber;
+const RED    = C.red;
+const BLUE   = C.blue;
+const PURPLE = C.purple;
 
 // ── Helpers ───────────────────────────────────────────────────
 const fmt  = (n) => Number(n || 0).toLocaleString('en-KE', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -87,21 +88,21 @@ function ErrorBanner({ message, onDismiss }) {
   if (!message) return null;
   return (
     <div style={{
-      background: '#fee2e2', border: `1px solid ${RED}`, borderRadius: 8,
-      padding: '10px 14px', color: '#7f1d1d', fontSize: 14, marginBottom: 12,
+      background: C.redBg, border: `1px solid ${C.redBd}`, borderRadius: 9,
+      padding: '10px 14px', color: C.red, fontSize: 13, marginBottom: 12,
       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
     }}>
       <span>{message}</span>
-      {onDismiss && <button onClick={onDismiss} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: RED }}>×</button>}
+      {onDismiss && <button onClick={onDismiss} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: C.red }}>×</button>}
     </div>
   );
 }
 
 function EmptyState({ icon = '📭', message }) {
   return (
-    <div style={{ textAlign: 'center', padding: '40px 20px', color: '#9ca3af' }}>
+    <div style={{ textAlign: 'center', padding: '40px 20px', color: C.muted }}>
       <div style={{ fontSize: 36, marginBottom: 8 }}>{icon}</div>
-      <div style={{ fontSize: 14 }}>{message}</div>
+      <div style={{ fontSize: 13 }}>{message}</div>
     </div>
   );
 }
@@ -109,7 +110,7 @@ function EmptyState({ icon = '📭', message }) {
 function Card({ children, style = {} }) {
   return (
     <div style={{
-      background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 10,
+      background: C.card, border: `1px solid ${BORDER}`, borderRadius: 12,
       padding: 20, ...style,
     }}>{children}</div>
   );
@@ -119,16 +120,17 @@ function Card({ children, style = {} }) {
 function Modal({ title, onClose, children, width = 520 }) {
   return (
     <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999,
+      padding: '60px 14px',
     }}>
       <div style={{
-        background: '#fff', borderRadius: 12, padding: 28, width, maxWidth: '95vw',
-        maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)',
+        background: C.card, borderRadius: 13, padding: 24, width, maxWidth: '95vw',
+        maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 80px rgba(0,0,0,0.3)',
       }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-          <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>{title}</h3>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#6b7280' }}>×</button>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, borderBottom: `1px solid ${C.line}`, paddingBottom: 14 }}>
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: C.ink }}>{title}</h3>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: C.muted, lineHeight: 1 }}>×</button>
         </div>
         {children}
       </div>
@@ -140,7 +142,7 @@ function Modal({ title, onClose, children, width = 520 }) {
 function Field({ label, children, required }) {
   return (
     <div style={{ marginBottom: 14 }}>
-      <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 4, color: '#374151' }}>
+      <label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.04em' }}>
         {label}{required && <span style={{ color: RED }}> *</span>}
       </label>
       {children}
@@ -149,22 +151,24 @@ function Field({ label, children, required }) {
 }
 
 const inputStyle = {
-  width: '100%', padding: '8px 10px', border: `1px solid ${BORDER}`,
-  borderRadius: 6, fontSize: 14, boxSizing: 'border-box',
+  width: '100%', padding: '9px 11px', border: `1px solid ${BORDER}`,
+  borderRadius: 8, fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit',
+  background: '#fafaf8', color: C.ink,
 };
 
 function Btn({ onClick, disabled, loading, children, variant = 'primary', small = false, style = {} }) {
   const base = {
-    padding: small ? '6px 12px' : '9px 18px', borderRadius: 7, border: 'none',
+    padding: small ? '6px 11px' : '9px 15px', borderRadius: C.radiusSm, border: 'none',
     cursor: disabled || loading ? 'not-allowed' : 'pointer',
-    fontWeight: 600, fontSize: small ? 12 : 14, opacity: disabled || loading ? 0.6 : 1,
-    transition: 'opacity 0.15s', ...style,
+    fontWeight: 700, fontSize: small ? 12 : 13, opacity: disabled || loading ? 0.45 : 1,
+    transition: 'opacity 0.15s', fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', gap: 5,
+    ...style,
   };
   const variants = {
-    primary:   { background: CORAL,    color: '#fff' },
-    secondary: { background: LIGHT,    color: DARK, border: `1px solid ${BORDER}` },
-    danger:    { background: '#fee2e2', color: RED,  border: `1px solid ${RED}` },
-    success:   { background: '#dcfce7', color: GREEN, border: `1px solid ${GREEN}` },
+    primary:   { background: C.coral,   color: '#fff',  border: `1px solid ${C.coral}` },
+    secondary: { background: C.card,    color: C.ink,   border: `1px solid ${C.line}` },
+    danger:    { background: C.redBg,   color: C.red,   border: `1px solid ${C.redBd}` },
+    success:   { background: C.greenBg, color: C.green, border: `1px solid ${C.greenBd}` },
   };
   return (
     <button onClick={onClick} disabled={disabled || loading} style={{ ...base, ...variants[variant] }}>
@@ -182,15 +186,15 @@ function OverviewTab({ userRole }) {
 
   useEffect(() => {
     async function load() {
-      const [{ data: runs }, { data: employees }, { data: pending }] = await Promise.all([
+      const [runsData, employeesData, pendingData] = await Promise.all([
         fetch('/api/payroll/runs?limit=5').then(r => r.json()),
         fetch('/api/payroll/employees?active=true').then(r => r.json()),
         fetch('/api/payroll/runs?status=approved&limit=100').then(r => r.json()),
       ]);
       setStats({
-        recentRuns:      runs?.runs || [],
-        activeEmployees: employees?.employees?.length || 0,
-        pendingRuns:     pending?.runs || [],
+        recentRuns:      runsData?.runs || [],
+        activeEmployees: employeesData?.employees?.length || 0,
+        pendingRuns:     pendingData?.runs || [],
       });
       setLoading(false);
     }
@@ -310,14 +314,7 @@ function EmployeesTab({ userRole }) {
     setError('');
     const method  = editEmp ? 'PATCH' : 'POST';
     const url     = editEmp ? `/api/payroll/employees/${editEmp.id}` : '/api/payroll/employees';
-    // Strip fields the API will reject for non-admin — avoids 403 when the
-    // form state still holds old [restricted] values from a loaded employee.
-    const ADMIN_FIELDS = ['monthly_salary', 'bank_account', 'bank_name', 'bank_branch',
-                          'paybill_number', 'nssf_number', 'id_number'];
-    const payload = userRole === 'admin'
-      ? form
-      : Object.fromEntries(Object.entries(form).filter(([k]) => !ADMIN_FIELDS.includes(k)));
-    const res     = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
     const data    = await res.json();
     setSaving(false);
     if (!res.ok) { setError(data.error || 'Save failed'); return; }
@@ -416,7 +413,7 @@ function EmployeesTab({ userRole }) {
             <Field label="Employee Type" required>
               <select style={inputStyle} value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
                 <option value="casual">Casual (daily)</option>
-                {userRole === 'admin' && <option value="permanent">Permanent (monthly)</option>}
+                <option value="permanent">Permanent (monthly)</option>
                 <option value="skilled_casual">Skilled Casual</option>
               </select>
             </Field>
@@ -424,11 +421,9 @@ function EmployeesTab({ userRole }) {
               ? <Field label="Day Rate (KES)">
                   <input type="number" style={inputStyle} value={form.day_rate} onChange={e => setForm(f => ({ ...f, day_rate: e.target.value }))} />
                 </Field>
-              : userRole === 'admin'
-                ? <Field label="Monthly Salary (KES)">
-                    <input type="number" style={inputStyle} value={form.monthly_salary} onChange={e => setForm(f => ({ ...f, monthly_salary: e.target.value }))} />
-                  </Field>
-                : null
+              : <Field label="Monthly Salary (KES)">
+                  <input type="number" style={inputStyle} value={form.monthly_salary} onChange={e => setForm(f => ({ ...f, monthly_salary: e.target.value }))} />
+                </Field>
             }
             <Field label="SHA Deduction (KES)">
               <input type="number" style={inputStyle} value={form.sha_amount} onChange={e => setForm(f => ({ ...f, sha_amount: e.target.value }))} />
@@ -436,29 +431,21 @@ function EmployeesTab({ userRole }) {
             <Field label="M-Pesa Phone">
               <input style={inputStyle} value={form.phone} placeholder="07xx…" onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
             </Field>
-            {userRole === 'admin' && (
-              <Field label="ID Number">
-                <input style={inputStyle} value={form.id_number} onChange={e => setForm(f => ({ ...f, id_number: e.target.value }))} />
-              </Field>
-            )}
-            {userRole === 'admin' && (
-              <Field label="NSSF Number">
-                <input style={inputStyle} value={form.nssf_number} onChange={e => setForm(f => ({ ...f, nssf_number: e.target.value }))} />
-              </Field>
-            )}
+            <Field label="ID Number">
+              <input style={inputStyle} value={form.id_number} onChange={e => setForm(f => ({ ...f, id_number: e.target.value }))} />
+            </Field>
+            <Field label="NSSF Number">
+              <input style={inputStyle} value={form.nssf_number} onChange={e => setForm(f => ({ ...f, nssf_number: e.target.value }))} />
+            </Field>
             <Field label="Hire Date">
               <input type="date" style={inputStyle} value={form.hire_date} onChange={e => setForm(f => ({ ...f, hire_date: e.target.value }))} />
             </Field>
-            {userRole === 'admin' && (
-              <Field label="Bank Account">
-                <input style={inputStyle} value={form.bank_account} onChange={e => setForm(f => ({ ...f, bank_account: e.target.value }))} />
-              </Field>
-            )}
-            {userRole === 'admin' && (
-              <Field label="Bank Name">
-                <input style={inputStyle} value={form.bank_name} onChange={e => setForm(f => ({ ...f, bank_name: e.target.value }))} />
-              </Field>
-            )}
+            <Field label="Bank Account">
+              <input style={inputStyle} value={form.bank_account} onChange={e => setForm(f => ({ ...f, bank_account: e.target.value }))} />
+            </Field>
+            <Field label="Bank Name">
+              <input style={inputStyle} value={form.bank_name} onChange={e => setForm(f => ({ ...f, bank_name: e.target.value }))} />
+            </Field>
           </div>
           <Field label="Notes">
             <textarea style={{ ...inputStyle, height: 60, resize: 'vertical' }} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
@@ -484,6 +471,7 @@ function PayrollRunsTab({ userRole }) {
   const [statusFilter, setStatusFilter] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [selectedRun, setSelectedRun] = useState(null);
+  const [exportingPdf, setExportingPdf] = useState(null);
 
   const FORM0 = { period_type: 'weekly', run_type: 'casual', period_start: '', period_end: '', notes: '' };
   const [form, setForm] = useState(FORM0);
@@ -549,6 +537,24 @@ function PayrollRunsTab({ userRole }) {
   const canCreate  = PAYROLL_ROLES.includes(userRole);
   const canApprove = ADMIN_ONLY.includes(userRole);
 
+  async function exportRunPdf(run) {
+    setExportingPdf(run.id);
+    try {
+      const res = await fetch(`/api/payroll/runs/${run.id}/pdf`);
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'PDF failed'); }
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = `Payroll_Run_${run.run_num}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError('PDF export failed: ' + err.message);
+    }
+    setExportingPdf(null);
+  }
+
   if (selectedRun) {
     return (
       <RunDetail
@@ -597,6 +603,7 @@ function PayrollRunsTab({ userRole }) {
                     <td style={{ padding: '10px 12px' }}>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         <Btn onClick={() => setSelectedRun(run)} variant="secondary" small>Open</Btn>
+                        <Btn onClick={() => exportRunPdf(run)} variant="secondary" small loading={exportingPdf === run.id} disabled={!!exportingPdf}>PDF</Btn>
                         {canApprove && run.status === 'draft' && (
                           <Btn onClick={() => approveRun(run.id)} variant="success" small>Approve</Btn>
                         )}
@@ -1919,14 +1926,17 @@ function PaymentsTab({ userRole }) {
     load();
   }
 
-  const canPay = ADMIN_ONLY.includes(userRole);
+  const canCreateBatch    = PAYROLL_ROLES.includes(userRole);
+  const canExportBatch    = PAYROLL_ROLES.includes(userRole);
+  const canReconcileBatch = ADMIN_ONLY.includes(userRole);
+  const canDeleteBatch    = ADMIN_ONLY.includes(userRole);
 
   return (
     <div>
       <ErrorBanner message={error} onDismiss={() => setError('')} />
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
-        {canPay && <Btn onClick={() => setShowCreate(true)}>+ New Payment Batch</Btn>}
+        {canCreateBatch && <Btn onClick={() => setShowCreate(true)}>+ New Payment Batch</Btn>}
       </div>
 
       {loading ? <Spinner /> : batches.length === 0
@@ -1967,10 +1977,10 @@ function PaymentsTab({ userRole }) {
                         <td style={{ padding: '10px 12px', fontSize: 12, color: '#9ca3af' }}>{b.chatpesa_ref || '—'}</td>
                         <td style={{ padding: '10px 12px' }} onClick={e => e.stopPropagation()}>
                           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                            {canPay && b.payment_method === 'mpesa' && b.status !== 'reconciled' && (
+                            {canExportBatch && b.payment_method === 'mpesa' && b.status !== 'reconciled' && (
                               <Btn onClick={() => downloadCsv(b.id, b.batch_num)} variant="secondary" small>⬇ CSV</Btn>
                             )}
-                            {canPay && b.payment_method === 'mpesa' && b.status === 'exported' && (
+                            {canReconcileBatch && b.payment_method === 'mpesa' && b.status === 'exported' && (
                               reconcileId === b.id
                                 ? <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                                     <input style={{ ...inputStyle, width: 140, padding: '4px 8px' }} placeholder="Chatpesa ref…" value={chatpesaRef} onChange={e => setChatpesaRef(e.target.value)} />
@@ -1979,7 +1989,7 @@ function PaymentsTab({ userRole }) {
                                   </div>
                                 : <Btn onClick={() => setReconcileId(b.id)} variant="success" small>Reconcile</Btn>
                             )}
-                            {canPay && b.payment_method !== 'mpesa' && b.status === 'draft' && (
+                            {canReconcileBatch && b.payment_method !== 'mpesa' && b.status === 'draft' && (
                               reconcileId === b.id
                                 ? <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                                     <input style={{ ...inputStyle, width: 160, padding: '4px 8px' }} placeholder="Reference / receipt no." value={chatpesaRef} onChange={e => setChatpesaRef(e.target.value)} />
@@ -1988,7 +1998,7 @@ function PaymentsTab({ userRole }) {
                                   </div>
                                 : <Btn onClick={() => setReconcileId(b.id)} variant="success" small>Mark Paid</Btn>
                             )}
-                            {canPay && b.status !== 'reconciled' && (
+                            {canDeleteBatch && b.status !== 'reconciled' && (
                               <Btn onClick={() => deleteBatch(b.id, b.batch_num)} variant="danger" small loading={deletingId === b.id}>Delete</Btn>
                             )}
                           </div>
@@ -2210,19 +2220,59 @@ function ComplianceTab({ userRole }) {
 // REPORTS TAB
 // ════════════════════════════════════════════════════════════════
 function ReportsTab({ userRole }) {
-  const [runs, setRuns]   = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [runs, setRuns]         = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const [loading, setLoading]   = useState(true);
+
+  // Employee report form
+  const [empId,      setEmpId]      = useState('');
+  const [empSearch,  setEmpSearch]  = useState('');
+  const [showSuggs,  setShowSuggs]  = useState(false);
+  const [dateFrom, setDateFrom] = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 3);
+    return d.toISOString().slice(0, 10);
+  });
+  const [dateTo, setDateTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [exporting, setExporting] = useState(false);
+  const [exportErr, setExportErr] = useState('');
 
   useEffect(() => {
-    fetch('/api/payroll/runs?limit=20').then(r => r.json()).then(d => { setRuns(d.runs || []); setLoading(false); });
+    Promise.all([
+      fetch('/api/payroll/runs?limit=20').then(r => r.json()),
+      fetch('/api/payroll/employees?active=true&limit=200').then(r => r.json()),
+    ]).then(([runsData, empData]) => {
+      setRuns(runsData.runs || []);
+      setEmployees(empData.employees || []);
+      setLoading(false);
+    }).catch(() => setLoading(false));
   }, []);
+
+  async function exportEmpReport() {
+    if (!empId) { setExportErr('Select an employee'); return; }
+    setExporting(true); setExportErr('');
+    try {
+      const res = await fetch(`/api/payroll/employees/${empId}/report/pdf?from=${dateFrom}&to=${dateTo}`);
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'PDF failed'); }
+      const blob = await res.blob();
+      const emp  = employees.find(e => e.id === empId);
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = `Payroll_Report_${(emp?.name || 'Employee').replace(/\s+/g, '_')}_${dateFrom}_to_${dateTo}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setExportErr('Export failed: ' + err.message);
+    }
+    setExporting(false);
+  }
 
   if (loading) return <Spinner />;
 
   // Aggregate stats from closed/approved runs
-  const approvedRuns  = runs.filter(r => r.status === 'approved' || r.status === 'closed');
-  const totalPaid     = approvedRuns.reduce((s, r) => s + Number(r.total_net || 0), 0);
-  const avgNet        = approvedRuns.length ? totalPaid / approvedRuns.length : 0;
+  const approvedRuns = runs.filter(r => r.status === 'approved' || r.status === 'closed');
+  const totalPaid    = approvedRuns.reduce((s, r) => s + Number(r.total_net || 0), 0);
+  const avgNet       = approvedRuns.length ? totalPaid / approvedRuns.length : 0;
 
   const byType = approvedRuns.reduce((acc, r) => {
     acc[r.run_type] = (acc[r.run_type] || 0) + Number(r.total_net || 0);
@@ -2230,12 +2280,14 @@ function ReportsTab({ userRole }) {
   }, {});
 
   return (
-    <div>
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 24 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+
+      {/* ── KPI cards ── */}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
         {[
-          ['Total Approved Runs',     approvedRuns.length, '#'],
-          ['Net Approved (KES)',      `KES ${fmt(totalPaid)}`, 'approved, not necessarily paid'],
-          ['Avg Net per Run (KES)',   `KES ${fmt(avgNet)}`, ''],
+          ['Total Approved Runs',   approvedRuns.length],
+          ['Net Approved (KES)',    `KES ${fmt(totalPaid)}`],
+          ['Avg Net per Run (KES)', `KES ${fmt(avgNet)}`],
         ].map(([label, value]) => (
           <Card key={label} style={{ flex: 1, minWidth: 160 }}>
             <div style={{ fontSize: 12, color: '#9ca3af' }}>{label}</div>
@@ -2244,6 +2296,68 @@ function ReportsTab({ userRole }) {
         ))}
       </div>
 
+      {/* ── Employee Payroll Report ── */}
+      <Card>
+        <h3 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 700 }}>Employee Payroll Report</h3>
+        <p style={{ fontSize: 13, color: C.muted, marginBottom: 16, marginTop: 0 }}>
+          Generate a full payroll history for one employee over a date range — includes gross earnings,
+          SHA deductions, advance deductions, and net pay per run.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: 12, alignItems: 'flex-end' }}>
+          <Field label="Employee">
+            <div style={{ position: 'relative' }}>
+              <input
+                style={inputStyle}
+                placeholder="Search by name…"
+                value={empSearch}
+                autoComplete="off"
+                onChange={e => { setEmpSearch(e.target.value); setEmpId(''); setShowSuggs(true); }}
+                onFocus={() => setShowSuggs(true)}
+                onBlur={() => setTimeout(() => setShowSuggs(false), 150)}
+              />
+              {empId && (
+                <span style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: '#2E7D32', fontWeight: 700, pointerEvents: 'none' }}>✓</span>
+              )}
+              {showSuggs && empSearch.length > 0 && (() => {
+                const q = empSearch.toLowerCase();
+                const hits = employees.filter(e => e.name.toLowerCase().includes(q) || (e.employee_num || '').toLowerCase().includes(q)).slice(0, 8);
+                if (!hits.length) return null;
+                return (
+                  <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 50, maxHeight: 220, overflowY: 'auto' }}>
+                    {hits.map(e => (
+                      <div
+                        key={e.id}
+                        onMouseDown={() => { setEmpId(e.id); setEmpSearch(`${e.name} (${e.type})`); setShowSuggs(false); }}
+                        style={{ padding: '8px 12px', cursor: 'pointer', fontSize: 13, borderBottom: `1px solid ${BORDER}` }}
+                        onMouseEnter={ev => ev.currentTarget.style.background = '#f5f5f5'}
+                        onMouseLeave={ev => ev.currentTarget.style.background = 'transparent'}
+                      >
+                        <strong>{e.name}</strong>
+                        <span style={{ marginLeft: 8, fontSize: 11, color: '#9ca3af' }}>{e.employee_num} · {e.type}</span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+          </Field>
+          <Field label="From">
+            <input type="date" style={inputStyle} value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
+          </Field>
+          <Field label="To">
+            <input type="date" style={inputStyle} value={dateTo} onChange={e => setDateTo(e.target.value)} />
+          </Field>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <span style={{ visibility: 'hidden', fontSize: 11, fontWeight: 700 }}>Action</span>
+            <Btn onClick={exportEmpReport} loading={exporting} disabled={!empId}>
+              Export PDF
+            </Btn>
+          </div>
+        </div>
+        {exportErr && <ErrorBanner message={exportErr} onDismiss={() => setExportErr('')} />}
+      </Card>
+
+      {/* ── Run history + type breakdown ── */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <Card>
           <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 700 }}>By Employee Type</h3>
@@ -2289,7 +2403,7 @@ export default function PayrollModule() {
 
   if (!userRole || !PAYROLL_ROLES.includes(userRole)) {
     return (
-      <div style={{ padding: 40, textAlign: 'center', color: '#6b7280' }}>
+      <div style={{ padding: 40, textAlign: 'center', color: C.muted }}>
         <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
         <div>You don&apos;t have access to the Payroll module.</div>
       </div>
@@ -2297,60 +2411,31 @@ export default function PayrollModule() {
   }
 
   const TABS = [
-    { id: 'overview',   label: 'Overview' },
-    { id: 'employees',  label: 'Employees' },
-    { id: 'runs',       label: 'Payroll Runs' },
-    { id: 'payments',   label: 'Payments' },
-    { id: 'compliance', label: 'Compliance' },
-    { id: 'reports',    label: 'Reports' },
+    { key: 'overview',   label: 'Overview' },
+    { key: 'employees',  label: 'Employees' },
+    { key: 'runs',       label: 'Payroll Runs' },
+    { key: 'payments',   label: 'Payments' },
+    { key: 'compliance', label: 'Compliance' },
+    { key: 'reports',    label: 'Reports' },
   ];
 
-  const tabStyle = (id) => ({
-    padding: '10px 18px',
-    borderBottom: activeTab === id ? `3px solid ${CORAL}` : '3px solid transparent',
-    fontWeight: activeTab === id ? 700 : 500,
-    cursor: 'pointer',
-    fontSize: 14,
-    color: activeTab === id ? CORAL : '#6b7280',
-    whiteSpace: 'nowrap',
-  });
-
   return (
-    <div style={{ fontFamily: 'Inter, system-ui, sans-serif', color: DARK, minHeight: '100vh', background: '#f9fafb' }}>
+    <div style={{ padding: '20px 16px', color: DARK }}>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
-      {/* Module header */}
-      <div style={{ background: '#fff', borderBottom: `1px solid ${BORDER}`, padding: '16px 28px 0' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-          <div style={{
-            width: 36, height: 36, background: CORAL, borderRadius: 8,
-            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18,
-          }}>💰</div>
-          <div>
-            <div style={{ fontSize: 20, fontWeight: 800 }}>Payroll</div>
-            <div style={{ fontSize: 12, color: '#9ca3af' }}>Employee payroll management</div>
-          </div>
-          <div style={{ flex: 1 }} />
-          <Badge label={userRole.replace(/_/g, ' ')} bg="#f3f4f6" color="#374151" />
-        </div>
+      <PageHeader
+        title="Payroll"
+        description="Employee payroll management"
+      />
 
-        {/* Nav tabs */}
-        <div style={{ display: 'flex', overflowX: 'auto', gap: 0 }}>
-          {TABS.map(t => (
-            <span key={t.id} style={tabStyle(t.id)} onClick={() => setActiveTab(t.id)}>{t.label}</span>
-          ))}
-        </div>
-      </div>
+      <TabBar tabs={TABS} active={activeTab} onSelect={setActiveTab} style={{ marginBottom: 24 }} />
 
-      {/* Content area */}
-      <div style={{ padding: 24 }}>
-        {activeTab === 'overview'   && <OverviewTab   userRole={userRole} />}
-        {activeTab === 'employees'  && <EmployeesTab  userRole={userRole} />}
-        {activeTab === 'runs'       && <PayrollRunsTab userRole={userRole} />}
-        {activeTab === 'payments'   && <PaymentsTab   userRole={userRole} />}
-        {activeTab === 'compliance' && <ComplianceTab userRole={userRole} />}
-        {activeTab === 'reports'    && <ReportsTab    userRole={userRole} />}
-      </div>
+      {activeTab === 'overview'   && <OverviewTab   userRole={userRole} />}
+      {activeTab === 'employees'  && <EmployeesTab  userRole={userRole} />}
+      {activeTab === 'runs'       && <PayrollRunsTab userRole={userRole} />}
+      {activeTab === 'payments'   && <PaymentsTab   userRole={userRole} />}
+      {activeTab === 'compliance' && <ComplianceTab userRole={userRole} />}
+      {activeTab === 'reports'    && <ReportsTab    userRole={userRole} />}
     </div>
   );
 }

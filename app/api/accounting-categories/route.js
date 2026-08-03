@@ -2,9 +2,10 @@
  * app/api/accounting-categories/route.js
  *
  * GET /api/accounting-categories
- *   ?for_purchases=true   — categories usable on purchases (expense accounts)
- *   ?for_petty_cash=true  — categories usable for petty-cash Chatpesa allocations
- *   (no params)           — returns all categories
+ *   ?for_purchases=true      — categories usable on purchases (expense accounts)
+ *   ?for_petty_cash=true     — categories usable for petty-cash Chatpesa allocations
+ *   ?for_direct_expenses=true — categories usable as GL accounts for direct order expenses
+ *   (no params)              — returns all categories
  *
  * Any authenticated user can read categories.
  */
@@ -21,16 +22,18 @@ export async function GET(request) {
     if (authError) return authError;
 
     const { searchParams } = new URL(request.url);
-    const forPurchases = searchParams.get('for_purchases');
-    const forPettyCash = searchParams.get('for_petty_cash');
+    const forPurchases     = searchParams.get('for_purchases');
+    const forPettyCash     = searchParams.get('for_petty_cash');
+    const forDirectExpenses = searchParams.get('for_direct_expenses');
 
     let query = serviceClient
       .from('accounting_categories')
-      .select('id, label, account_id, for_purchases, for_petty_cash')
+      .select('id, label, account_id, for_purchases, for_petty_cash, for_direct_expenses')
       .order('label', { ascending: true });
 
-    if (forPurchases === 'true') query = query.eq('for_purchases',  true);
-    if (forPettyCash === 'true') query = query.eq('for_petty_cash', true);
+    if (forPurchases      === 'true') query = query.eq('for_purchases',      true);
+    if (forPettyCash      === 'true') query = query.eq('for_petty_cash',     true);
+    if (forDirectExpenses === 'true') query = query.eq('for_direct_expenses', true);
 
     const { data, error } = await query;
 

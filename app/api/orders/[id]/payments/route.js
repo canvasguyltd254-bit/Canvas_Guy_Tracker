@@ -78,7 +78,34 @@ export async function POST(request, { params }) {
       return NextResponse.json({ error: 'Failed to add payment' }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, data }, { status: 201 });
+    // 5. Post the receipt to GL (Debit Bank / Credit AR).
+    //    Best-effort: the payment record already exists (cash was actually received),
+    //    so a GL posting failure must not roll back or hide the payment — it just
+    //    means this payment needs to be retried from Accounting Review.
+    //    INVOICE_NOT_POSTED is expected/normal for early payments taken before the
+    //    order's invoice journal has been posted (e.g. deposits) — not an error.
+    let glPosted = false;
+    let glWarning = null;
+    try {
+      const { error: rpcErr } = await serviceClient.rpc('post_customer_payment', {
+        p_payment_id: data.id,
+        p_posted_by: user.id,
+      });
+      if (rpcErr) {
+        const msg = rpcErr.message || '';
+        if (!msg.includes('INVOICE_NOT_POSTED')) {
+          console.error('post_customer_payment RPC error:', rpcErr);
+          glWarning = 'Payment recorded but GL posting failed. Retry from Accounting Review.';
+        }
+      } else {
+        glPosted = true;
+      }
+    } catch (rpcCatchErr) {
+      console.error('post_customer_payment RPC threw:', rpcCatchErr);
+      glWarning = 'Payment recorded but GL posting failed. Retry from Accounting Review.';
+    }
+
+    return NextResponse.json({ success: true, data, gl_posted: glPosted, gl_warning: glWarning }, { status: 201 });
 
   } catch (err) {
     console.error('POST /api/orders/[id]/payments:', err);
@@ -111,10 +138,10 @@ export async function DELETE(request, { params }) {
       return NextResponse.json({ error: 'A reason is required to delete a payment' }, { status: 400 });
     }
 
-    // 3. Verify payment belongs to this order — fetch only columns that exist
+    // 3. Verify payment belongs to this order
     const { data: payment, error: fetchErr } = await serviceClient
       .from('order_payments')
-      .select('id, order_id, amount, description')
+      .select('id, order_id, amount, description, journal_entry_id, reversed_at')
       .eq('id', paymentId)
       .eq('order_id', orderId)
       .single();
@@ -123,7 +150,20 @@ export async function DELETE(request, { params }) {
       return NextResponse.json({ error: 'Payment not found' }, { status: 404 });
     }
 
-    // 4. Hard delete
+    // 3a. Posted payments must be reversed, not deleted — deleting a payment that
+    //     already has a GL journal would leave the journal orphaned and the books
+    //     wrong. Use POST /api/order-payments/:id/reverse instead.
+    if (payment.journal_entry_id) {
+      return NextResponse.json(
+        {
+          error: 'This payment has already been posted to the ledger and cannot be deleted. '
+            + 'Use "Reverse payment" instead (admin only) to correct it — this keeps the audit trail intact.',
+        },
+        { status: 409 },
+      );
+    }
+
+    // 4. Hard delete — only reachable for payments that were never posted to GL
     const { error: delError } = await serviceClient
       .from('order_payments')
       .delete()

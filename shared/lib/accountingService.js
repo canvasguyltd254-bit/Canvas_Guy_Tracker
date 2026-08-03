@@ -293,3 +293,192 @@ export async function postChatpesaAllocationJournal({
     return { id: null, error: err.message };
   }
 }
+
+// ─────────────────────────────────────────────────────────────
+// 4. postCustomerOpeningBalanceJournal
+//
+//    Call once per customer when the GL is activated, to establish
+//    the pre-existing receivable balance in the new GL system.
+//
+//    DR: 1100 Accounts Receivable  +opening_balance
+//    CR: 3000 Opening Balance Equity -opening_balance
+//
+//    source_type = 'customer_opening_balance', source_id = customer.id
+//
+// @param {object} opts
+//   customerId      — customers.id
+//   amount          — numeric (must be > 0)
+//   balanceDate     — 'YYYY-MM-DD'
+//   customerName    — string (used in description)
+//   postedBy        — auth.users.id
+//   client          — serviceClient
+// ─────────────────────────────────────────────────────────────
+export async function postCustomerOpeningBalanceJournal({
+  customerId, amount, balanceDate, customerName, postedBy, client,
+}) {
+  if (!amount || amount <= 0) {
+    return { id: null, error: 'SKIP: amount is zero or negative' };
+  }
+
+  try {
+    const [arId, obeId] = await Promise.all([
+      _getAccountId('1100', client),   // Accounts Receivable
+      _getAccountId('3000', client),   // Opening Balance Equity
+    ]);
+
+    const label = customerName
+      ? `Customer opening balance — ${customerName}`
+      : 'Customer opening balance';
+
+    const lines = [
+      { account_id: arId,  amount:  amount, description: label },             // DR AR
+      { account_id: obeId, amount: -amount, description: `OBE — ${label}` },  // CR OBE
+    ];
+
+    return postJournal({
+      sourceType:  'customer_opening_balance',
+      sourceId:    customerId,
+      entryDate:   balanceDate || new Date().toISOString().split('T')[0],
+      description: label,
+      lines,
+      postedBy,
+      client,
+    });
+  } catch (err) {
+    return { id: null, error: err.message };
+  }
+}
+
+// ── Payment method → asset account code (for direct expense cash payments) ───
+const DIRECT_EXPENSE_PAYMENT_ACCOUNT = {
+  cash:      '1000',  // Cash on Hand
+  mpesa:     '1010',  // Chatpesa / M-Pesa Float
+  bank:      '1020',  // Default Bank Account (ABSA)
+  chatpesa:  '1010',  // Chatpesa / M-Pesa Float
+};
+
+// ─────────────────────────────────────────────────────────────
+// 5. postDirectExpenseJournal
+//
+//    Call immediately after a direct order expense is inserted.
+//
+//    Posting patterns:
+//      If payment_status = 'paid' AND a known payment_method:
+//        DR expense account (from accounting_category_id)
+//        CR cash/bank account (based on payment_method)
+//      Otherwise (unpaid or unknown method):
+//        DR expense account
+//        CR Accounts Payable (2000)  — liability until settled
+//
+//    source_type = 'direct_expense', source_id = expense.id
+//
+// @param {object} opts
+//   expenseId       — order_direct_expenses.id
+//   expenseDate     — 'YYYY-MM-DD'
+//   amount          — numeric (total expense amount)
+//   categoryId      — accounting_categories.id (required; skip if null)
+//   description     — human-readable label
+//   paymentStatus   — 'paid' | 'unpaid'
+//   paymentMethod   — 'cash' | 'mpesa' | 'bank' | 'chatpesa' | null
+//   postedBy        — auth.users.id
+//   client          — serviceClient
+// ─────────────────────────────────────────────────────────────
+export async function postDirectExpenseJournal({
+  expenseId, expenseDate, amount, categoryId, description,
+  paymentStatus, paymentMethod, postedBy, client,
+}) {
+  if (!categoryId) {
+    return { id: null, error: 'SKIP: no accounting_category_id — journal not posted' };
+  }
+
+  try {
+    const expenseAccountId = await _getCategoryAccountId(categoryId, client);
+
+    const label = description?.trim() || 'Direct order expense';
+    let creditAccountId;
+    let creditLabel;
+
+    const assetCode = paymentStatus === 'paid'
+      ? DIRECT_EXPENSE_PAYMENT_ACCOUNT[paymentMethod?.toLowerCase()]
+      : null;
+
+    if (assetCode) {
+      creditAccountId = await _getAccountId(assetCode, client);
+      creditLabel = `Paid via ${paymentMethod}`;
+    } else {
+      // Unpaid or unknown payment method → credit Accounts Payable
+      creditAccountId = await _getAccountId('2000', client);
+      creditLabel = 'AP — direct expense accrual';
+    }
+
+    const lines = [
+      { account_id: expenseAccountId, amount:  amount, description: label },
+      { account_id: creditAccountId,  amount: -amount, description: creditLabel },
+    ];
+
+    return postJournal({
+      sourceType:  'direct_expense',
+      sourceId:    expenseId,
+      entryDate:   expenseDate,
+      description: `Direct expense: ${label}`,
+      lines,
+      postedBy,
+      client,
+    });
+  } catch (err) {
+    return { id: null, error: err.message };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 6. reverseDirectExpenseJournal
+//
+//    Call when a direct expense is reversed.
+//    Negates all lines from the original journal entry.
+//    source_type = 'direct_expense_reversal', source_id = reversal expense row id
+//
+// @param {object} opts
+//   reversalExpenseId — order_direct_expenses.id of the reversed record
+//   originalJournalId — journal_entries.id of the original posting
+//   reversalDate      — 'YYYY-MM-DD'
+//   description       — reversal reason or label
+//   postedBy          — auth.users.id
+//   client            — serviceClient
+// ─────────────────────────────────────────────────────────────
+export async function reverseDirectExpenseJournal({
+  reversalExpenseId, originalJournalId, reversalDate, description, postedBy, client,
+}) {
+  if (!originalJournalId) {
+    return { id: null, error: 'SKIP: no original journal_entry_id to reverse' };
+  }
+
+  try {
+    // Fetch original lines to negate
+    const { data: origLines, error: linesErr } = await client
+      .from('journal_lines')
+      .select('account_id, amount, description')
+      .eq('journal_entry_id', originalJournalId);
+
+    if (linesErr || !origLines?.length) {
+      return { id: null, error: `Cannot fetch original journal lines: ${linesErr?.message || 'no lines found'}` };
+    }
+
+    const reversalLines = origLines.map(l => ({
+      account_id:  l.account_id,
+      amount:      -Number(l.amount),   // negate: DR→CR, CR→DR
+      description: `Reversal: ${l.description || ''}`.trim(),
+    }));
+
+    return postJournal({
+      sourceType:  'direct_expense_reversal',
+      sourceId:    reversalExpenseId,
+      entryDate:   reversalDate,
+      description: `Expense reversal: ${description || ''}`,
+      lines:       reversalLines,
+      postedBy,
+      client,
+    });
+  } catch (err) {
+    return { id: null, error: err.message };
+  }
+}

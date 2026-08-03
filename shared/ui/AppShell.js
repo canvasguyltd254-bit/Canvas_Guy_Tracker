@@ -5,6 +5,7 @@ import Link from "next/link";
 import { createClient } from "@/shared/supabase/client";
 import * as modules from "@/modules/registry";
 import { useAuth } from "@/shared/context/AuthContext";
+import QuickActions from "@/shared/ui/QuickActions";
 
 const moduleList = Object.values(modules);
 // NOTE: modules without an allowedRoles array are hidden for ALL roles.
@@ -34,14 +35,14 @@ export default function AppShell({ children }) {
   };
 
   // Nav layout: Modules home + 3 primary links + More dropdown for the rest
-  const PRIMARY_MODULE_IDS = ['dashboard', 'orders', 'production'];
+  const PRIMARY_MODULE_IDS = ['orders'];
   const accessibleModules = moduleList.filter(mod => mod.allowedRoles?.includes(userRole));
   const primaryModules    = accessibleModules.filter(mod => PRIMARY_MODULE_IDS.includes(mod.id));
   const moreModules       = accessibleModules.filter(mod => !PRIMARY_MODULE_IDS.includes(mod.id));
   const moreActive        = moreModules.some(mod => mod.navItems?.some(item => pathname.startsWith(item.path)));
 
   return (
-    <div style={{ minHeight: "100vh", background: "#f7f7f5" }}>
+    <div style={{ minHeight: "100vh", background: "var(--bg, #f7f6f3)" }}>
       {/* Top bar — compact */}
       <header style={{
         background: "#1a1a1a", color: "#fff", padding: "0 16px",
@@ -160,6 +161,7 @@ export default function AppShell({ children }) {
         </nav>
 
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <QuickActions />
           {user && (
             <div className="user-info" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <div style={{

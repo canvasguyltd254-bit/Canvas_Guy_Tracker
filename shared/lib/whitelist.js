@@ -71,6 +71,13 @@ export const ALLOWED_FIELDS = {
       'parent_order_id',  // repair/return link to original order
       'customer_id',      // nullable FK to customers table
       'payment_due_date', // calculated from customer credit terms at order creation
+      // CRM / VAT fields (Migration A)
+      'quote_id',
+      'tax_status',
+      'pricing_mode',
+      'subtotal_amount',
+      'vat_amount',
+      'project_description',
     ],
     update: [
       // Editable metadata
@@ -110,6 +117,13 @@ export const ALLOWED_FIELDS = {
       'wood_type',
       'unit_price',
       'sort_order',
+      // VAT fields (Migration A)
+      'line_type',
+      'tax_treatment',
+      'vat_rate',
+      'net_amount',
+      'vat_amount',
+      'gross_amount',
     ],
     update: [
       // id and order_id are never changed
@@ -122,6 +136,13 @@ export const ALLOWED_FIELDS = {
       'wood_type',
       'unit_price',
       'sort_order',
+      // VAT fields (Migration A) — blocked if invoice already posted
+      'line_type',
+      'tax_treatment',
+      'vat_rate',
+      'net_amount',
+      'vat_amount',
+      'gross_amount',
     ],
   },
 
@@ -378,6 +399,7 @@ export const ALLOWED_FIELDS = {
       'opening_balance',
       'opening_balance_date',
       'notes',
+      'tax_status',       // 'taxable' | 'exempt' (Migration A)
     ],
     update: [
       'name',
@@ -391,6 +413,7 @@ export const ALLOWED_FIELDS = {
       'opening_balance',
       'opening_balance_date',
       'notes',
+      'tax_status',       // 'taxable' | 'exempt' (Migration A)
     ],
   },
 
@@ -523,6 +546,131 @@ export const ALLOWED_FIELDS = {
       'created_by',
     ],
     // Manual payments are immutable — delete and re-add to correct.
+  },
+
+  // ── CRM Module (Migration B) ───────────────────────────────────────────────
+
+  enquiries: {
+    insert: [
+      'customer_id',
+      'prospect_name',
+      'prospect_contact',
+      'source',
+      'category',
+      'description',
+      'estimated_value',
+      'assigned_to',
+      'stage',
+      'lost_reason',
+      'created_by',
+    ],
+    update: [
+      'customer_id',
+      'prospect_name',
+      'prospect_contact',
+      'source',
+      'category',
+      'description',
+      'estimated_value',
+      'assigned_to',
+      'stage',
+      'lost_reason',
+    ],
+  },
+
+  quotations: {
+    insert: [
+      'quote_group_id',
+      'revision',
+      'enquiry_id',
+      'customer_id',
+      'prospect_name',
+      'prospect_contact',
+      'project_description',
+      'payment_terms',
+      'valid_until',
+      'tax_status',
+      'pricing_mode',
+      'subtotal',
+      'vat_amount',
+      'total',
+      'status',
+      'created_by',
+    ],
+    update: [
+      'customer_id',
+      'prospect_name',
+      'prospect_contact',
+      'project_description',
+      'payment_terms',
+      'valid_until',
+      'tax_status',
+      'pricing_mode',
+      'subtotal',
+      'vat_amount',
+      'total',
+      'status',
+    ],
+  },
+
+  quote_items: {
+    insert: [
+      'quote_id',
+      'sort_order',
+      'line_type',
+      'description',
+      'quantity',
+      'size',
+      'category',       // production spec (Migration E)
+      'finish_type',    // production spec (Migration E)
+      'finish_color',   // production spec (Migration E)
+      'wood_type',      // production spec (Migration E)
+      'material',       // legacy column (kept for backward compat)
+      'finish',         // legacy column (kept for backward compat)
+      'unit_price',
+      'discount_pct',
+      'tax_treatment',
+      'vat_rate',
+      'net_amount',
+      'vat_amount',
+      'gross_amount',
+    ],
+    update: [
+      'sort_order',
+      'line_type',
+      'description',
+      'quantity',
+      'size',
+      'category',
+      'finish_type',
+      'finish_color',
+      'wood_type',
+      'material',
+      'finish',
+      'unit_price',
+      'discount_pct',
+      'tax_treatment',
+      'vat_rate',
+      'net_amount',
+      'vat_amount',
+      'gross_amount',
+    ],
+  },
+
+  followups: {
+    insert: [
+      'enquiry_id',
+      'quotation_id',
+      'due_date',
+      'note',
+      'created_by',
+    ],
+    update: [
+      'due_date',
+      'note',
+      'completed_at',
+      'completed_by',
+    ],
   },
 
 };

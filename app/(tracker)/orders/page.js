@@ -24,7 +24,7 @@ export default function OrdersListPage() {
           .from('orders')
           .select('id, order_num, client, due_date, status, total_value, order_type, created_at')
           .order('created_at', { ascending: false }),
-        supabase.from('order_payments').select('order_id, amount'),
+        supabase.from('order_payments').select('order_id, amount').is('reversed_at', null),
       ]);
       setOrders(ord || []);
       if (pays) {

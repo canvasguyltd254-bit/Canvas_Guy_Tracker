@@ -23,6 +23,7 @@ export async function GET(request) {
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status') || 'all';
+    const search = searchParams.get('search')?.trim() || '';
     const limit  = Math.min(parseInt(searchParams.get('limit') || '200', 10), 500);
 
     let query = serviceClient
@@ -33,6 +34,11 @@ export async function GET(request) {
 
     if (status && status !== 'all') {
       query = query.eq('status', status);
+    }
+
+    if (search) {
+      // Match order_num OR client name (case-insensitive)
+      query = query.or(`order_num.ilike.%${search}%,client.ilike.%${search}%`);
     }
 
     const { data, error } = await query;

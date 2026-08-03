@@ -4,27 +4,38 @@
    are available as --font-dm-sans, --font-dm-mono, --font-space-grotesk. */
 
 :root {
-  --bg: #EDEAE6;
-  --card: #FFFFFF;
-  --card-hover: #FAFAF8;
-  --border: #D6D3CE;
-  --border-light: #E8E5E0;
-  --header: #111111;
-  --accent: #E8512A;
+  /* ── Core palette — aligned with CRM design tokens (shared/ui/ds.js) ── */
+  --bg:           #f7f6f3;   /* page background  (was #EDEAE6) */
+  --card:         #ffffff;   /* card / panel surface */
+  --card-hover:   #fafaf8;
+  --border:       #e7e3de;   /* primary border   (was #D6D3CE) */
+  --border-light: #eeebe6;
+  --header:       #181818;   /* nav bar bg */
+
+  /* Brand */
+  --accent:       #E8512A;
   --accent-hover: #D4471F;
-  --text-primary: #111111;
-  --text-secondary: #555555;
-  --text-muted: #999999;
-  --text-faint: #CCCCCC;
-  --red: #DC2626;
-  --green: #16A34A;
-  --amber: #D97706;
-  --blue: #2563EB;
-  --purple: #7C3AED;
+
+  /* Text */
+  --text-primary:   #181818; /* ink  (was #111111) */
+  --text-secondary: #6b7280; /* muted */
+  --text-muted:     #9ca3af; /* faint */
+  --text-faint:     #d1d5db;
+
+  /* Semantic */
+  --red:    #a8362d;
+  --green:  #16794a;
+  --amber:  #96620a;
+  --blue:   #245e9b;
+  --purple: #5b21b6;
+
+  /* Shadows */
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
   --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
   --shadow-lg: 0 8px 30px rgba(0,0,0,0.12);
-  --radius: 8px;
+
+  /* Radii */
+  --radius:    8px;
   --radius-lg: 12px;
 }
 

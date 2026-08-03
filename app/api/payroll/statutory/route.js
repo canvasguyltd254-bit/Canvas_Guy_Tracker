@@ -12,7 +12,7 @@ import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-aut
 export async function GET(request) {
   try {
     const { user, role } = await getAuthContext();
-    const authError = requireRole(user, role, ['admin', 'production_manager']);
+    const authError = requireRole(user, role, ['admin', 'head_of_sales', 'production_manager']);
     if (authError) return authError;
 
     const { data, error } = await serviceClient

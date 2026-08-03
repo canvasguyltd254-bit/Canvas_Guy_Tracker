@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { useAuth } from "@/shared/context/AuthContext";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -1344,12 +1345,12 @@ function RecordPaymentModal({ supplier, purchases, onClose, onSaved }) {
 
 export default function SupplierProfile({ supplierId }) {
   const router = useRouter();
+  const { userRole = "viewer" } = useAuth();
 
   const [data, setData]         = useState(null);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState(null);
   const [tab, setTab]           = useState("overview");
-  const [userRole, setUserRole] = useState("viewer");
   const [showEditModal, setShowEditModal]             = useState(false);
   const [showPaymentModal, setShowPaymentModal]       = useState(false);
   const [showPurchaseModal, setShowPurchaseModal]     = useState(false);
@@ -1377,18 +1378,6 @@ export default function SupplierProfile({ supplierId }) {
 
   useEffect(() => {
     load();
-    // Fetch user role
-    (async () => {
-      try {
-        const { createClient } = await import("@/shared/supabase/client");
-        const sb = createClient();
-        const { data: { user } } = await sb.auth.getUser();
-        if (user) {
-          const { data: profile } = await sb.from("user_profiles").select("role").eq("id", user.id).single();
-          if (profile) setUserRole(profile.role);
-        }
-      } catch {}
-    })();
   }, [load]);
 
   const handleExportPDF = async () => {

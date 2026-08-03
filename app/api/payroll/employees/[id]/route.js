@@ -1,16 +1,17 @@
 /**
- * GET    /api/payroll/employees/:id  — get single employee (banking redacted for non-admin)
- * PATCH  /api/payroll/employees/:id  — update employee (admin-only fields restricted for prod_manager)
+ * GET    /api/payroll/employees/:id  — get single employee
+ * PATCH  /api/payroll/employees/:id  — update employee
  * DELETE /api/payroll/employees/:id  — deactivate only (never hard-delete; history is permanent)
  *
- * Access: admin, production_manager
+ * Access: admin, head_of_sales, production_manager
+ * All roles can view and edit all employee fields including salaries.
+ * Only admin can approve/reopen payroll runs (enforced in runs routes).
  */
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 
-const ALLOWED_ROLES = ['admin', 'production_manager'];
-const ADMIN_ONLY_FIELDS = ['monthly_salary', 'bank_account', 'bank_name', 'bank_branch', 'paybill_number', 'nssf_number', 'id_number'];
+const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 
 export async function GET(request, { params }) {
   try {
@@ -26,17 +27,6 @@ export async function GET(request, { params }) {
 
     if (error || !emp) {
       return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
-    }
-
-    // Redact sensitive fields for non-admin
-    if (role !== 'admin') {
-      emp.bank_account   = emp.type === 'permanent' ? '[restricted]' : emp.bank_account;
-      emp.bank_name      = emp.type === 'permanent' ? '[restricted]' : emp.bank_name;
-      emp.bank_branch    = emp.type === 'permanent' ? '[restricted]' : emp.bank_branch;
-      emp.paybill_number = emp.type === 'permanent' ? '[restricted]' : emp.paybill_number;
-      emp.nssf_number    = '[restricted]';
-      emp.id_number      = '[restricted]';
-      emp.monthly_salary = emp.type === 'permanent' ? null : emp.monthly_salary;
     }
 
     // Fetch documents
@@ -61,25 +51,11 @@ export async function PATCH(request, { params }) {
 
     const body = await request.json();
 
-    // Block non-admin from touching restricted fields
-    if (role !== 'admin') {
-      const forbidden = ADMIN_ONLY_FIELDS.filter(f => f in body && body[f] !== null && body[f] !== '');
-      if (forbidden.length > 0) {
-        return NextResponse.json({
-          error: `Production managers cannot update: ${forbidden.join(', ')}`,
-        }, { status: 403 });
-      }
-      // Also block changing employee type to permanent
-      if (body.type === 'permanent') {
-        return NextResponse.json({ error: 'Production managers cannot change employee type to permanent' }, { status: 403 });
-      }
-    }
-
-    // Whitelist updatable fields
-    const allowedAll  = ['name', 'type', 'day_rate', 'piece_rate', 'sha_amount', 'phone', 'hire_date', 'notes', 'is_active'];
-    const adminExtra  = ADMIN_ONLY_FIELDS;
-
-    const allowed = role === 'admin' ? [...allowedAll, ...adminExtra] : allowedAll;
+    // Whitelist updatable fields — all roles can update all employee fields
+    const allowed = ['name', 'type', 'day_rate', 'monthly_salary', 'piece_rate', 'sha_amount',
+                     'phone', 'hire_date', 'notes', 'is_active',
+                     'bank_account', 'bank_name', 'bank_branch', 'paybill_number',
+                     'nssf_number', 'id_number'];
 
     const updates = {};
     for (const key of allowed) {
@@ -121,8 +97,8 @@ export async function PATCH(request, { params }) {
 export async function DELETE(request, { params }) {
   try {
     const { user, role, displayName } = await getAuthContext();
-    // Only admins can deactivate
-    const authError = requireRole(user, role, ['admin']);
+    // Admin, Head of Sales and PM can deactivate employees
+    const authError = requireRole(user, role, ALLOWED_ROLES);
     if (authError) return authError;
 
     // Always deactivate — never hard delete employees.

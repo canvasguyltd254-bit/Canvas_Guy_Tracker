@@ -72,7 +72,7 @@ function fifoSplit(entries, allocation) {
 export async function GET(request) {
   try {
     const { user, role } = await getAuthContext();
-    const authError = requireRole(user, role, ['admin', 'production_manager']);
+    const authError = requireRole(user, role, ['admin', 'head_of_sales', 'production_manager']);
     if (authError) return authError;
 
     const { data, error } = await serviceClient
@@ -94,7 +94,7 @@ export async function GET(request) {
 export async function POST(request) {
   try {
     const { user, role, displayName } = await getAuthContext();
-    const authError = requireRole(user, role, ['admin']);
+    const authError = requireRole(user, role, ['admin', 'head_of_sales', 'production_manager']);
     if (authError) return authError;
 
     const body = await request.json();

@@ -7,7 +7,7 @@
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 
-const ALLOWED_ROLES = ['admin', 'production_manager'];
+const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 
 export async function GET(request, { params }) {
   try {

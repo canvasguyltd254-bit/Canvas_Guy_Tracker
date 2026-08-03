@@ -46,7 +46,8 @@ export async function GET(request, { params }) {
         .select(`
           id, order_num, client, status, total_value, payment_due_date,
           created_at, due_date, author, contact_person,
-          order_payments(id, amount, payment_date, description)
+          invoice_number, invoice_issued_at, quote_id,
+          order_payments(id, amount, payment_date, description, reversed_at)
         `)
         .eq('customer_id', params.id)
         .order('created_at', { ascending: false }),
@@ -64,14 +65,21 @@ export async function GET(request, { params }) {
     const nonCancelled    = allOrders.filter(o => o.status !== CANCELLED_STATUS);
     const paymentsByOrder = {};
     for (const o of nonCancelled) {
-      paymentsByOrder[o.id] = (o.order_payments || []).reduce(
-        (s, p) => s + parseFloat(p.amount || 0),
-        0
-      );
+      // Reversed payments no longer count toward what's been paid — the reversal
+      // journal already backs the receipt out in the GL.
+      paymentsByOrder[o.id] = (o.order_payments || [])
+        .filter(p => !p.reversed_at)
+        .reduce((s, p) => s + parseFloat(p.amount || 0), 0);
     }
 
+    // Invoice-recognition rule: quote-converted orders only count toward financial stats
+    // once an invoice_number has been issued. This keeps KPI figures in sync with the
+    // statement ledger (which skips the same pending-invoice orders).
+    // Direct orders (no quote_id) always count — they don't go through the invoice workflow.
+    const invoiceRecognised = nonCancelled.filter(o => !(o.quote_id && !o.invoice_number));
+
     const { totalSales, totalPaid, outstanding, overdue, activeOrders } =
-      calcCustomerStats(customer, nonCancelled, paymentsByOrder, today);
+      calcCustomerStats(customer, invoiceRecognised, paymentsByOrder, today);
 
     const activeQuotes = nonCancelled.filter(o => QUOTE_STATUSES.includes(o.status)).length;
     const lastOrderDate = allOrders[0]?.created_at?.split('T')[0] || null;
@@ -100,40 +108,61 @@ export async function GET(request, { params }) {
       });
     }
 
-    for (const o of [...nonCancelled].sort((a, b) => a.created_at > b.created_at ? 1 : -1)) {
+    for (const o of [...nonCancelled].sort((a, b) => {
+      // Sort by invoice date if issued, otherwise by creation date
+      const aDate = o.invoice_issued_at || o.created_at;
+      const bDate = b.invoice_issued_at || b.created_at;
+      return aDate > bDate ? 1 : -1;
+    })) {
+      // Only include orders that have a formal invoice.
+      // Non-credit orders that haven't reached Deposit Paid don't have invoice_number yet
+      // and must not create a statement debit (no GL journal was posted for them yet).
+      if (o.quote_id && !o.invoice_number) continue;
+
+      const invoiceDate = o.invoice_issued_at
+        ? o.invoice_issued_at.split('T')[0]
+        : o.created_at.split('T')[0];
+      const invoiceRef = o.invoice_number || o.order_num;
+
       // Invoice entry (order total)
       statementEntries.push({
-        date:        o.created_at.split('T')[0],
+        date:        invoiceDate,
         type:        'Invoice',
-        description: `Order ${o.order_num}`,
+        description: o.invoice_number ? `Invoice ${o.invoice_number}` : `Order ${o.order_num}`,
         debit:       parseFloat(o.total_value || 0),
         credit:      0,
         amount:      parseFloat(o.total_value || 0),
-        reference:   o.order_num,
+        reference:   invoiceRef,
         order_id:    o.id,
         order_num:   o.order_num,
       });
-      // Payment entries
+      // Payment entries — reversed payments stay in the ledger for audit purposes,
+      // clearly marked, but no longer reduce the running balance (see below).
       for (const p of [...(o.order_payments || [])].sort((a, b) => a.payment_date > b.payment_date ? 1 : -1)) {
+        const isReversed = !!p.reversed_at;
         statementEntries.push({
           date:        p.payment_date,
-          type:        'Payment',
-          description: p.description || `Payment for ${o.order_num}`,
+          type:        isReversed ? 'Payment (Reversed)' : 'Payment',
+          description: (p.description || `Payment for ${o.order_num}`) + (isReversed ? ' — Reversed' : ''),
           debit:       0,
           credit:      parseFloat(p.amount || 0),
           amount:      parseFloat(p.amount || 0),
           reference:   o.order_num,
           order_id:    o.id,
           order_num:   o.order_num,
+          reversed:    isReversed,
         });
       }
     }
 
-    // Sort statement chronologically and add running balance
+    // Sort statement chronologically and add running balance.
+    // Reversed payments are shown but excluded from the balance math — the
+    // reversal journal already backs them out in the GL, so counting their
+    // credit here would understate what the customer actually owes.
     statementEntries.sort((a, b) => (a.date || '') > (b.date || '') ? 1 : -1);
     let runningBalance = 0;
     for (const entry of statementEntries) {
-      runningBalance += entry.debit - entry.credit;
+      runningBalance += entry.debit - (entry.reversed ? 0 : entry.credit);
       entry.balance = runningBalance;
     }
 
@@ -148,7 +177,16 @@ export async function GET(request, { params }) {
     for (const o of [...allOrders].sort((a, b) => a.created_at > b.created_at ? 1 : -1)) {
       timeline.push({ date: o.created_at, type: 'order_created', description: `Order ${o.order_num} created`, order_num: o.order_num, order_id: o.id });
       for (const p of o.order_payments || []) {
-        timeline.push({ date: p.payment_date + 'T00:00:00', type: 'payment', description: `Payment of KSh ${Number(p.amount).toLocaleString()} received`, order_num: o.order_num, order_id: o.id });
+        const isReversed = !!p.reversed_at;
+        timeline.push({
+          date: p.payment_date + 'T00:00:00',
+          type: isReversed ? 'payment_reversed' : 'payment',
+          description: isReversed
+            ? `Payment of KSh ${Number(p.amount).toLocaleString()} reversed`
+            : `Payment of KSh ${Number(p.amount).toLocaleString()} received`,
+          order_num: o.order_num,
+          order_id: o.id,
+        });
       }
     }
     for (const a of activities || []) {

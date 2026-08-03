@@ -1,6 +1,11 @@
 /**
  * app/api/orders/[id]/batches/[batchId]/route.js
  *
+ * DELETE /api/orders/:id/batches/:batchId
+ *   Soft-deletes a batch (sets deleted_at). Admin only.
+ *   Cannot delete a batch that is Delivered or Signed.
+ *   Recoverable via PATCH with { restore: true } (admin only).
+ *
  * PATCH /api/orders/:id/batches/:batchId
  *   Two modes (determined by presence of `newStatus` in body):
  *
@@ -41,6 +46,52 @@ const LOGISTICS_ADVANCEABLE = new Set(['Out for Delivery', 'Delivered', 'Rejecte
 // Terminal statuses — no further updates allowed
 const TERMINAL_STATUSES = new Set(['Signed', 'Cancelled', 'Rejected', 'Returned']);
 
+export async function DELETE(request, { params }) {
+  try {
+    const { id: orderId, batchId } = params;
+    const { user, role } = await getAuthContext();
+    const authError = requireRole(user, role, ['admin']);
+    if (authError) return authError;
+
+    const { data: batch } = await serviceClient
+      .from('delivery_batches')
+      .select('id, batch_number, status, deleted_at')
+      .eq('id', batchId)
+      .eq('order_id', orderId)
+      .single();
+
+    if (!batch) return NextResponse.json({ error: 'Batch not found' }, { status: 404 });
+    if (batch.deleted_at) return NextResponse.json({ error: 'Batch is already deleted' }, { status: 409 });
+    if (['Delivered', 'Signed'].includes(batch.status)) {
+      return NextResponse.json(
+        { error: `Cannot delete a batch that is ${batch.status}. Cancel it instead.` },
+        { status: 422 },
+      );
+    }
+
+    const { error: delErr } = await serviceClient
+      .from('delivery_batches')
+      .update({ deleted_at: new Date().toISOString(), deleted_by: user.id })
+      .eq('id', batchId);
+
+    if (delErr) {
+      console.error('DELETE /batches/[batchId]:', delErr);
+      return NextResponse.json({ error: 'Failed to delete batch' }, { status: 500 });
+    }
+
+    await serviceClient.from('order_activities').insert({
+      order_id: orderId,
+      activity_type: 'batch_deleted',
+      description: `Batch ${batch.batch_number} soft-deleted by admin. Status was: ${batch.status}.`,
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (err) {
+    console.error('DELETE /batches/[batchId]:', err);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
 export async function PATCH(request, { params }) {
   try {
     const { id: orderId, batchId } = params;
@@ -52,7 +103,7 @@ export async function PATCH(request, { params }) {
     try { body = await request.json(); }
     catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }); }
 
-    // Fetch current batch
+    // Fetch current batch (include soft-deleted so admin can restore)
     const { data: batch, error: fetchErr } = await serviceClient
       .from('delivery_batches')
       .select('*')
@@ -62,6 +113,39 @@ export async function PATCH(request, { params }) {
 
     if (fetchErr || !batch) {
       return NextResponse.json({ error: 'Batch not found' }, { status: 404 });
+    }
+
+    // ── Restore mode ─────────────────────────────────────────────────────────
+    if (body.restore === true) {
+      const authError = requireRole(user, role, ['admin']);
+      if (authError) return authError;
+
+      if (!batch.deleted_at) {
+        return NextResponse.json({ error: 'Batch is not deleted' }, { status: 409 });
+      }
+
+      const { error: restoreErr } = await serviceClient
+        .from('delivery_batches')
+        .update({ deleted_at: null, deleted_by: null })
+        .eq('id', batchId);
+
+      if (restoreErr) {
+        console.error('PATCH /batches/[batchId] restore:', restoreErr);
+        return NextResponse.json({ error: 'Failed to restore batch' }, { status: 500 });
+      }
+
+      await serviceClient.from('order_activities').insert({
+        order_id: orderId,
+        activity_type: 'batch_restored',
+        description: `Batch ${batch.batch_number} restored by admin.`,
+      });
+
+      return NextResponse.json({ success: true, restored: true });
+    }
+
+    // Block all other updates on soft-deleted batches
+    if (batch.deleted_at) {
+      return NextResponse.json({ error: 'Batch has been deleted. Restore it first.' }, { status: 409 });
     }
 
     if (TERMINAL_STATUSES.has(batch.status) && !body.newStatus) {

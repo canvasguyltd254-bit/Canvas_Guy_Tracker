@@ -363,7 +363,11 @@ function AttachmentsPanel({ orderId, userRole }) {
 
 // ── Payment Panel ────────────────────────────────────────────────────────────
 const CAN_ADD_PAYMENT    = ['admin', 'production_manager', 'head_of_sales', 'sales'];
+// Hard-delete only ever applies to payments that were never posted to GL.
 const CAN_DELETE_PAYMENT = ['admin', 'head_of_sales'];
+// Reversing a posted payment must match the server-side rule in
+// /api/order-payments/[id]/reverse (ROLES_REVERSE) — admin only.
+const CAN_REVERSE_PAYMENT = ['admin'];
 
 function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, userRole, orderStatus, payments, setPayments }) {
   const [loading, setLoading]         = useState(true);
@@ -385,13 +389,17 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
 
   useEffect(() => { loadPayments(); }, [loadPayments]);
 
-  const totalPaid      = payments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+  // Reversed payments stay visible in the list for audit purposes but no longer
+  // count toward what's actually been received — the reversal journal already
+  // backs the receipt out in the GL.
+  const totalPaid      = payments.filter(p => !p.reversed_at).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
   const rawBalance     = (contractTotal || 0) - totalPaid;
   const balance        = Math.max(rawBalance, 0);
   const isOverpaid     = rawBalance < -0.01;
   const pct            = contractTotal > 0 ? Math.min(Math.round((totalPaid / contractTotal) * 100), 100) : 0;
   const canAdd         = CAN_ADD_PAYMENT.includes(userRole) && orderStatus !== 'Closed';
   const canDelete      = CAN_DELETE_PAYMENT.includes(userRole);
+  const canReverse     = CAN_REVERSE_PAYMENT.includes(userRole);
   const chargesSubtotal = (chargeItems || []).reduce((s, i) => s + (parseFloat(i.unit_price) || 0), 0);
   const barColor       = pct >= 100 ? '#16a34a' : pct >= 50 ? '#2563eb' : '#E8512A';
 
@@ -421,9 +429,15 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ amount: a, description: tempPayment.description, payment_date: payDate }),
       });
+      const json = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'Failed to add payment');
+        throw new Error(json.error || 'Failed to add payment');
+      }
+      // The payment record itself always succeeds at this point (cash was
+      // actually received) — but surface a GL posting failure to the user
+      // instead of silently swallowing it, since it needs a manual retry.
+      if (json.gl_warning) {
+        setAddError(json.gl_warning);
       }
       await loadPayments();
     } catch (e) {
@@ -443,25 +457,41 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
     if (!deleteReason.trim() || !pendingDelete) return;
     const p = pendingDelete;
     const reason = deleteReason.trim();
+    const isPosted = !!p.journal_entry_id;
     setDeleteLoading(true);
     setDeleteError('');
-    setPayments(prev => prev.filter(x => x.id !== p.id));
     setPendingDelete(null);
     setDeleteReason('');
     try {
-      const res = await fetch(`/api/orders/${orderId}/payments?payment_id=${p.id}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason }),
-      });
-      if (!res.ok) {
-        const json = await res.json().catch(() => ({}));
-        throw new Error(json.error || 'Failed to delete payment');
+      if (isPosted) {
+        // Posted payments are reversed, never hard-deleted — this keeps the
+        // GL journal and the audit trail intact. The reversed row stays
+        // visible in the list, marked accordingly, after reload.
+        const res = await fetch(`/api/order-payments/${p.id}/reverse`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        });
+        if (!res.ok) {
+          const json = await res.json().catch(() => ({}));
+          throw new Error(json.error || 'Failed to reverse payment');
+        }
+      } else {
+        setPayments(prev => prev.filter(x => x.id !== p.id));
+        const res = await fetch(`/api/orders/${orderId}/payments?payment_id=${p.id}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        });
+        if (!res.ok) {
+          const json = await res.json().catch(() => ({}));
+          throw new Error(json.error || 'Failed to delete payment');
+        }
       }
     } catch (err) {
       setDeleteError(err.message);
-      await loadPayments();
     }
+    await loadPayments();
     setDeleteLoading(false);
   };
 
@@ -547,16 +577,47 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
       )}
       {!loading && payments.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '14px' }}>
-          {payments.map(p => (
-            <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 14px', background: '#fff', border: '1px solid #e8e8e5', borderRadius: '8px', flexWrap: 'wrap' }}>
-              <span style={{ fontWeight: 700, color: '#16a34a', fontFamily: 'monospace', minWidth: '100px' }}>KES {parseFloat(p.amount).toLocaleString('en-KE')}</span>
-              <span style={{ flex: 1, fontSize: '13px', color: '#374151', minWidth: '80px' }}>{p.description}</span>
-              <span style={{ fontSize: '11px', color: '#9ca3af' }}>{fmtDate(p.payment_date)}</span>
-              {canDelete && (
-                <button onClick={() => deletePayment(p)} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '13px', fontWeight: 700, padding: '0 4px' }} title="Delete">×</button>
-              )}
-            </div>
-          ))}
+          {payments.map(p => {
+            const isReversed = !!p.reversed_at;
+            const isPosted   = !!p.journal_entry_id;
+            // Show a control only when the user's role is actually allowed to
+            // perform it — reversal is admin-only (matches the reverse API's
+            // own role check); hard delete is admin/head_of_sales and only
+            // ever applies to payments that were never posted to GL.
+            const showControl = !isReversed && (isPosted ? canReverse : canDelete);
+            return (
+              <div key={p.id} style={{
+                display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 14px',
+                background: isReversed ? '#fef2f2' : '#fff',
+                border: `1px solid ${isReversed ? '#fecaca' : '#e8e8e5'}`,
+                borderRadius: '8px', flexWrap: 'wrap',
+              }}>
+                <span style={{
+                  fontWeight: 700, fontFamily: 'monospace', minWidth: '100px',
+                  color: isReversed ? '#9ca3af' : '#16a34a',
+                  textDecoration: isReversed ? 'line-through' : 'none',
+                }}>
+                  KES {parseFloat(p.amount).toLocaleString('en-KE')}
+                </span>
+                <span style={{ flex: 1, fontSize: '13px', color: isReversed ? '#9ca3af' : '#374151', minWidth: '80px' }}>{p.description}</span>
+                <span style={{ fontSize: '11px', color: '#9ca3af' }}>{fmtDate(p.payment_date)}</span>
+                {isReversed && (
+                  <span style={{ fontSize: '9px', fontWeight: 700, color: '#9F1239', background: '#FFF1F2', border: '1px solid #fecaca', padding: '3px 7px', borderRadius: '4px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                    Reversed
+                  </span>
+                )}
+                {showControl && (
+                  <button
+                    onClick={() => deletePayment(p)}
+                    style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: isPosted ? '11px' : '13px', fontWeight: 700, padding: '0 4px' }}
+                    title={isPosted ? 'Reverse payment' : 'Delete'}
+                  >
+                    {isPosted ? 'Reverse' : '×'}
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -600,23 +661,30 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
         </div>
       )}
 
-      {/* ── Delete Payment Modal ── */}
-      {pendingDelete && (
+      {/* ── Delete / Reverse Payment Modal ── */}
+      {pendingDelete && (() => {
+        const isPosted = !!pendingDelete.journal_entry_id;
+        return (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
           <div style={{ background: '#fff', borderRadius: '12px', padding: '28px', width: '100%', maxWidth: '420px', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
-            <div style={{ fontSize: '16px', fontWeight: 700, color: '#111', marginBottom: '4px' }}>Delete Payment</div>
-            <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '20px' }}>
+            <div style={{ fontSize: '16px', fontWeight: 700, color: '#111', marginBottom: '4px' }}>{isPosted ? 'Reverse Payment' : 'Delete Payment'}</div>
+            <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: isPosted ? '8px' : '20px' }}>
               <strong>KES {parseFloat(pendingDelete.amount).toLocaleString('en-KE')}</strong>
               {pendingDelete.payment_method ? ` · ${pendingDelete.payment_method}` : ''}
               {pendingDelete.description ? ` · ${pendingDelete.description}` : ''}
             </div>
+            {isPosted && (
+              <div style={{ fontSize: '12px', color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '6px', padding: '8px 12px', marginBottom: '12px' }}>
+                This payment has been posted to the ledger. It will be reversed with a GL correction entry, not deleted — it stays visible in the list, marked "Reversed".
+              </div>
+            )}
             <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
-              Reason for deletion <span style={{ color: '#dc2626' }}>*</span>
+              Reason for {isPosted ? 'reversal' : 'deletion'} <span style={{ color: '#dc2626' }}>*</span>
             </label>
             <textarea
               value={deleteReason}
               onChange={e => setDeleteReason(e.target.value)}
-              placeholder="Explain why this payment is being deleted…"
+              placeholder={`Explain why this payment is being ${isPosted ? 'reversed' : 'deleted'}…`}
               rows={3}
               autoFocus
               style={{ width: '100%', padding: '10px 12px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', outline: 'none', boxSizing: 'border-box', resize: 'vertical', fontFamily: 'inherit' }}
@@ -633,12 +701,13 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
                 disabled={!deleteReason.trim() || deleteLoading}
                 style={{ padding: '9px 20px', borderRadius: '7px', border: 'none', background: deleteReason.trim() && !deleteLoading ? '#dc2626' : '#fca5a5', color: '#fff', fontSize: '13px', fontWeight: 700, cursor: deleteReason.trim() && !deleteLoading ? 'pointer' : 'not-allowed' }}
               >
-                {deleteLoading ? 'Deleting…' : 'Delete Payment'}
+                {deleteLoading ? (isPosted ? 'Reversing…' : 'Deleting…') : (isPosted ? 'Reverse Payment' : 'Delete Payment')}
               </button>
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
@@ -691,48 +760,373 @@ function ActivityLog({ orderId }) {
 }
 
 // ── P&L Tab ───────────────────────────────────────────────────────────────────
-const PDF_ALLOWED_ROLES = ['admin', 'production_manager', 'head_of_sales'];
+const PDF_ALLOWED_ROLES  = ['admin', 'production_manager', 'head_of_sales'];
+const WRITE_ROLES_PNL    = ['admin', 'head_of_sales', 'production_manager'];
+const EXPENSE_CATEGORIES = [
+  'Sales Commission',
+  'Transport Penalty',
+  'Fine',
+  'Boda/Bike Charges',
+  'Delivery Charges',
+  'Casual Labour',
+  'Installation Expense',
+  'Repair/Rework Expense',
+  'Other Direct Expense',
+];
 
-function PnLTab({ orderId, contractTotal, itemsSubtotal, chargeItems, payments, userRole }) {
-  const [purchases, setPurchases]               = useState([]);
-  const [labourAllocations, setLabourAllocs]    = useState([]);
-  const [totals, setTotals]                     = useState({ totalCost: 0, totalPurchaseCost: 0, totalLabourCost: 0, totalPaidAP: 0, outstandingAP: 0 });
-  const [hasUnallocatedPurchases, setHasUnallocated] = useState(false);
-  const [loading, setLoading]                   = useState(true);
-  const [fetchError, setFetchError]             = useState(null);
-  const [pdfLoading, setPdfLoading]             = useState(false);
+function DirectExpenseModal({ orderId, orderNum, onSaved, onClose }) {
+  const [form, setForm] = useState({
+    expense_date:           new Date().toISOString().slice(0, 10),
+    expense_category:       '',
+    accounting_category_id: '',
+    description:            '',
+    payee_name:             '',
+    amount:                 '',
+    allocated_amount:       '',
+    payment_status:         'unpaid',
+    payment_method:         '',
+    payment_reference:      '',
+    receipt_url:            '',
+    notes:                  '',
+  });
+  const [saving, setSaving]                   = useState(false);
+  const [error, setError]                     = useState(null);
+  const [categories, setCategories]           = useState([]);
+  const [catsLoading, setCatsLoading]         = useState(true);
+  const [extraLinks, setExtraLinks]           = useState([]);
+  const [linkOrderNum, setLinkOrderNum]       = useState('');
+  const [linkSearching, setLinkSearching]     = useState(false);
+  const [linkOrderResult, setLinkOrderResult] = useState(null);
 
-  const exportPdf = async () => {
-    setPdfLoading(true);
+  // Load GL categories on mount
+  useEffect(() => {
+    fetch('/api/accounting-categories?for_direct_expenses=true')
+      .then(r => r.json())
+      .then(d => {
+        const all = d.categories || d.data || d || [];
+        setCategories(Array.isArray(all) ? all : []);
+      })
+      .catch(() => setCategories([]))
+      .finally(() => setCatsLoading(false));
+  }, []);
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const totalExpense  = parseFloat(form.amount) || 0;
+  const thisAlloc     = form.allocated_amount !== '' ? parseFloat(form.allocated_amount) : totalExpense;
+  const extraTotal    = extraLinks.reduce((s, l) => s + (parseFloat(l.allocated_amount) || 0), 0);
+  const allocTotal    = thisAlloc + extraTotal;
+  const overAllocated = totalExpense > 0 && allocTotal > totalExpense + 0.01;
+
+  const searchOrder = async () => {
+    if (!linkOrderNum.trim()) return;
+    setLinkSearching(true);
+    setLinkOrderResult(null);
     try {
-      const res = await fetch(`/api/orders/${orderId}/pnl/pdf`);
-      if (!res.ok) {
-        const json = await res.json().catch(() => ({}));
-        throw new Error(json.error || 'PDF generation failed');
-      }
-      const blob = await res.blob();
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement('a');
-      a.href     = url;
-      const cd   = res.headers.get('content-disposition') || '';
-      const match = cd.match(/filename="?([^"]+)"?/);
-      a.download  = match ? match[1] : `${orderId}_PnL.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      alert('PDF export failed: ' + err.message);
-    }
-    setPdfLoading(false);
+      const res  = await fetch(`/api/orders?search=${encodeURIComponent(linkOrderNum.trim())}&limit=5`);
+      const d    = await res.json();
+      const orders = (d.orders || d.data || []).filter(o => o.id !== orderId);
+      setLinkOrderResult(orders.slice(0, 5));
+    } catch { setLinkOrderResult([]); }
+    setLinkSearching(false);
   };
 
-  useEffect(() => {
+  const addExtraLink = (order) => {
+    if (extraLinks.find(l => l.order_id === order.id)) return;
+    const remaining = Math.max(0, totalExpense - thisAlloc - extraTotal);
+    setExtraLinks(prev => [...prev, {
+      order_id: order.id,
+      order_num: order.order_num,
+      client: order.client,
+      allocated_amount: remaining > 0 ? String(Math.round(remaining)) : '',
+    }]);
+    setLinkOrderNum('');
+    setLinkOrderResult(null);
+  };
+
+  const removeExtraLink  = (oid) => setExtraLinks(prev => prev.filter(l => l.order_id !== oid));
+  const updateExtraAlloc = (oid, val) => setExtraLinks(prev =>
+    prev.map(l => l.order_id === oid ? { ...l, allocated_amount: val } : l)
+  );
+
+  const handleSave = async () => {
+    setError(null);
+    if (!form.accounting_category_id) return setError('GL Account is required');
+    if (!form.description.trim())     return setError('Description is required');
+    if (!form.amount || parseFloat(form.amount) <= 0) return setError('Amount must be positive');
+    if (form.payment_status === 'paid' && !form.payment_method)
+      return setError('Payment method is required when status is Paid');
+    if (overAllocated) return setError('Total allocated amounts exceed the expense total');
+
+    setSaving(true);
+    try {
+      // Pass ALL links in the POST body — single atomic request
+      const body = {
+        expense_date:           form.expense_date,
+        expense_category:       form.expense_category || null,
+        accounting_category_id: form.accounting_category_id,
+        description:            form.description.trim(),
+        payee_name:             form.payee_name.trim() || null,
+        amount:                 parseFloat(form.amount),
+        allocated_amount:       thisAlloc,
+        payment_status:         form.payment_status,
+        payment_method:         form.payment_status === 'paid' ? form.payment_method : null,
+        payment_reference:      form.payment_reference.trim() || null,
+        receipt_url:            form.receipt_url.trim() || null,
+        notes:                  form.notes.trim() || null,
+        extra_links:            extraLinks.map(l => ({
+          order_id: l.order_id,
+          allocated_amount: parseFloat(l.allocated_amount),
+        })),
+      };
+      const res  = await fetch(`/api/orders/${orderId}/expenses`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save expense');
+      onSaved();
+      onClose();
+    } catch (err) { setError(err.message); }
+    setSaving(false);
+  };
+
+  const inpS = { width: '100%', padding: '8px 10px', border: '1.5px solid #e0e0e0', borderRadius: '6px', fontSize: '13px', background: '#fafafa', boxSizing: 'border-box' };
+  const lblS = { display: 'block', fontSize: '10px', fontWeight: 700, color: '#888', marginBottom: '4px', textTransform: 'uppercase' };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div style={{ background: '#fff', borderRadius: 12, padding: 24, width: '100%', maxWidth: 520, maxHeight: '90vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>Add Direct Expense</h3>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: '#aaa' }}>✕</button>
+        </div>
+
+        {error && (
+          <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: '#dc2626', marginBottom: 14 }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+          <div>
+            <label style={lblS}>Expense Date *</label>
+            <input type="date" value={form.expense_date} onChange={e => set('expense_date', e.target.value)} style={inpS} />
+          </div>
+          <div>
+            <label style={lblS}>Business Category</label>
+            <select value={form.expense_category} onChange={e => set('expense_category', e.target.value)} style={inpS}>
+              <option value="">Select category…</option>
+              {EXPENSE_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={lblS}>GL Account *</label>
+          <select value={form.accounting_category_id} onChange={e => set('accounting_category_id', e.target.value)} style={inpS} disabled={catsLoading}>
+            <option value="">{catsLoading ? 'Loading…' : 'Select GL account…'}</option>
+            {categories.map(c => (
+              <option key={c.id} value={c.id}>{c.label}</option>
+            ))}
+          </select>
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={lblS}>Description *</label>
+          <input value={form.description} onChange={e => set('description', e.target.value)} placeholder="What was this expense for?" style={inpS} />
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+          <div>
+            <label style={lblS}>Payee Name</label>
+            <input value={form.payee_name} onChange={e => set('payee_name', e.target.value)} placeholder="Optional" style={inpS} />
+          </div>
+          <div>
+            <label style={lblS}>Total Amount (KES) *</label>
+            <input type="number" value={form.amount} onChange={e => set('amount', e.target.value)} placeholder="0" style={inpS} />
+          </div>
+        </div>
+
+        {/* Order allocations */}
+        <div style={{ background: '#f8f9fa', border: '1px solid #e8e8e5', borderRadius: 8, padding: 14, marginBottom: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#555', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>Order Allocations</div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <div style={{ flex: 1, fontSize: 12, fontWeight: 600, color: '#374151' }}>
+              {orderNum} <span style={{ color: '#9ca3af', fontWeight: 400 }}>(this order)</span>
+            </div>
+            <div style={{ width: 130 }}>
+              <input
+                type="number"
+                value={form.allocated_amount !== '' ? form.allocated_amount : form.amount}
+                onChange={e => set('allocated_amount', e.target.value)}
+                placeholder={form.amount || '0'}
+                style={{ ...inpS, fontSize: 12 }}
+              />
+            </div>
+          </div>
+
+          {extraLinks.map(l => (
+            <div key={l.order_id} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <div style={{ flex: 1, fontSize: 12, color: '#374151' }}>{l.order_num} — {l.client}</div>
+              <div style={{ width: 130 }}>
+                <input type="number" value={l.allocated_amount} onChange={e => updateExtraAlloc(l.order_id, e.target.value)} placeholder="0" style={{ ...inpS, fontSize: 12 }} />
+              </div>
+              <button onClick={() => removeExtraLink(l.order_id)} style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: 16, padding: '0 4px' }}>×</button>
+            </div>
+          ))}
+
+          {totalExpense > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, paddingTop: 8, borderTop: '1px solid #e8e8e5', color: overAllocated ? '#dc2626' : allocTotal >= totalExpense - 0.01 ? '#16a34a' : '#92400e' }}>
+              <span>{overAllocated ? '⚠ Over-allocated' : allocTotal >= totalExpense - 0.01 ? '✓ Fully allocated' : '⚠ Partially allocated'}</span>
+              <span style={{ fontFamily: 'monospace' }}>KES {Math.round(allocTotal).toLocaleString('en-KE')} / {Math.round(totalExpense).toLocaleString('en-KE')}</span>
+            </div>
+          )}
+
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #e8e8e5' }}>
+            <div style={{ fontSize: 11, color: '#888', marginBottom: 6 }}>Link to another order (optional)</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input value={linkOrderNum} onChange={e => setLinkOrderNum(e.target.value)} onKeyDown={e => e.key === 'Enter' && searchOrder()} placeholder="Order # or client name" style={{ ...inpS, flex: 1, fontSize: 12 }} />
+              <button onClick={searchOrder} disabled={linkSearching} style={{ padding: '8px 14px', border: '1.5px solid #e0e0e0', borderRadius: 6, background: '#fff', fontSize: 12, cursor: 'pointer' }}>
+                {linkSearching ? '…' : 'Search'}
+              </button>
+            </div>
+            {linkOrderResult && (
+              <div style={{ marginTop: 6, border: '1px solid #e8e8e5', borderRadius: 6, overflow: 'hidden' }}>
+                {linkOrderResult.length === 0
+                  ? <div style={{ padding: '8px 12px', fontSize: 12, color: '#9ca3af' }}>No orders found</div>
+                  : linkOrderResult.map(o => (
+                    <div key={o.id} onClick={() => addExtraLink(o)} style={{ padding: '8px 12px', fontSize: 12, cursor: 'pointer', borderBottom: '1px solid #f0f0f0', display: 'flex', justifyContent: 'space-between' }}
+                      onMouseEnter={e => e.currentTarget.style.background = '#f9fafb'}
+                      onMouseLeave={e => e.currentTarget.style.background = ''}>
+                      <span style={{ fontWeight: 600 }}>{o.order_num}</span>
+                      <span style={{ color: '#6b7280' }}>{o.client}</span>
+                    </div>
+                  ))
+                }
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Payment */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+          <div>
+            <label style={lblS}>Payment Status</label>
+            <select value={form.payment_status} onChange={e => set('payment_status', e.target.value)} style={inpS}>
+              <option value="unpaid">Unpaid</option>
+              <option value="paid">Paid</option>
+            </select>
+          </div>
+          <div>
+            <label style={lblS}>Payment Method {form.payment_status === 'paid' ? '*' : ''}</label>
+            <select value={form.payment_method} onChange={e => set('payment_method', e.target.value)} style={{ ...inpS, borderColor: form.payment_status === 'paid' && !form.payment_method ? '#fca5a5' : '#e0e0e0' }} disabled={form.payment_status === 'unpaid'}>
+              <option value="">— None —</option>
+              <option value="cash">Cash</option>
+              <option value="bank">Bank Transfer</option>
+              <option value="chatpesa">Chatpesa</option>
+              <option value="mpesa">M-Pesa</option>
+            </select>
+          </div>
+        </div>
+
+        {form.payment_status === 'paid' && (
+          <div style={{ marginBottom: 12 }}>
+            <label style={lblS}>Payment Reference</label>
+            <input value={form.payment_reference} onChange={e => set('payment_reference', e.target.value)} placeholder="Receipt / transaction ref" style={inpS} />
+          </div>
+        )}
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={lblS}>Receipt URL</label>
+          <input value={form.receipt_url} onChange={e => set('receipt_url', e.target.value)} placeholder="https://… (optional)" style={inpS} />
+        </div>
+
+        <div style={{ marginBottom: 18 }}>
+          <label style={lblS}>Notes</label>
+          <textarea value={form.notes} onChange={e => set('notes', e.target.value)} rows={2} placeholder="Optional" style={{ ...inpS, resize: 'vertical' }} />
+        </div>
+
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button onClick={handleSave} disabled={saving || overAllocated}
+            style={{ flex: 1, padding: '10px', background: saving || overAllocated ? '#ccc' : '#E8512A', color: '#fff', border: 'none', borderRadius: 7, fontSize: 13, fontWeight: 700, cursor: saving || overAllocated ? 'default' : 'pointer' }}>
+            {saving ? 'Saving…' : 'Save Expense'}
+          </button>
+          <button onClick={onClose} style={{ flex: 1, padding: '10px', background: '#f5f5f5', color: '#666', border: 'none', borderRadius: 7, fontSize: 13, cursor: 'pointer' }}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReverseExpenseModal({ expenseId, description, onReversed, onClose }) {
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError]   = useState(null);
+
+  const handleReverse = async () => {
+    if (!reason.trim()) return setError('Reversal reason is required');
+    setSaving(true);
+    try {
+      const res  = await fetch(`/api/expenses/${expenseId}?reason=${encodeURIComponent(reason.trim())}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Reversal failed');
+      onReversed();
+      onClose();
+    } catch (err) { setError(err.message); }
+    setSaving(false);
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div style={{ background: '#fff', borderRadius: 12, padding: 24, width: '100%', maxWidth: 400 }}>
+        <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>Reverse Expense</h3>
+        <p style={{ fontSize: 12, color: '#6b7280', marginBottom: 14 }}>
+          Reversing "<strong>{description}</strong>" will exclude it from the P&L. The record stays visible but is marked reversed.
+        </p>
+        {error && <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: '#dc2626', marginBottom: 12 }}>{error}</div>}
+        <label style={{ display: 'block', fontSize: 10, fontWeight: 700, color: '#888', textTransform: 'uppercase', marginBottom: 4 }}>Reversal Reason *</label>
+        <textarea value={reason} onChange={e => setReason(e.target.value)} rows={2} placeholder="Entered in error / duplicate / etc."
+          style={{ width: '100%', padding: '8px 10px', border: '1.5px solid #e0e0e0', borderRadius: 6, fontSize: 13, marginBottom: 14, resize: 'vertical', boxSizing: 'border-box' }} />
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button onClick={handleReverse} disabled={saving}
+            style={{ flex: 1, padding: 10, background: saving ? '#ccc' : '#dc2626', color: '#fff', border: 'none', borderRadius: 7, fontSize: 13, fontWeight: 700, cursor: saving ? 'default' : 'pointer' }}>
+            {saving ? 'Reversing…' : 'Confirm Reversal'}
+          </button>
+          <button onClick={onClose} style={{ flex: 1, padding: 10, background: '#f5f5f5', color: '#666', border: 'none', borderRadius: 7, fontSize: 13, cursor: 'pointer' }}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PnLTab({ orderId, orderNum, contractTotal, itemsSubtotal, chargeItems, payments, userRole }) {
+  const [purchases, setPurchases]            = useState([]);
+  const [labourAllocations, setLabourAllocs] = useState([]);
+  const [directExpenses, setDirectExpenses]  = useState([]);
+  const [totals, setTotals]                  = useState({ totalCost: 0, totalPurchaseCost: 0, totalLabourCost: 0, totalDirectExpenses: 0, totalPaidAP: 0, outstandingAP: 0 });
+  const [hasUnallocatedPurchases, setHasUnallocated] = useState(false);
+  const [loading, setLoading]                = useState(true);
+  const [fetchError, setFetchError]          = useState(null);
+  const [pdfLoading, setPdfLoading]          = useState(false);
+  const [subTab, setSubTab]                  = useState('supplier');
+  const [showExpenseModal, setShowExpenseModal] = useState(false);
+  const [reverseTarget, setReverseTarget]    = useState(null);
+
+  const canWrite = WRITE_ROLES_PNL.includes(userRole);
+
+  const load = () => {
+    setLoading(true);
     fetch(`/api/orders/${orderId}/pnl`)
       .then(r => r.json())
       .then(d => {
         if (d.success) {
           setPurchases(d.purchases || []);
           setLabourAllocs(d.labourAllocations || []);
-          setTotals(d.totals || { totalCost: 0, totalPurchaseCost: 0, totalLabourCost: 0, totalPaidAP: 0, outstandingAP: 0 });
+          setDirectExpenses(d.directExpenses || []);
+          setTotals(d.totals || {});
           setHasUnallocated(!!d.hasUnallocatedPurchases);
         } else {
           setFetchError(d.error || 'Failed to load P&L data');
@@ -740,208 +1134,312 @@ function PnLTab({ orderId, contractTotal, itemsSubtotal, chargeItems, payments, 
         setLoading(false);
       })
       .catch(() => { setFetchError('Failed to load P&L data'); setLoading(false); });
-  }, [orderId]);
+  };
 
-  const totalPaid   = (payments || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
-  const totalCost   = totals.totalCost;
-  const grossProfit = contractTotal - totalCost;
-  const margin      = contractTotal > 0 ? (grossProfit / contractTotal) * 100 : 0;
-  const profitColor = grossProfit >= 0 ? '#16a34a' : '#dc2626';
-  const chargesSubtotalLocal = (chargeItems || []).reduce((s, i) => s + (parseFloat(i.unit_price) || 0), 0);
-  void chargesSubtotalLocal; // used via chargeItems map below
+  useEffect(() => { load(); }, [orderId]);
+
+  const exportPdf = async () => {
+    setPdfLoading(true);
+    try {
+      const res = await fetch(`/api/orders/${orderId}/pnl/pdf`);
+      if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'PDF generation failed'); }
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      const cd   = res.headers.get('content-disposition') || '';
+      const m    = cd.match(/filename="?([^"]+)"?/);
+      a.download = m ? m[1] : `${orderId}_PnL.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) { alert('PDF export failed: ' + err.message); }
+    setPdfLoading(false);
+  };
+
+  const totalPaid   = (payments || []).filter(p => !p.reversed_at).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+  const grossProfit = contractTotal - (totals.totalPurchaseCost || 0) - (totals.totalLabourCost || 0);
+  const orderProfit = grossProfit - (totals.totalDirectExpenses || 0);
+  const margin      = contractTotal > 0 ? (orderProfit / contractTotal) * 100 : 0;
+  const profitColor = orderProfit >= 0 ? '#16a34a' : '#dc2626';
 
   const kpiCard = (label, value, color = '#111', sub = null) => (
-    <div style={{ background: '#fff', border: '1px solid #e8e8e5', borderRadius: '10px', padding: '16px 18px', textAlign: 'center', flex: '1 1 0' }}>
-      <div style={{ fontSize: '10px', color: '#6b7280', fontWeight: 700, textTransform: 'uppercase', marginBottom: '6px', letterSpacing: '0.05em' }}>{label}</div>
-      <div style={{ fontSize: '20px', fontWeight: 800, fontFamily: 'monospace', color }}>{value}</div>
-      {sub && <div style={{ fontSize: '10px', color: '#9ca3af', marginTop: '4px' }}>{sub}</div>}
+    <div style={{ background: '#fff', border: '1px solid #e8e8e5', borderRadius: '10px', padding: '14px 16px', textAlign: 'center', flex: '1 1 0', minWidth: 0 }}>
+      <div style={{ fontSize: '10px', color: '#6b7280', fontWeight: 700, textTransform: 'uppercase', marginBottom: '5px', letterSpacing: '0.05em' }}>{label}</div>
+      <div style={{ fontSize: '18px', fontWeight: 800, fontFamily: 'monospace', color }}>{value}</div>
+      {sub && <div style={{ fontSize: '10px', color: '#9ca3af', marginTop: '3px' }}>{sub}</div>}
     </div>
   );
 
-  if (loading) return <p style={{ fontSize: '13px', color: '#bbb', padding: '24px 0' }}>Loading P&L data...</p>;
+  if (loading)    return <p style={{ fontSize: '13px', color: '#bbb', padding: '24px 0' }}>Loading P&L data…</p>;
   if (fetchError) return <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '8px', padding: '12px 16px', fontSize: '13px', color: '#dc2626' }}>⚠ {fetchError}</div>;
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+  const tabBtn = (key, label, count) => (
+    <button key={key} onClick={() => setSubTab(key)} style={{
+      padding: '7px 14px', borderRadius: 6, border: '1.5px solid',
+      borderColor: subTab === key ? '#1a1a1a' : '#e0e0e0',
+      background: subTab === key ? '#1a1a1a' : '#fff',
+      color: subTab === key ? '#fff' : '#666',
+      fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5,
+    }}>
+      {label}
+      {count != null && (
+        <span style={{ background: subTab === key ? 'rgba(255,255,255,0.2)' : '#f3f4f6', color: subTab === key ? '#fff' : '#6b7280', borderRadius: 10, padding: '0 6px', fontSize: 10, fontWeight: 700 }}>
+          {count}
+        </span>
+      )}
+    </button>
+  );
 
-      {/* Export button — only for admin, production_manager, head_of_sales */}
-      {PDF_ALLOWED_ROLES.includes(userRole) && (
-        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <button
-            onClick={exportPdf}
-            disabled={pdfLoading}
-            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '7px', border: '1.5px solid #E8512A', background: pdfLoading ? '#f9fafb' : '#fff', color: pdfLoading ? '#aaa' : '#E8512A', fontWeight: 700, fontSize: '13px', cursor: pdfLoading ? 'default' : 'pointer' }}
-          >
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+
+      {showExpenseModal && (
+        <DirectExpenseModal orderId={orderId} orderNum={orderNum} onSaved={load} onClose={() => setShowExpenseModal(false)} />
+      )}
+      {reverseTarget && (
+        <ReverseExpenseModal expenseId={reverseTarget.id} description={reverseTarget.description} onReversed={load} onClose={() => setReverseTarget(null)} />
+      )}
+
+      {/* Sub-tab bar + PDF button */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {tabBtn('supplier', 'Supplier Costs', purchases.length + labourAllocations.length)}
+          {tabBtn('expenses', 'Direct Expenses', directExpenses.length)}
+          {tabBtn('summary',  'Profit Summary')}
+        </div>
+        {PDF_ALLOWED_ROLES.includes(userRole) && (
+          <button onClick={exportPdf} disabled={pdfLoading}
+            style={{ padding: '7px 16px', borderRadius: 7, border: '1.5px solid #E8512A', background: '#fff', color: pdfLoading ? '#aaa' : '#E8512A', fontWeight: 700, fontSize: 12, cursor: pdfLoading ? 'default' : 'pointer' }}>
             {pdfLoading ? 'Generating…' : '↓ Export PDF'}
           </button>
-        </div>
-      )}
-
-      {/* Unallocated-purchase warning — shown when any linked purchase has no split amounts */}
-      {hasUnallocatedPurchases && (
-        <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '8px', padding: '10px 14px', fontSize: '12px', color: '#92400e', lineHeight: 1.5 }}>
-          ⚠ One or more linked purchases have no cost split set. The full purchase amount is shown here, which may overstate costs if the purchase is shared across multiple orders.
-          Go to the <strong>Supplier profile → Purchases tab</strong> and click <strong>Edit order links</strong> to allocate amounts.
-        </div>
-      )}
-
-      {/* KPI row */}
-      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-        {kpiCard('Contract Total', fmtKES(contractTotal))}
-        {kpiCard('Total Costs', fmtKES(totalCost), '#E8512A')}
-        {kpiCard('Gross Profit', fmtKES(grossProfit), profitColor)}
-        {kpiCard('Gross Margin', `${Math.round(margin)}%`, profitColor, grossProfit < 0 ? 'Loss-making' : margin >= 50 ? 'Healthy' : 'Low margin')}
+        )}
       </div>
 
-      {/* Revenue breakdown */}
-      <div style={{ background: '#fff7ed', border: '2px solid #E8512A', borderRadius: '10px', padding: '18px 22px' }}>
-        <div style={{ fontSize: '11px', fontWeight: 700, color: '#92400e', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px' }}>Revenue</div>
-        <div style={{ fontSize: '13px', color: '#374151' }}>
-          {itemsSubtotal > 0 && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-              <span>Items subtotal</span>
-              <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>KES {Math.round(itemsSubtotal).toLocaleString('en-KE')}</span>
+      {/* KPI bar */}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        {kpiCard('Contract', fmtKES(contractTotal))}
+        {kpiCard('Supplier + Labour', fmtKES((totals.totalPurchaseCost || 0) + (totals.totalLabourCost || 0)), '#E8512A')}
+        {kpiCard('Direct Expenses', fmtKES(totals.totalDirectExpenses || 0), '#9333ea')}
+        {kpiCard(orderProfit >= 0 ? 'Order Profit' : 'Order Loss', fmtKES(Math.abs(orderProfit)), profitColor, `${Math.round(margin)}% margin`)}
+      </div>
+
+      {/* ── SUPPLIER COSTS ── */}
+      {subTab === 'supplier' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {hasUnallocatedPurchases && (
+            <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '10px 14px', fontSize: 12, color: '#92400e' }}>
+              ⚠ One or more linked purchases have no cost split set — full purchase total may overstate costs.
+              Go to <strong>Suppliers → Purchase → Edit order links</strong> to allocate amounts.
             </div>
           )}
-          {(chargeItems || []).map((ci, idx) => (
-            <div key={ci.id || idx} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-              <span>{ci.category}</span>
-              <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>KES {Math.round(parseFloat(ci.unit_price) || 0).toLocaleString('en-KE')}</span>
+
+          <div style={{ background: '#fff', border: '1px solid #e8e8e5', borderRadius: 10, padding: '16px 20px' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>
+              Supplier Purchases ({purchases.length})
             </div>
-          ))}
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, borderTop: '1px solid #fbd5b0', paddingTop: '8px', marginTop: '4px', marginBottom: '12px' }}>
-            <span>Contract Total</span>
-            <span style={{ fontFamily: 'monospace' }}>KES {Math.round(contractTotal).toLocaleString('en-KE')}</span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px', color: '#16a34a' }}>
-            <span>Received from client</span>
-            <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>KES {Math.round(totalPaid).toLocaleString('en-KE')}</span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', color: contractTotal - totalPaid > 0.01 ? '#E8512A' : '#16a34a' }}>
-            <span>Outstanding (receivable)</span>
-            <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>KES {Math.round(Math.max(0, contractTotal - totalPaid)).toLocaleString('en-KE')}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Cost breakdown */}
-      <div style={{ background: '#fff', border: '1px solid #e8e8e5', borderRadius: '10px', padding: '18px 22px' }}>
-        <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '14px' }}>
-          Supplier Costs ({purchases.length} purchase{purchases.length !== 1 ? 's' : ''} linked)
-        </div>
-
-        {purchases.length === 0 ? (
-          <p style={{ fontSize: '13px', color: '#9ca3af', fontStyle: 'italic' }}>
-            No supplier costs linked to this order yet. Link purchases from the Suppliers module.
-          </p>
-        ) : (
-          <>
-            {/* Header row */}
-            <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr 2fr 110px', gap: '8px', fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px', paddingBottom: '6px', borderBottom: '1px solid #f0ede8' }}>
-              <span>Date</span>
-              <span>Supplier</span>
-              <span>Description</span>
-              <span style={{ textAlign: 'right' }}>Amount</span>
-            </div>
-
-            {/* Purchase rows */}
-            {purchases.map(p => (
-              <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '90px 1fr 2fr 110px', gap: '8px', fontSize: '13px', color: '#374151', padding: '8px 0', borderBottom: '1px solid #f9f8f6', alignItems: 'start' }}>
-                <span style={{ fontSize: '11px', color: '#9ca3af' }}>{fmtDate(p.purchase_date)}</span>
-                <span style={{ fontWeight: 600, color: '#111' }}>{p.supplier?.name || '—'}</span>
-                <span style={{ color: '#6b7280', fontSize: '12px' }}>{p.items_bought || '—'}</span>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontFamily: 'monospace', fontWeight: 700 }}>
-                    KES {Math.round(p.total_amount).toLocaleString('en-KE')}
-                  </div>
-                  {/* Hint when this is a split allocation, not the full purchase */}
-                  {p.allocated_amount != null && p.purchase_total > p.allocated_amount + 0.01 && (
-                    <div style={{ fontSize: '10px', color: '#9ca3af', marginTop: '1px' }}>
-                      of {Math.round(p.purchase_total).toLocaleString('en-KE')} total
+            {purchases.length === 0 ? (
+              <p style={{ fontSize: 13, color: '#9ca3af', fontStyle: 'italic' }}>No supplier costs linked. Link purchases from the Suppliers module.</p>
+            ) : (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr 2fr 110px', gap: 8, fontSize: 10, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid #f0ede8' }}>
+                  <span>Date</span><span>Supplier</span><span>Description</span><span style={{ textAlign: 'right' }}>Amount</span>
+                </div>
+                {purchases.map(p => (
+                  <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '80px 1fr 2fr 110px', gap: 8, fontSize: 13, padding: '7px 0', borderBottom: '1px solid #f9f8f6', alignItems: 'start' }}>
+                    <span style={{ fontSize: 11, color: '#9ca3af' }}>{fmtDate(p.purchase_date)}</span>
+                    <span style={{ fontWeight: 600, color: '#111' }}>{p.supplier?.name || '—'}</span>
+                    <span style={{ color: '#6b7280', fontSize: 12 }}>{p.items_bought || '—'}</span>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontFamily: 'monospace', fontWeight: 700 }}>KES {Math.round(p.total_amount).toLocaleString('en-KE')}</div>
+                      {p.allocated_amount != null && p.purchase_total > p.allocated_amount + 0.01 && (
+                        <div style={{ fontSize: 10, color: '#9ca3af' }}>of {Math.round(p.purchase_total).toLocaleString('en-KE')} total</div>
+                      )}
                     </div>
-                  )}
+                  </div>
+                ))}
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 13, paddingTop: 10, marginTop: 4, borderTop: '1px solid #e8e8e5', color: '#6b7280' }}>
+                  <span>Supplier Costs Total</span>
+                  <span style={{ fontFamily: 'monospace' }}>KES {Math.round(totals.totalPurchaseCost || 0).toLocaleString('en-KE')}</span>
                 </div>
-              </div>
-            ))}
-
-            {/* Supplier total row */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: '13px', paddingTop: '10px', marginTop: '4px', borderTop: '1px solid #e8e8e5', color: '#6b7280' }}>
-              <span>Supplier Costs</span>
-              <span style={{ fontFamily: 'monospace' }}>KES {Math.round(totals.totalPurchaseCost || totalCost).toLocaleString('en-KE')}</span>
-            </div>
-
-            {/* AP status note */}
-            {totals.outstandingAP > 0.01 && (
-              <div style={{ marginTop: '10px', fontSize: '12px', color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '6px', padding: '8px 12px' }}>
-                ⚠ KES {Math.round(totals.outstandingAP).toLocaleString('en-KE')} still owed to suppliers (outstanding AP)
-              </div>
+                {totals.outstandingAP > 0.01 && (
+                  <div style={{ marginTop: 10, fontSize: 12, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '8px 12px' }}>
+                    ⚠ KES {Math.round(totals.outstandingAP).toLocaleString('en-KE')} still owed to suppliers (outstanding AP)
+                  </div>
+                )}
+              </>
             )}
-          </>
-        )}
-      </div>
+          </div>
 
-      {/* Skilled Labour Costs */}
-      <div style={{ background: '#fff', border: '1px solid #e8e8e5', borderRadius: '10px', padding: '18px 22px' }}>
-        <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '14px' }}>
-          Skilled Labour ({labourAllocations.length} worker{labourAllocations.length !== 1 ? 's' : ''} allocated)
-        </div>
-        {labourAllocations.length === 0 ? (
-          <p style={{ fontSize: '13px', color: '#9ca3af', fontStyle: 'italic' }}>
-            No skilled labour costs linked to this order. Add order links from the Payroll module → Entries tab.
-          </p>
-        ) : (
-          <>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 110px', gap: '8px', fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px', paddingBottom: '6px', borderBottom: '1px solid #f0ede8' }}>
-              <span>Worker</span>
-              <span>Run</span>
-              <span>Period</span>
-              <span style={{ textAlign: 'right' }}>Amount</span>
+          <div style={{ background: '#fff', border: '1px solid #e8e8e5', borderRadius: 10, padding: '16px 20px' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>
+              Skilled Labour ({labourAllocations.length})
             </div>
-            {labourAllocations.map((l, i) => (
-              <div key={l.id || i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 110px', gap: '8px', fontSize: '13px', color: '#374151', padding: '8px 0', borderBottom: '1px solid #f9f8f6', alignItems: 'center' }}>
-                <span style={{ fontWeight: 600 }}>{l.worker_name}</span>
-                <span style={{ fontSize: '12px', color: '#6b7280' }}>
-                  {l.run_num || '—'}
-                  {l.run_status && <span style={{ marginLeft: 6, fontSize: 10, background: '#f3f4f6', borderRadius: 4, padding: '1px 5px' }}>{l.run_status}</span>}
-                </span>
-                <span style={{ fontSize: '11px', color: '#9ca3af' }}>
-                  {l.period_start && l.period_end ? `${new Date(l.period_start + 'T00:00:00Z').toLocaleDateString('en-KE', { day: '2-digit', month: 'short' })} – ${new Date(l.period_end + 'T00:00:00Z').toLocaleDateString('en-KE', { day: '2-digit', month: 'short' })}` : '—'}
-                </span>
-                <div style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 700 }}>
-                  KES {Math.round(l.allocated_amount).toLocaleString('en-KE')}
+            {labourAllocations.length === 0 ? (
+              <p style={{ fontSize: 13, color: '#9ca3af', fontStyle: 'italic' }}>No skilled labour allocated. Add order links from Payroll → Entries.</p>
+            ) : (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 110px', gap: 8, fontSize: 10, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid #f0ede8' }}>
+                  <span>Worker</span><span>Run</span><span>Period</span><span style={{ textAlign: 'right' }}>Amount</span>
                 </div>
-              </div>
-            ))}
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: '13px', paddingTop: '10px', marginTop: '4px', borderTop: '1px solid #e8e8e5', color: '#6b7280' }}>
-              <span>Skilled Labour Total</span>
-              <span style={{ fontFamily: 'monospace' }}>KES {Math.round(totals.totalLabourCost || 0).toLocaleString('en-KE')}</span>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Combined total cost line */}
-      {(purchases.length > 0 || labourAllocations.length > 0) && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, fontSize: '14px', padding: '12px 4px', borderTop: '2px solid #e8e8e5', color: '#E8512A' }}>
-          <span>Total Costs (materials + labour)</span>
-          <span style={{ fontFamily: 'monospace' }}>KES {Math.round(totalCost).toLocaleString('en-KE')}</span>
+                {labourAllocations.map((l, i) => (
+                  <div key={l.id || i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 110px', gap: 8, fontSize: 13, padding: '7px 0', borderBottom: '1px solid #f9f8f6', alignItems: 'center' }}>
+                    <span style={{ fontWeight: 600 }}>{l.worker_name}</span>
+                    <span style={{ fontSize: 12, color: '#6b7280' }}>
+                      {l.run_num || '—'}
+                      {l.run_status && <span style={{ marginLeft: 6, fontSize: 10, background: '#f3f4f6', borderRadius: 4, padding: '1px 5px' }}>{l.run_status}</span>}
+                    </span>
+                    <span style={{ fontSize: 11, color: '#9ca3af' }}>
+                      {l.period_start && l.period_end
+                        ? `${new Date(l.period_start + 'T00:00:00Z').toLocaleDateString('en-KE', { day: '2-digit', month: 'short' })} – ${new Date(l.period_end + 'T00:00:00Z').toLocaleDateString('en-KE', { day: '2-digit', month: 'short' })}`
+                        : '—'}
+                    </span>
+                    <div style={{ textAlign: 'right', fontFamily: 'monospace', fontWeight: 700 }}>KES {Math.round(l.allocated_amount).toLocaleString('en-KE')}</div>
+                  </div>
+                ))}
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 13, paddingTop: 10, marginTop: 4, borderTop: '1px solid #e8e8e5', color: '#6b7280' }}>
+                  <span>Labour Total</span>
+                  <span style={{ fontFamily: 'monospace' }}>KES {Math.round(totals.totalLabourCost || 0).toLocaleString('en-KE')}</span>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
 
-      {/* Bottom profit summary */}
-      {contractTotal > 0 && (
-        <div style={{ background: grossProfit >= 0 ? '#f0fdf4' : '#fef2f2', border: `2px solid ${profitColor}`, borderRadius: '10px', padding: '16px 22px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div>
-            <div style={{ fontSize: '11px', fontWeight: 700, color: grossProfit >= 0 ? '#15803d' : '#b91c1c', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '4px' }}>
-              {grossProfit >= 0 ? '✓ Gross Profit' : '✗ Gross Loss'}
+      {/* ── DIRECT EXPENSES ── */}
+      {subTab === 'expenses' && (
+        <div style={{ background: '#fff', border: '1px solid #e8e8e5', borderRadius: 10, padding: '16px 20px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Direct Order Expenses</div>
+            {canWrite && (
+              <button onClick={() => setShowExpenseModal(true)}
+                style={{ padding: '6px 14px', borderRadius: 6, border: '1.5px solid #E8512A', background: '#E8512A', color: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                + Direct Expense
+              </button>
+            )}
+          </div>
+
+          {directExpenses.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '28px 0', color: '#9ca3af' }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>📋</div>
+              <div style={{ fontSize: 13 }}>No direct expenses yet.</div>
+              {canWrite && <div style={{ fontSize: 12, marginTop: 4 }}>Click <strong>+ Direct Expense</strong> to add one.</div>}
             </div>
-            <div style={{ fontSize: '22px', fontWeight: 900, fontFamily: 'monospace', color: profitColor }}>
-              KES {Math.round(Math.abs(grossProfit)).toLocaleString('en-KE')}
+          ) : (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '80px 140px 1fr 90px 80px 80px', gap: 8, fontSize: 10, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8, paddingBottom: 6, borderBottom: '1px solid #f0ede8' }}>
+                <span>Date</span><span>Category</span><span>Description</span><span style={{ textAlign: 'right' }}>Amount</span><span style={{ textAlign: 'center' }}>Status</span><span></span>
+              </div>
+              {directExpenses.map(e => {
+                const isReversed = !!e.reversed_at;
+                const rowStyle = isReversed ? { opacity: 0.55, background: '#fafafa' } : {};
+                const textStyle = isReversed ? { textDecoration: 'line-through', color: '#9ca3af' } : {};
+                return (
+                <div key={e.id} style={{ display: 'grid', gridTemplateColumns: '80px 140px 1fr 90px 100px 80px', gap: 8, fontSize: 13, padding: '9px 0', borderBottom: '1px solid #f9f8f6', alignItems: 'center', ...rowStyle }}>
+                  <span style={{ fontSize: 11, color: '#9ca3af', ...textStyle }}>{fmtDate(e.expense_date)}</span>
+                  <div style={{ ...textStyle }}>
+                    {e.expense_category && (
+                      <div style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>{e.expense_category}</div>
+                    )}
+                    <div style={{ fontSize: 11, color: '#9ca3af' }}>{e.category}</div>
+                  </div>
+                  <div>
+                    <div style={{ color: '#374151', fontSize: 12, ...textStyle }}>{e.description}</div>
+                    {e.payee_name && <div style={{ fontSize: 11, color: '#9ca3af' }}>Payee: {e.payee_name}</div>}
+                    {isReversed && (
+                      <div style={{ fontSize: 10, color: '#dc2626', marginTop: 2 }} title={e.reversal_reason}>
+                        Reversed{e.reversal_reason ? `: ${e.reversal_reason}` : ''}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 13, ...textStyle }}>KES {Math.round(e.allocated_amount).toLocaleString('en-KE')}</div>
+                    {e.allocated_amount < e.amount - 0.01 && (
+                      <div style={{ fontSize: 10, color: '#9ca3af' }}>of {Math.round(e.amount).toLocaleString('en-KE')}</div>
+                    )}
+                  </div>
+                  <div style={{ textAlign: 'center' }}>
+                    {isReversed ? (
+                      <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 10, background: '#fee2e2', color: '#dc2626' }}>
+                        Reversed
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 10, background: e.payment_status === 'paid' ? '#dcfce7' : '#fef3c7', color: e.payment_status === 'paid' ? '#15803d' : '#92400e' }}>
+                        {e.payment_status === 'paid' ? 'Paid' : 'Unpaid'}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    {canWrite && userRole === 'admin' && !isReversed && (
+                      <button onClick={() => setReverseTarget({ id: e.id, description: e.description })}
+                        style={{ fontSize: 11, padding: '3px 8px', border: '1px solid #fca5a5', borderRadius: 5, color: '#dc2626', background: '#fef2f2', cursor: 'pointer' }}>
+                        Reverse
+                      </button>
+                    )}
+                  </div>
+                </div>
+                );
+              })}
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, fontSize: 13, paddingTop: 10, marginTop: 4, borderTop: '2px solid #e8e8e5', color: '#9333ea' }}>
+                <span>Direct Expenses Total</span>
+                <span style={{ fontFamily: 'monospace' }}>KES {Math.round(totals.totalDirectExpenses || 0).toLocaleString('en-KE')}</span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ── PROFIT SUMMARY ── */}
+      {subTab === 'summary' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ background: '#fff', border: '1px solid #e8e8e5', borderRadius: 10, overflow: 'hidden' }}>
+            {[
+              { label: 'Contract Value',      value: contractTotal,                                 bold: true, color: '#111' },
+              { label: '− Supplier Costs',    value: -(totals.totalPurchaseCost || 0),             color: '#E8512A' },
+              { label: '− Skilled Labour',    value: -(totals.totalLabourCost || 0),               color: '#E8512A' },
+              { label: '= Gross Profit',      value: grossProfit,  bold: true, divider: true,      color: grossProfit >= 0 ? '#16a34a' : '#dc2626' },
+              { label: '− Direct Expenses',   value: -(totals.totalDirectExpenses || 0),           color: '#9333ea' },
+              { label: '= Order Profit',      value: orderProfit,  bold: true, divider: true, large: true, color: orderProfit >= 0 ? '#16a34a' : '#dc2626' },
+            ].map((row, i) => (
+              <div key={i} style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                padding: '12px 20px',
+                borderTop: row.divider ? '2px solid #e8e8e5' : i > 0 ? '1px solid #f5f5f5' : 'none',
+                background: row.large ? (orderProfit >= 0 ? '#f0fdf4' : '#fef2f2') : '#fff',
+              }}>
+                <span style={{ fontSize: row.large ? 14 : 13, fontWeight: row.bold ? 700 : 400, color: row.bold ? row.color : '#374151' }}>{row.label}</span>
+                <span style={{ fontFamily: 'monospace', fontWeight: row.bold ? 800 : 600, fontSize: row.large ? 18 : 13, color: row.color }}>
+                  KES {Math.round(Math.abs(row.value)).toLocaleString('en-KE')}
+                </span>
+              </div>
+            ))}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', background: profitColor + '18', borderTop: '1px solid #e8e8e5' }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase' }}>Order Margin</span>
+              <span style={{ fontFamily: 'monospace', fontWeight: 900, fontSize: 24, color: profitColor }}>{Math.round(margin)}%</span>
             </div>
           </div>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', marginBottom: '4px' }}>Gross Margin</div>
-            <div style={{ fontSize: '32px', fontWeight: 900, fontFamily: 'monospace', color: profitColor }}>{Math.round(margin)}%</div>
+
+          <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 10, padding: '16px 20px' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#92400e', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>Revenue</div>
+            {itemsSubtotal > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 13, color: '#374151' }}>
+                <span>Items subtotal</span><span style={{ fontFamily: 'monospace', fontWeight: 600 }}>KES {Math.round(itemsSubtotal).toLocaleString('en-KE')}</span>
+              </div>
+            )}
+            {(chargeItems || []).map((ci, idx) => (
+              <div key={ci.id || idx} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 13, color: '#374151' }}>
+                <span>{ci.category}</span><span style={{ fontFamily: 'monospace', fontWeight: 600 }}>KES {Math.round(parseFloat(ci.unit_price) || 0).toLocaleString('en-KE')}</span>
+              </div>
+            ))}
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 800, borderTop: '1px solid #fbd5b0', paddingTop: 8, marginTop: 4, marginBottom: 10, fontSize: 13 }}>
+              <span>Contract Total</span><span style={{ fontFamily: 'monospace' }}>KES {Math.round(contractTotal).toLocaleString('en-KE')}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: 13, color: '#16a34a' }}>
+              <span>Received from client</span><span style={{ fontFamily: 'monospace', fontWeight: 600 }}>KES {Math.round(totalPaid).toLocaleString('en-KE')}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: contractTotal - totalPaid > 0.01 ? '#E8512A' : '#16a34a' }}>
+              <span>Outstanding (receivable)</span><span style={{ fontFamily: 'monospace', fontWeight: 600 }}>KES {Math.round(Math.max(0, contractTotal - totalPaid)).toLocaleString('en-KE')}</span>
+            </div>
           </div>
         </div>
       )}
@@ -1965,6 +2463,7 @@ export default function OrderFormPage() {
           <div style={card}>
             <PnLTab
               orderId={id}
+              orderNum={order?.order_num || id}
               contractTotal={contractTotal}
               itemsSubtotal={itemsSubtotal}
               chargeItems={displayItems.filter(i => isChargeItem(i))}

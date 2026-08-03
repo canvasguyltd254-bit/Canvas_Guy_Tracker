@@ -120,7 +120,7 @@ export default function Dashboard() {
       const [ordRes, actRes, payRes, delRes, itemRes] = await Promise.all([
         sb.from('orders').select('*').order('created_at', { ascending: false }),
         sb.from('order_activities').select('*').order('created_at', { ascending: false }).limit(25),
-        sb.from('order_payments').select('order_id, amount'),
+        sb.from('order_payments').select('order_id, amount').is('reversed_at', null),
         sb.from('order_deliveries').select('order_id, quantity'),
         sb.from('order_items').select('order_id, quantity, category'),
       ]);

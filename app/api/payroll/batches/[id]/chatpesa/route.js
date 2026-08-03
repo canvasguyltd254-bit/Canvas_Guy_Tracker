@@ -28,7 +28,7 @@ import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-aut
 export async function GET(request, { params }) {
   try {
     const { user, role } = await getAuthContext();
-    const authError = requireRole(user, role, ['admin']);
+    const authError = requireRole(user, role, ['admin', 'head_of_sales', 'production_manager']);
     if (authError) return authError;
 
     const batchId = params.id;

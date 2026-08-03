@@ -101,7 +101,8 @@ export async function POST(request, { params }) {
     const { data: payments } = await serviceClient
       .from('order_payments')
       .select('amount')
-      .eq('order_id', orderId);
+      .eq('order_id', orderId)
+      .is('reversed_at', null);
 
     const totalPaid = (payments || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
     const orderTotal = parseFloat(order.total_value) || 0;

@@ -53,6 +53,7 @@ export async function GET(_req, { params }) {
         )
       `)
       .eq('order_id', params.id)
+      .is('deleted_at', null)
       .order('batch_number', { ascending: true });
 
     if (error) {

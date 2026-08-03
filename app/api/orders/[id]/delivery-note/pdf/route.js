@@ -111,13 +111,17 @@ export async function GET(request, { params }) {
       .eq('order_id', orderId)
       .order('payment_date');
 
+    // Reversed payments no longer count toward the balance shown on the delivery
+    // note — the reversal journal already backs the receipt out in the GL.
+    const activePayments = (payments || []).filter(p => !p.reversed_at);
+
     // ── Build PDF data ──────────────────────────────────────────────────────
     const pdfData = {
       deliveryNote: {
         order,
         items,
         batch,
-        payments: payments || [],
+        payments: activePayments,
         showAmounts,
       },
     };

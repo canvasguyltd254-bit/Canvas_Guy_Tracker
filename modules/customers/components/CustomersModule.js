@@ -3,28 +3,21 @@ import { useState, useEffect, useMemo } from "react";
 import { createClient } from "@/shared/supabase/client";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/shared/context/AuthContext";
+import {
+  C, Btn, Badge, Modal, PageHeader, StatCard, TabBar,
+  Table, Th, Td, Field, TInput, TSelect, TArea,
+  Notice, Empty, Loading, Mono, fmtKes, fmtDate,
+} from "@/shared/ui/ds";
 
 const WRITE_ROLES = ["admin", "production_manager", "head_of_sales", "sales"];
 const VALID_TERMS = ["COD", "7 Days", "30 Days", "60 Days"];
 
-const fmt  = (n) => "KSh " + Number(n || 0).toLocaleString("en-KE", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 const fmtN = (n) => Number(n || 0).toLocaleString("en-KE", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
-const fmtDate = (d) => {
-  if (!d) return "—";
-  const dd = new Date(String(d).length <= 10 ? d + "T12:00:00" : d);
-  return dd.toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" });
-};
 
 const EMPTY_FORM = {
   name: "", contact_person: "", phone: "", email: "",
   address: "", kra_pin: "", credit_limit: "", credit_terms: "COD",
   opening_balance: "", opening_balance_date: "", notes: "",
-};
-
-const ss = {
-  label:    { display: "block", fontSize: "11px", fontWeight: 600, color: "#888", marginBottom: "5px", textTransform: "uppercase", letterSpacing: "0.5px" },
-  input:    { width: "100%", padding: "9px 12px", border: "1.5px solid #e0e0e0", borderRadius: "6px", fontSize: "14px", background: "#fafafa", boxSizing: "border-box", fontFamily: "inherit" },
-  textarea: { width: "100%", padding: "9px 12px", border: "1.5px solid #e0e0e0", borderRadius: "6px", fontSize: "14px", background: "#fafafa", resize: "vertical", minHeight: "70px", fontFamily: "inherit", boxSizing: "border-box" },
 };
 
 const STATUS_COLORS = {
@@ -41,27 +34,27 @@ const STATUS_COLORS = {
   "Cancelled":          { bg: "#FEE2E2", text: "#991B1B" },
 };
 
+const TERMS_COLORS = {
+  "COD":     "gray",
+  "7 Days":  "blue",
+  "30 Days": "amber",
+  "60 Days": "red",
+};
+
 function TermsBadge({ terms }) {
-  const colors = {
-    "COD":     { bg: "#F3F4F6", text: "#374151", border: "#D1D5DB" },
-    "7 Days":  { bg: "#DBEAFE", text: "#1E40AF", border: "#93C5FD" },
-    "30 Days": { bg: "#FEF3C7", text: "#92400E", border: "#FCD34D" },
-    "60 Days": { bg: "#FEE2E2", text: "#991B1B", border: "#FCA5A5" },
-  };
-  const c = colors[terms] || colors["COD"];
-  return (
-    <span style={{ fontSize: "11px", fontWeight: 700, color: c.text, background: c.bg, border: `1px solid ${c.border}`, padding: "2px 8px", borderRadius: "4px" }}>
-      {terms}
-    </span>
-  );
+  return <Badge color={TERMS_COLORS[terms] || "gray"}>{terms}</Badge>;
 }
 
 function Avatar({ name, size = 38 }) {
   const initials = (name || "?").split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase();
-  const colors = ["#E8512A","#1a1a1a","#2563EB","#059669","#7C3AED","#DB2777"];
+  const colors = [C.coral, C.ink, C.blue, C.green, C.purple, "#DB2777"];
   const idx = name ? name.charCodeAt(0) % colors.length : 0;
   return (
-    <div style={{ width: size, height: size, borderRadius: "50%", background: colors[idx], display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: size * 0.38, fontWeight: 700, color: "#fff" }}>
+    <div style={{
+      width: size, height: size, borderRadius: "50%", background: colors[idx],
+      display: "flex", alignItems: "center", justifyContent: "center",
+      flexShrink: 0, fontSize: size * 0.38, fontWeight: 700, color: "#fff",
+    }}>
       {initials}
     </div>
   );
@@ -90,13 +83,15 @@ function CustomerReportsTab({ customers }) {
     const supabase = createClient();
     const { data } = await supabase
       .from("orders")
-      .select("id, order_num, client, created_at, due_date, status, total_value, customer_id, customers(name), order_payments(amount)")
+      .select("id, order_num, client, created_at, due_date, status, total_value, customer_id, customers(name), order_payments(amount, reversed_at)")
       .not("customer_id", "is", null)
       .order("created_at", { ascending: false });
     if (data) {
       const pt = {};
       const mapped = data.map(o => {
-        const paid = (o.order_payments || []).reduce((s, p) => s + parseFloat(p.amount || 0), 0);
+        // Reversed payments no longer count as paid — the reversal journal
+        // already backs the receipt out in the GL.
+        const paid = (o.order_payments || []).filter(p => !p.reversed_at).reduce((s, p) => s + parseFloat(p.amount || 0), 0);
         pt[o.id] = paid;
         return { ...o, customer_name: o.customers?.name || o.client };
       });
@@ -137,20 +132,20 @@ function CustomerReportsTab({ customers }) {
       const tp = filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0);
       const tb = Math.max(tv - tp, 0);
       return [
-        { label: "Orders",      value: filtered.length, color: "#1a1a1a" },
-        { label: "Total Value", value: fmt(tv),         color: "#1a1a1a" },
-        { label: "Collected",   value: fmt(tp),         color: "#065F46" },
-        { label: "Outstanding", value: fmt(tb),         color: tb > 0 ? "#92400E" : "#065F46" },
+        { label: "Orders",      value: filtered.length,     sub: "in range" },
+        { label: "Total Value", value: fmtKes(tv), mono: true },
+        { label: "Collected",   value: fmtKes(tp), mono: true },
+        { label: "Outstanding", value: fmtKes(tb), mono: true, alert: tb > 0 },
       ];
     }
     const to  = filtered.reduce((s, c) => s + (c._stats?.outstanding || 0), 0);
     const tod = filtered.reduce((s, c) => s + (c._stats?.overdue || 0), 0);
     const ts  = filtered.reduce((s, c) => s + (c._stats?.total_sales || 0), 0);
     return [
-      { label: "Customers",   value: filtered.length, color: "#1a1a1a" },
-      { label: "Total Sales", value: fmt(ts),         color: "#1a1a1a" },
-      { label: "Outstanding", value: fmt(to),         color: to > 0 ? "#92400E" : "#065F46" },
-      { label: "Overdue",     value: fmt(tod),        color: tod > 0 ? "#C62828" : "#065F46" },
+      { label: "Customers",   value: filtered.length },
+      { label: "Total Sales", value: fmtKes(ts),  mono: true },
+      { label: "Outstanding", value: fmtKes(to),  mono: true, alert: to > 0 },
+      { label: "Overdue",     value: fmtKes(tod), mono: true, alert: tod > 0 },
     ];
   }, [filtered, payTotals, isOrdersReport]);
 
@@ -212,17 +207,15 @@ function CustomerReportsTab({ customers }) {
     setExporting(false);
   };
 
-  const thS = { padding: "8px 10px", fontSize: "11px", fontWeight: 700, color: "#aaa", textTransform: "uppercase", letterSpacing: "0.5px", whiteSpace: "nowrap" };
-  const tdS = { padding: "9px 10px", fontSize: "13px" };
-  const tdR = { padding: "9px 10px", fontSize: "13px", textAlign: "right", fontFamily: "'DM Mono', monospace" };
-
   const loading = isOrdersReport && loadingOrders;
 
   const totalsBar = (items) => (
-    <div style={{ display: "flex", gap: "24px", padding: "12px 16px", background: "#1a1a1a", borderRadius: "0 0 12px 12px", flexWrap: "wrap" }}>
+    <div style={{ display: "flex", gap: 24, padding: "12px 16px", background: C.ink, borderRadius: "0 0 12px 12px", flexWrap: "wrap" }}>
       {items.map(t => (
-        <span key={t.label} style={{ fontSize: "12px", color: t.accent ? t.accent : "#E8512A" }}>
-          {t.label ? <>{t.label}: <span style={{ color: "#fff", fontFamily: "monospace" }}>{t.value}</span></> : <span style={{ color: "#fff", fontWeight: 700 }}>{t.value}</span>}
+        <span key={t.label} style={{ fontSize: 12, color: C.coral }}>
+          {t.label
+            ? <>{t.label}: <span style={{ color: "#fff", fontFamily: C.mono }}>{t.value}</span></>
+            : <span style={{ color: "#fff", fontWeight: 700 }}>{t.value}</span>}
         </span>
       ))}
     </div>
@@ -231,136 +224,127 @@ function CustomerReportsTab({ customers }) {
   return (
     <div>
       {/* Report type selector */}
-      <div style={{ display: "flex", gap: "8px", marginBottom: "16px", flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
         {[
           { key: "customer-receivables", label: "Customer Receivables" },
           { key: "customer-orders",      label: "Customer Orders" },
         ].map(rt => (
           <button key={rt.key}
             onClick={() => { setReportType(rt.key); setCustomerFilter("All"); }}
-            style={{ padding: "8px 16px", borderRadius: "8px", border: "1.5px solid", fontSize: "13px", fontWeight: 600, cursor: "pointer",
-              borderColor: reportType === rt.key ? "#E8512A" : "#e0e0e0",
-              background:  reportType === rt.key ? "#E8512A" : "#fff",
-              color:       reportType === rt.key ? "#fff"    : "#555" }}>
+            style={{
+              padding: "8px 16px", borderRadius: C.radiusSm,
+              border: `1.5px solid ${reportType === rt.key ? C.coral : C.line}`,
+              background: reportType === rt.key ? C.coral : C.card,
+              color:      reportType === rt.key ? "#fff"  : C.muted,
+              fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+            }}>
             {rt.label}
           </button>
         ))}
       </div>
 
       {/* Filters + Export */}
-      <div style={{ display: "flex", gap: "10px", marginBottom: "16px", flexWrap: "wrap", alignItems: "center" }}>
-        <select value={customerFilter} onChange={e => setCustomerFilter(e.target.value)}
-          style={{ padding: "8px 12px", borderRadius: "7px", border: "1.5px solid #e0e0e0", fontSize: "13px", background: "#fff", fontFamily: "inherit" }}>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <TSelect value={customerFilter} onChange={e => setCustomerFilter(e.target.value)} style={{ minWidth: 160 }}>
           {clientNames.map(n => <option key={n} value={n}>{n}</option>)}
-        </select>
+        </TSelect>
         {isOrdersReport && (
           <>
-            <input type="date"
+            <TInput type="date"
               value={dateFrom instanceof Date ? dateFrom.toISOString().split("T")[0] : ""}
               onChange={e => setDateFrom(e.target.value ? new Date(e.target.value) : null)}
-              style={{ padding: "8px 10px", borderRadius: "7px", border: "1.5px solid #e0e0e0", fontSize: "13px" }} />
-            <span style={{ color: "#aaa", fontSize: "13px" }}>to</span>
-            <input type="date"
+              style={{ width: "auto" }} />
+            <span style={{ color: C.faint, fontSize: 13 }}>to</span>
+            <TInput type="date"
               value={dateTo instanceof Date ? dateTo.toISOString().split("T")[0] : ""}
               onChange={e => setDateTo(e.target.value ? new Date(e.target.value) : null)}
-              style={{ padding: "8px 10px", borderRadius: "7px", border: "1.5px solid #e0e0e0", fontSize: "13px" }} />
+              style={{ width: "auto" }} />
           </>
         )}
-        <button onClick={handleExport} disabled={exporting || filtered.length === 0 || loading}
-          style={{ marginLeft: "auto", padding: "8px 18px", borderRadius: "7px", border: "none", fontSize: "13px", fontWeight: 700, cursor: "pointer",
-            background: (exporting || filtered.length === 0 || loading) ? "#ccc" : "#1a1a1a", color: "#fff" }}>
+        <Btn primary onClick={handleExport} disabled={exporting || filtered.length === 0 || loading}
+          style={{ marginLeft: "auto" }}>
           {exporting ? "Exporting…" : "Export PDF"}
-        </button>
+        </Btn>
       </div>
 
-      {exportError && (
-        <div style={{ marginBottom: "12px", padding: "8px 12px", background: "#FEE2E2", color: "#991B1B", borderRadius: "6px", fontSize: "12px" }}>
-          {exportError}
-        </div>
-      )}
+      {exportError && <Notice color="red" style={{ marginBottom: 12 }}>{exportError}</Notice>}
 
       {/* KPI cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "10px", marginBottom: "16px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 16 }}>
         {kpis.map(k => (
-          <div key={k.label} style={{ background: "#fff", border: "1px solid #e8e8e5", borderRadius: "10px", padding: "14px 16px" }}>
-            <div style={{ fontSize: "11px", color: "#999", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>{k.label}</div>
-            <div style={{ fontSize: "17px", fontWeight: 700, color: k.color }}>{k.value}</div>
-          </div>
+          <StatCard key={k.label} label={k.label} value={k.value} sub={k.sub} mono={k.mono} alert={k.alert} />
         ))}
       </div>
 
       {/* Table */}
       {loading ? (
-        <div style={{ padding: "60px 20px", textAlign: "center", color: "#aaa" }}>Loading orders…</div>
+        <Loading />
       ) : filtered.length === 0 ? (
-        <div style={{ padding: "60px 20px", textAlign: "center", background: "#fff", borderRadius: "12px", border: "1px solid #e5e5e5" }}>
-          <div style={{ fontSize: "32px", marginBottom: "10px" }}>📊</div>
-          <div style={{ fontSize: "14px", color: "#999" }}>No data for this report.</div>
-        </div>
+        <Empty message="No data for this report." />
       ) : isOrdersReport ? (
-        <div style={{ background: "#fff", borderRadius: "12px", border: "1px solid #e8e8e5", overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+        <div style={{ background: C.card, borderRadius: C.radius, border: `1px solid ${C.line}` }}>
+          <Table>
             <thead>
-              <tr style={{ background: "#f9f8f6", borderBottom: "2px solid #e8e8e5" }}>
-                <th style={{ ...thS, textAlign: "left" }}>Customer</th>
-                <th style={{ ...thS, textAlign: "left" }}>Order #</th>
-                <th style={{ ...thS, textAlign: "left" }}>Date</th>
-                <th style={{ ...thS, textAlign: "left" }}>Status</th>
-                <th style={{ ...thS, textAlign: "right" }}>Value (KES)</th>
-                <th style={{ ...thS, textAlign: "right" }}>Paid (KES)</th>
-                <th style={{ ...thS, textAlign: "right" }}>Balance (KES)</th>
-                <th style={{ ...thS, textAlign: "left" }}>Due Date</th>
+              <tr>
+                <Th>Customer</Th>
+                <Th>Order #</Th>
+                <Th>Date</Th>
+                <Th>Status</Th>
+                <Th right>Value (KES)</Th>
+                <Th right>Paid (KES)</Th>
+                <Th right>Balance (KES)</Th>
+                <Th>Due Date</Th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((o, idx) => {
+              {filtered.map((o) => {
                 const paid  = payTotals[o.id] || 0;
                 const bal   = Math.max(parseFloat(o.total_value || 0) - paid, 0);
                 const isOD  = o.due_date && o.due_date < new Date().toISOString().split("T")[0] && bal > 0;
                 const sc    = STATUS_COLORS[o.status] || { bg: "#F3F4F6", text: "#6B7280" };
                 return (
-                  <tr key={o.id} style={{ background: idx % 2 === 0 ? "#fff" : "#FAFAF8", borderBottom: "1px solid #e8e8e5" }}>
-                    <td style={{ ...tdS, fontWeight: 700 }}>{o.customer_name}</td>
-                    <td style={{ ...tdS, fontFamily: "monospace", fontSize: "12px", color: "#E8512A" }}>{o.order_num}</td>
-                    <td style={{ ...tdS, color: "#666", whiteSpace: "nowrap" }}>{fmtDate(o.created_at)}</td>
-                    <td style={tdS}>
-                      <span style={{ fontSize: "11px", fontWeight: 700, color: sc.text, background: sc.bg, padding: "2px 8px", borderRadius: "4px" }}>{o.status}</span>
-                    </td>
-                    <td style={tdR}>{fmtN(o.total_value)}</td>
-                    <td style={{ ...tdR, color: "#065F46" }}>{fmtN(paid)}</td>
-                    <td style={{ ...tdR, fontWeight: 700, color: bal > 0 ? "#92400E" : "#065F46" }}>{fmtN(bal)}</td>
-                    <td style={{ ...tdS, color: isOD ? "#C62828" : "#666", fontWeight: isOD ? 700 : 400, whiteSpace: "nowrap" }}>
+                  <tr key={o.id}>
+                    <Td style={{ fontWeight: 700 }}>{o.customer_name}</Td>
+                    <Td><Mono style={{ color: C.coral, fontSize: 12 }}>{o.order_num}</Mono></Td>
+                    <Td mono muted>{fmtDate(o.created_at)}</Td>
+                    <Td>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: sc.text, background: sc.bg, padding: "2px 8px", borderRadius: 4 }}>{o.status}</span>
+                    </Td>
+                    <Td right mono>{fmtN(o.total_value)}</Td>
+                    <Td right mono style={{ color: C.green }}>{fmtN(paid)}</Td>
+                    <Td right mono style={{ fontWeight: 700, color: bal > 0 ? C.amber : C.green }}>{fmtN(bal)}</Td>
+                    <Td mono style={{ color: isOD ? C.red : C.muted, fontWeight: isOD ? 700 : 400 }}>
                       {o.due_date || "—"}{isOD && " ⚠"}
-                    </td>
+                    </Td>
                   </tr>
                 );
               })}
             </tbody>
-          </table>
+          </Table>
           {totalsBar([
             { value: `${filtered.length} Orders` },
-            { label: "Total Value", value: `KSh ${fmtN(filtered.reduce((s, o) => s + parseFloat(o.total_value || 0), 0))}` },
-            { label: "Collected",   value: `KSh ${fmtN(filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0))}` },
-            { label: "Outstanding", value: `KSh ${fmtN(Math.max(filtered.reduce((s, o) => s + parseFloat(o.total_value || 0), 0) - filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0), 0))}` },
+            { label: "Total Value", value: `KES ${fmtN(filtered.reduce((s, o) => s + parseFloat(o.total_value || 0), 0))}` },
+            { label: "Collected",   value: `KES ${fmtN(filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0))}` },
+            { label: "Outstanding", value: `KES ${fmtN(Math.max(filtered.reduce((s, o) => s + parseFloat(o.total_value || 0), 0) - filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0), 0))}` },
           ])}
         </div>
       ) : (
-        <div style={{ background: "#fff", borderRadius: "12px", border: "1px solid #e8e8e5", overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+        <div style={{ background: C.card, borderRadius: C.radius, border: `1px solid ${C.line}` }}>
+          <Table>
             <thead>
-              <tr style={{ background: "#f9f8f6", borderBottom: "2px solid #e8e8e5" }}>
-                <th style={{ ...thS, textAlign: "left" }}>Customer</th>
-                <th style={{ ...thS, textAlign: "left" }}>Terms</th>
-                <th style={{ ...thS, textAlign: "right" }}>Total Sales</th>
-                <th style={{ ...thS, textAlign: "right" }}>Outstanding</th>
-                <th style={{ ...thS, textAlign: "right" }}>Overdue</th>
-                <th style={{ ...thS, textAlign: "right" }}>Credit Limit</th>
-                <th style={{ ...thS, textAlign: "right" }}>Avail. Credit</th>
-                <th style={{ ...thS, textAlign: "center" }}>Orders</th>
+              <tr>
+                <Th>Customer</Th>
+                <Th>Terms</Th>
+                <Th right>Total Sales</Th>
+                <Th right>Outstanding</Th>
+                <Th right>Overdue</Th>
+                <Th right>Credit Limit</Th>
+                <Th right>Avail. Credit</Th>
+                <Th>Orders</Th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((c, idx) => {
+              {filtered.map((c) => {
                 const stats = c._stats || {};
                 const ts    = stats.total_sales || 0;
                 const out   = stats.outstanding  || 0;
@@ -368,25 +352,25 @@ function CustomerReportsTab({ customers }) {
                 const cl    = parseFloat(c.credit_limit || 0);
                 const avail = Math.max(cl - out, 0);
                 return (
-                  <tr key={c.id} style={{ background: idx % 2 === 0 ? "#fff" : "#FAFAF8", borderBottom: "1px solid #e8e8e5" }}>
-                    <td style={{ ...tdS, fontWeight: 700 }}>{c.name}</td>
-                    <td style={tdS}><TermsBadge terms={c.credit_terms} /></td>
-                    <td style={tdR}>{fmtN(ts)}</td>
-                    <td style={{ ...tdR, fontWeight: 700, color: out > 0 ? "#92400E" : "#065F46" }}>{fmtN(out)}</td>
-                    <td style={{ ...tdR, color: ovd > 0 ? "#C62828" : "#aaa" }}>{fmtN(ovd)}</td>
-                    <td style={tdR}>{cl > 0 ? fmtN(cl) : "—"}</td>
-                    <td style={{ ...tdR, color: cl > 0 ? (avail > 0 ? "#065F46" : "#C62828") : "#aaa" }}>{cl > 0 ? fmtN(avail) : "—"}</td>
-                    <td style={{ ...tdS, textAlign: "center" }}>{stats.total_orders || 0}</td>
+                  <tr key={c.id}>
+                    <Td style={{ fontWeight: 700 }}>{c.name}</Td>
+                    <Td><TermsBadge terms={c.credit_terms} /></Td>
+                    <Td right mono>{fmtN(ts)}</Td>
+                    <Td right mono style={{ fontWeight: 700, color: out > 0 ? C.amber : C.green }}>{fmtN(out)}</Td>
+                    <Td right mono style={{ color: ovd > 0 ? C.red : C.faint }}>{fmtN(ovd)}</Td>
+                    <Td right mono muted>{cl > 0 ? fmtN(cl) : "—"}</Td>
+                    <Td right mono style={{ color: cl > 0 ? (avail > 0 ? C.green : C.red) : C.faint }}>{cl > 0 ? fmtN(avail) : "—"}</Td>
+                    <Td muted>{stats.total_orders || 0}</Td>
                   </tr>
                 );
               })}
             </tbody>
-          </table>
+          </Table>
           {totalsBar([
             { value: `${filtered.length} Customer${filtered.length !== 1 ? "s" : ""}` },
-            { label: "Total Sales",  value: `KSh ${fmtN(filtered.reduce((s, c) => s + (c._stats?.total_sales || 0), 0))}` },
-            { label: "Outstanding",  value: `KSh ${fmtN(filtered.reduce((s, c) => s + (c._stats?.outstanding || 0), 0))}` },
-            { label: "Overdue",      value: `KSh ${fmtN(filtered.reduce((s, c) => s + (c._stats?.overdue || 0), 0))}` },
+            { label: "Total Sales",  value: `KES ${fmtN(filtered.reduce((s, c) => s + (c._stats?.total_sales || 0), 0))}` },
+            { label: "Outstanding",  value: `KES ${fmtN(filtered.reduce((s, c) => s + (c._stats?.outstanding || 0), 0))}` },
+            { label: "Overdue",      value: `KES ${fmtN(filtered.reduce((s, c) => s + (c._stats?.overdue || 0), 0))}` },
           ])}
         </div>
       )}
@@ -396,7 +380,7 @@ function CustomerReportsTab({ customers }) {
 
 
 // ── MAIN MODULE ───────────────────────────────────────────────────────────────
-export default function CustomersModule() {
+export default function CustomersModule({ defaultAction, defaultProspectName, defaultPhone } = {}) {
   const router = useRouter();
   const { userRole = '', loaded: authLoaded } = useAuth();
   const [customers, setCustomers]     = useState([]);
@@ -412,6 +396,15 @@ export default function CustomersModule() {
     if (!authLoaded) return;
     loadCustomers();
   }, [authLoaded]);
+
+  // Open new-customer form triggered by ?new=customer query param
+  useEffect(() => {
+    if (defaultAction === 'customer' && authLoaded && WRITE_ROLES.includes(userRole)) {
+      setForm({ ...EMPTY_FORM, name: defaultProspectName || '', phone: defaultPhone || '' });
+      setFormError('');
+      setShowForm(true);
+    }
+  }, [defaultAction, authLoaded, userRole]);
 
   const loadCustomers = async () => {
     setLoading(true);
@@ -452,75 +445,59 @@ export default function CustomersModule() {
   };
 
   return (
-    <div style={{ maxWidth: "900px", margin: "0 auto", padding: "24px 16px" }}>
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px", flexWrap: "wrap", gap: "12px" }}>
-        <div>
-          <h1 style={{ fontSize: "22px", fontWeight: 700, margin: 0 }}>Customers</h1>
-          <p style={{ fontSize: "13px", color: "#999", margin: "4px 0 0" }}>Customer accounts and credit management</p>
-        </div>
-        {canWrite && view === "list" && (
-          <button onClick={() => { setShowForm(true); setForm(EMPTY_FORM); setFormError(""); }}
-            style={{ padding: "10px 20px", borderRadius: "8px", border: "none", background: "#E8512A", color: "#fff", fontSize: "13px", fontWeight: 700, cursor: "pointer" }}>
-            + Add Customer
-          </button>
-        )}
-      </div>
+    <div style={{ maxWidth: 900, margin: "0 auto", padding: "24px 16px" }}>
 
-      {/* View toggle */}
-      <div style={{ display: "flex", gap: 0, marginBottom: "20px", borderBottom: "2px solid #e8e8e5" }}>
-        {[
+      <PageHeader
+        title="Customers"
+        description="Customer accounts and credit management"
+        actions={canWrite && view === "list" && (
+          <Btn primary onClick={() => { setShowForm(true); setForm(EMPTY_FORM); setFormError(""); }}>
+            + Add Customer
+          </Btn>
+        )}
+      />
+
+      <TabBar
+        tabs={[
           { key: "list",    label: `Customers (${customers.length})` },
           { key: "reports", label: "Reports" },
-        ].map(v => (
-          <button key={v.key} onClick={() => setView(v.key)} style={{
-            padding: "10px 18px", fontSize: "13px", fontWeight: 600, border: "none", background: "none", cursor: "pointer",
-            color: view === v.key ? "#1a1a1a" : "#999",
-            borderBottom: view === v.key ? "2px solid #E8512A" : "2px solid transparent",
-            marginBottom: "-2px", whiteSpace: "nowrap",
-          }}>{v.label}</button>
-        ))}
-      </div>
+        ]}
+        active={view}
+        onSelect={setView}
+      />
 
       {/* Reports view */}
       {view === "reports" ? (
         <CustomerReportsTab customers={customers} />
       ) : (
         <>
-          {/* Summary bar */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "10px", marginBottom: "20px" }}>
-            {[
-              { label: "Customers",        value: customers.length,      color: "#1a1a1a" },
-              { label: "Total Work Value", value: fmt(totalWorkValue),   color: "#1a1a1a" },
-              { label: "Outstanding",      value: fmt(totalOutstanding), color: totalOutstanding > 0 ? "#92400E" : "#065F46" },
-              { label: "Overdue",          value: fmt(totalOverdue),     color: totalOverdue > 0 ? "#C62828" : "#065F46" },
-            ].map(card => (
-              <div key={card.label} style={{ background: "#fff", border: "1px solid #e8e8e5", borderRadius: "10px", padding: "14px 16px" }}>
-                <div style={{ fontSize: "11px", color: "#999", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: "4px" }}>{card.label}</div>
-                <div style={{ fontSize: "18px", fontWeight: 700, color: card.color }}>{card.value}</div>
-              </div>
-            ))}
+          {/* KPI cards */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 20 }}>
+            <StatCard label="Customers"        value={customers.length} />
+            <StatCard label="Total Work Value" value={fmtKes(totalWorkValue)}   mono />
+            <StatCard label="Outstanding"      value={fmtKes(totalOutstanding)} mono alert={totalOutstanding > 0} />
+            <StatCard label="Overdue"          value={fmtKes(totalOverdue)}     mono alert={totalOverdue > 0} />
           </div>
 
           {/* Search */}
-          <input type="text" placeholder="Search customers…" value={search} onChange={e => setSearch(e.target.value)}
-            style={{ width: "100%", padding: "10px 14px", borderRadius: "8px", border: "1.5px solid #e0e0e0", fontSize: "14px", background: "#fff", marginBottom: "14px", boxSizing: "border-box" }} />
+          <TInput
+            type="text" placeholder="Search customers…" value={search}
+            onChange={e => setSearch(e.target.value)}
+            style={{ marginBottom: 14 }}
+          />
 
           {/* List */}
           {loading ? (
-            <div style={{ padding: "60px 20px", textAlign: "center", color: "#aaa" }}>Loading…</div>
+            <Loading />
           ) : filtered.length === 0 ? (
-            <div style={{ padding: "60px 20px", textAlign: "center" }}>
-              <div style={{ fontSize: "40px", marginBottom: "12px" }}>🤝</div>
-              <div style={{ fontSize: "15px", color: "#999" }}>{search ? "No customers match your search." : "No customers yet."}</div>
-              {canWrite && !search && (
-                <button onClick={() => setShowForm(true)} style={{ marginTop: "12px", padding: "9px 20px", borderRadius: "7px", border: "1.5px solid #e0e0e0", background: "#fff", color: "#333", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>
-                  Add first customer
-                </button>
+            <Empty
+              message={search ? "No customers match your search." : "No customers yet."}
+              action={canWrite && !search && (
+                <Btn onClick={() => setShowForm(true)}>Add first customer</Btn>
               )}
-            </div>
+            />
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {filtered.map(c => {
                 const stats       = c._stats || {};
                 const outstanding = stats.outstanding || 0;
@@ -530,21 +507,24 @@ export default function CustomersModule() {
                 return (
                   <div key={c.id}
                     onClick={() => router.push(`/customers/${c.id}`)}
-                    style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e8e8e5", borderLeft: overdue > 0 ? "4px solid #EF4444" : "4px solid transparent", padding: "14px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: "14px", transition: "box-shadow 0.15s" }}
+                    style={{
+                      background: C.card, borderRadius: C.radius,
+                      border: `1px solid ${C.line}`,
+                      borderLeft: overdue > 0 ? `4px solid ${C.red}` : `4px solid transparent`,
+                      padding: "14px 16px", cursor: "pointer",
+                      display: "flex", alignItems: "center", gap: 14,
+                      transition: "box-shadow 0.15s",
+                    }}
                     onMouseEnter={e => e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.08)"}
                     onMouseLeave={e => e.currentTarget.style.boxShadow = "none"}>
                     <Avatar name={c.name} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                        <span style={{ fontSize: "14px", fontWeight: 700, color: "#1a1a1a" }}>{c.name}</span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 14, fontWeight: 700, color: C.ink }}>{c.name}</span>
                         <TermsBadge terms={c.credit_terms} />
-                        {overdue > 0 && (
-                          <span style={{ fontSize: "11px", fontWeight: 700, color: "#991B1B", background: "#FEE2E2", border: "1px solid #FCA5A5", padding: "2px 7px", borderRadius: "4px" }}>
-                            Overdue
-                          </span>
-                        )}
+                        {overdue > 0 && <Badge color="red">Overdue</Badge>}
                       </div>
-                      <div style={{ fontSize: "12px", color: "#888", marginTop: "3px" }}>
+                      <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
                         {[c.contact_person, c.phone].filter(Boolean).join(" · ")}
                         {stats.total_orders > 0 && ` · ${stats.total_orders} order${stats.total_orders !== 1 ? "s" : ""}`}
                         {stats.last_order_date && ` · Last: ${stats.last_order_date}`}
@@ -553,18 +533,20 @@ export default function CustomersModule() {
                     <div style={{ textAlign: "right", flexShrink: 0 }}>
                       {outstanding > 0 ? (
                         <>
-                          <div style={{ fontSize: "14px", fontWeight: 700, color: overdue > 0 ? "#C62828" : "#92400E" }}>{fmt(outstanding)}</div>
-                          <div style={{ fontSize: "11px", color: "#aaa" }}>outstanding</div>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: overdue > 0 ? C.red : C.amber, fontFamily: C.mono }}>
+                            {fmtKes(outstanding)}
+                          </div>
+                          <div style={{ fontSize: 11, color: C.faint }}>outstanding</div>
                         </>
                       ) : (
                         <>
-                          <div style={{ fontSize: "13px", fontWeight: 600, color: "#065F46" }}>Nil</div>
-                          <div style={{ fontSize: "11px", color: "#aaa" }}>outstanding</div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: C.green }}>Nil</div>
+                          <div style={{ fontSize: 11, color: C.faint }}>outstanding</div>
                         </>
                       )}
                       {parseFloat(c.credit_limit || 0) > 0 && (
-                        <div style={{ fontSize: "11px", color: "#999", marginTop: "2px" }}>
-                          {fmt(creditAvail)} avail.
+                        <div style={{ fontSize: 11, color: C.faint, marginTop: 2 }}>
+                          <Mono>{fmtKes(creditAvail)}</Mono> avail.
                         </div>
                       )}
                     </div>
@@ -576,73 +558,60 @@ export default function CustomersModule() {
         </>
       )}
 
-      {/* Add Customer Modal */}
+      {/* Add Customer Modal — Modal auto-dispatches quickactions:lock/unlock */}
       {showForm && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}
-          onClick={() => setShowForm(false)}>
-          <div style={{ background: "#fff", borderRadius: "12px", padding: "24px", width: "100%", maxWidth: "560px", maxHeight: "90vh", overflowY: "auto" }}
-            onClick={e => e.stopPropagation()}>
-            <h2 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "20px", margin: "0 0 20px" }}>Add Customer</h2>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px" }}>
-              <div style={{ gridColumn: "1 / -1" }}>
-                <label style={ss.label}>Customer name *</label>
-                <input style={ss.input} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. Westgate Shopping Mall" />
-              </div>
-              <div>
-                <label style={ss.label}>Contact person</label>
-                <input style={ss.input} value={form.contact_person} onChange={e => setForm({ ...form, contact_person: e.target.value })} placeholder="e.g. Mary Njeru" />
-              </div>
-              <div>
-                <label style={ss.label}>Phone</label>
-                <input style={ss.input} type="tel" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} placeholder="0712 XXX XXX" />
-              </div>
-              <div>
-                <label style={ss.label}>Email</label>
-                <input style={ss.input} type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} placeholder="email@example.com" />
-              </div>
-              <div>
-                <label style={ss.label}>KRA PIN (optional)</label>
-                <input style={ss.input} value={form.kra_pin} onChange={e => setForm({ ...form, kra_pin: e.target.value })} placeholder="A000000000X" />
-              </div>
-              <div style={{ gridColumn: "1 / -1" }}>
-                <label style={ss.label}>Address</label>
-                <input style={ss.input} value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} placeholder="e.g. Westlands, Nairobi" />
-              </div>
-              <div>
-                <label style={ss.label}>Credit limit (KSh)</label>
-                <input style={ss.input} type="number" min="0" step="1000" value={form.credit_limit} onChange={e => setForm({ ...form, credit_limit: e.target.value })} placeholder="0" />
-              </div>
-              <div>
-                <label style={ss.label}>Credit terms</label>
-                <select style={ss.input} value={form.credit_terms} onChange={e => setForm({ ...form, credit_terms: e.target.value })}>
-                  {VALID_TERMS.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={ss.label}>Opening balance (KSh)</label>
-                <input style={ss.input} type="number" min="0" step="1" value={form.opening_balance} onChange={e => setForm({ ...form, opening_balance: e.target.value })} placeholder="0" />
-              </div>
-              <div>
-                <label style={ss.label}>Opening balance date</label>
-                <input style={ss.input} type="date" value={form.opening_balance_date} onChange={e => setForm({ ...form, opening_balance_date: e.target.value })} />
-              </div>
-              <div style={{ gridColumn: "1 / -1" }}>
-                <label style={ss.label}>Notes</label>
-                <textarea style={ss.textarea} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Internal notes…" />
-              </div>
-            </div>
-
-            {formError && <div style={{ marginTop: "12px", padding: "8px 12px", background: "#FEE2E2", color: "#991B1B", borderRadius: "6px", fontSize: "12px" }}>{formError}</div>}
-
-            <div style={{ display: "flex", gap: "8px", marginTop: "20px" }}>
-              <button onClick={() => setShowForm(false)} style={{ flex: 1, padding: "10px", borderRadius: "8px", border: "1.5px solid #e0e0e0", background: "#fff", color: "#666", fontSize: "14px", fontWeight: 600, cursor: "pointer" }}>Cancel</button>
-              <button onClick={handleSave} disabled={saving} style={{ flex: 2, padding: "10px", borderRadius: "8px", border: "none", background: "#E8512A", color: "#fff", fontSize: "14px", fontWeight: 700, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.6 : 1 }}>
+        <Modal
+          title="Add Customer"
+          onClose={() => setShowForm(false)}
+          footer={
+            <>
+              <Btn onClick={() => setShowForm(false)}>Cancel</Btn>
+              <Btn primary onClick={handleSave} disabled={saving}>
                 {saving ? "Saving…" : "Add Customer"}
-              </button>
-            </div>
+              </Btn>
+            </>
+          }
+        >
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }} className="form-grid">
+            <Field label="Customer name *" full>
+              <TInput value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. Westgate Shopping Mall" />
+            </Field>
+            <Field label="Contact person">
+              <TInput value={form.contact_person} onChange={e => setForm({ ...form, contact_person: e.target.value })} placeholder="e.g. Mary Njeru" />
+            </Field>
+            <Field label="Phone">
+              <TInput type="tel" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} placeholder="0712 XXX XXX" />
+            </Field>
+            <Field label="Email">
+              <TInput type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} placeholder="email@example.com" />
+            </Field>
+            <Field label="KRA PIN (optional)">
+              <TInput value={form.kra_pin} onChange={e => setForm({ ...form, kra_pin: e.target.value })} placeholder="A000000000X" />
+            </Field>
+            <Field label="Address" full>
+              <TInput value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} placeholder="e.g. Westlands, Nairobi" />
+            </Field>
+            <Field label="Credit limit (KSh)">
+              <TInput type="number" min="0" step="1000" value={form.credit_limit} onChange={e => setForm({ ...form, credit_limit: e.target.value })} placeholder="0" />
+            </Field>
+            <Field label="Credit terms">
+              <TSelect value={form.credit_terms} onChange={e => setForm({ ...form, credit_terms: e.target.value })}>
+                {VALID_TERMS.map(t => <option key={t} value={t}>{t}</option>)}
+              </TSelect>
+            </Field>
+            <Field label="Opening balance (KSh)">
+              <TInput type="number" min="0" step="1" value={form.opening_balance} onChange={e => setForm({ ...form, opening_balance: e.target.value })} placeholder="0" />
+            </Field>
+            <Field label="Opening balance date">
+              <TInput type="date" value={form.opening_balance_date} onChange={e => setForm({ ...form, opening_balance_date: e.target.value })} />
+            </Field>
+            <Field label="Notes" full>
+              <TArea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Internal notes…" />
+            </Field>
           </div>
-        </div>
+
+          {formError && <Notice color="red" style={{ marginTop: 14 }}>{formError}</Notice>}
+        </Modal>
       )}
     </div>
   );

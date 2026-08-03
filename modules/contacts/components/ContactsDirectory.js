@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
 import { createClient } from "@/shared/supabase/client";
+import { useAuth } from "@/shared/context/AuthContext";
 
 const CATEGORIES = [
   "Supplier",
@@ -32,9 +33,9 @@ const EMPTY_FORM = {
 };
 
 export default function ContactsDirectory() {
+  const { userRole = "viewer" } = useAuth();
   const [contacts, setContacts] = useState([]);
   const [loaded, setLoaded] = useState(false);
-  const [userRole, setUserRole] = useState("viewer");
   const [search, setSearch] = useState("");
   const [filterCat, setFilterCat] = useState("All");
   const [showForm, setShowForm] = useState(false);
@@ -49,14 +50,7 @@ export default function ContactsDirectory() {
   const canDelete = ["admin", "production_manager"].includes(userRole);
 
   useEffect(() => {
-    (async () => {
-      const { data: { user } } = await sb.auth.getUser();
-      if (user) {
-        const { data: profile } = await sb.from("user_profiles").select("role").eq("id", user.id).single();
-        if (profile) setUserRole(profile.role);
-      }
-      await loadContacts();
-    })();
+    loadContacts();
   }, []);
 
   const loadContacts = async () => {

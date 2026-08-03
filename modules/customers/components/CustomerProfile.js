@@ -2,6 +2,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { createClient } from "@/shared/supabase/client";
 import { useRouter } from "next/navigation";
+import { useAuth } from "@/shared/context/AuthContext";
+import InvoicesTab from "@/modules/crm/components/InvoicesTab";
 
 const WRITE_ROLES = ["admin", "production_manager", "head_of_sales", "sales"];
 const VALID_TERMS = ["COD", "7 Days", "30 Days", "60 Days"];
@@ -260,7 +262,9 @@ function OrdersTab({ orders, customerId }) {
         </thead>
         <tbody>
           {sorted.map(o => {
-            const paid    = (o.order_payments || []).reduce((s, p) => s + parseFloat(p.amount || 0), 0);
+            // Reversed payments no longer count as paid — the reversal journal
+            // already backs the receipt out in the GL.
+            const paid    = (o.order_payments || []).filter(p => !p.reversed_at).reduce((s, p) => s + parseFloat(p.amount || 0), 0);
             const balance = parseFloat(o.total_value || 0) - paid;
             const isOverdue = o.payment_due_date && o.payment_due_date < new Date().toISOString().split("T")[0] && balance > 0 && ['Partially Delivered','Delivered','Closed'].includes(o.status);
             return (
@@ -292,16 +296,9 @@ function OrdersTab({ orders, customerId }) {
 
 // ── STATEMENT TAB ─────────────────────────────────────────────
 function StatementTab({ statement, customer }) {
+  const { displayName: userName } = useAuth();
   const [exporting, setExporting]     = useState(false);
   const [exportError, setExportError] = useState("");
-  const [userName, setUserName]       = useState("");
-
-  useEffect(() => {
-    const supabase = createClient();
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (user) setUserName(user.email || "");
-    });
-  }, []);
 
   const handleExport = async () => {
     setExporting(true); setExportError("");
@@ -344,9 +341,10 @@ function StatementTab({ statement, customer }) {
   };
 
   const TYPE_STYLE = {
-    "Opening Balance": { color: "#374151", bg: "#F3F4F6" },
-    "Invoice":         { color: "#C2410C", bg: "#FFF7ED" },
-    "Payment":         { color: "#065F46", bg: "#D1FAE5" },
+    "Opening Balance":    { color: "#374151", bg: "#F3F4F6" },
+    "Invoice":            { color: "#C2410C", bg: "#FFF7ED" },
+    "Payment":            { color: "#065F46", bg: "#D1FAE5" },
+    "Payment (Reversed)": { color: "#9F1239", bg: "#FFF1F2" },
   };
 
   return (
@@ -437,6 +435,7 @@ function TimelineTab({ timeline }) {
     "customer_created": "🤝",
     "order_created":    "📋",
     "payment":          "💳",
+    "payment_reversed": "↩️",
     "status_change":    "🔄",
     "delivery":         "🚛",
     "note":             "📝",
@@ -552,10 +551,10 @@ function NotesTab({ customerId, canWrite }) {
 // ── MAIN CustomerProfile ──────────────────────────────────────
 export default function CustomerProfile({ customerId }) {
   const router                      = useRouter();
+  const { userRole = "" }           = useAuth();
   const [data, setData]             = useState(null);
   const [loading, setLoading]       = useState(true);
   const [tab, setTab]               = useState("overview");
-  const [userRole, setUserRole]     = useState("");
 
   const loadProfile = useCallback(async () => {
     const res  = await fetch(`/api/customers/${customerId}`);
@@ -565,12 +564,6 @@ export default function CustomerProfile({ customerId }) {
   }, [customerId]);
 
   useEffect(() => {
-    const supabase = createClient();
-    supabase.auth.getUser().then(async ({ data: { user } }) => {
-      if (!user) return;
-      const { data: profile } = await supabase.from("user_profiles").select("role").eq("id", user.id).single();
-      setUserRole(profile?.role || "");
-    });
     loadProfile();
   }, [loadProfile]);
 
@@ -584,6 +577,7 @@ export default function CustomerProfile({ customerId }) {
   const TABS = [
     { key: "overview",  label: "Overview" },
     { key: "orders",    label: `Orders (${data.orders?.length || 0})` },
+    { key: "invoices",  label: "Invoices" },
     { key: "statement", label: "Statement" },
     { key: "timeline",  label: "Timeline" },
     { key: "notes",     label: "Notes" },
@@ -633,6 +627,7 @@ export default function CustomerProfile({ customerId }) {
       {/* Tab content */}
       {tab === "overview"  && <OverviewTab  customer={data} stats={stats} onUpdated={loadProfile} canWrite={canWrite} />}
       {tab === "orders"    && <OrdersTab    orders={data.orders || []} customerId={customerId} />}
+      {tab === "invoices"  && <InvoicesTab  customerId={customerId} />}
       {tab === "statement" && <StatementTab statement={data.statement || []} customer={data} />}
       {tab === "timeline"  && <TimelineTab  timeline={data.timeline  || []} />}
       {tab === "notes"     && <NotesTab     customerId={customerId} canWrite={canWrite} />}

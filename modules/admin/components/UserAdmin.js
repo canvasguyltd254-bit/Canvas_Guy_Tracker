@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { createClient } from "@/shared/supabase/client";
 
 const ROLES = [
@@ -36,7 +36,7 @@ function ClientCreditLimits() {
     const { data: orders } = await sb.from("orders").select("id,client,customer_type,total_value,status").in("customer_type", ["reseller", "commercial"]);
     
     // Fetch all payments
-    const { data: pays } = await sb.from("order_payments").select("order_id,amount");
+    const { data: pays } = await sb.from("order_payments").select("order_id,amount").is("reversed_at", null);
     
     // Fetch existing client_profiles
     const { data: profiles } = await sb.from("client_profiles").select("client_name,credit_limit");
@@ -247,6 +247,221 @@ function ClientCreditLimits() {
   );
 }
 
+/* === ROLE MATRIX COMPONENT === */
+const MATRIX_ROLES = [
+  { id: "admin",              short: "Admin",   color: "#C62828", bg: "#FFEBEE" },
+  { id: "head_of_sales",      short: "HoS",     color: "#E65100", bg: "#FFF3E0" },
+  { id: "production_manager", short: "PM",      color: "#F57C00", bg: "#FFF8E1" },
+  { id: "sales",              short: "Sales",   color: "#1565C0", bg: "#E3F2FD" },
+  { id: "production_staff",   short: "Staff",   color: "#2E7D32", bg: "#E8F5E9" },
+  { id: "viewer",             short: "Viewer",  color: "#9E9E9E", bg: "#F5F5F5" },
+];
+
+const MATRIX_SECTIONS = [
+  {
+    label: "Orders",
+    rows: [
+      { action: "View orders",                        perms: ["admin","head_of_sales","production_manager","sales","production_staff","viewer"] },
+      { action: "Create & edit orders",               perms: ["admin","head_of_sales","sales"] },
+      { action: "Advance to Deposit Paid",            perms: ["admin","head_of_sales","sales"] },
+      { action: "Authorize batch deliveries",         perms: ["admin","head_of_sales"] },
+      { action: "Send back / reject orders",          perms: ["admin","head_of_sales"] },
+      { action: "Approve credit orders (≤250k)",      perms: ["head_of_sales"] },
+      { action: "Approve credit orders (any amount)", perms: ["admin"] },
+      { action: "Delete payments & attachments",      perms: ["admin","head_of_sales"] },
+    ],
+  },
+  {
+    label: "CRM & Quotes",
+    rows: [
+      { action: "View quotes & enquiries",      perms: ["admin","head_of_sales","sales"] },
+      { action: "Create & edit quotes",         perms: ["admin","head_of_sales","sales"] },
+      { action: "Convert quote to order",       perms: ["admin","head_of_sales","sales"] },
+      { action: "View follow-up pipeline",      perms: ["admin","head_of_sales","sales"] },
+    ],
+  },
+  {
+    label: "Customers & Contacts",
+    rows: [
+      { action: "View customers",          perms: ["admin","head_of_sales","sales"] },
+      { action: "Create & edit customers", perms: ["admin","head_of_sales","sales"] },
+      { action: "Export customer reports", perms: ["admin","head_of_sales","sales"] },
+      { action: "View contacts directory", perms: ["admin","head_of_sales","production_manager","sales"] },
+    ],
+  },
+  {
+    label: "Suppliers",
+    rows: [
+      { action: "View suppliers & purchases", perms: ["admin","head_of_sales"] },
+      { action: "Create & edit suppliers",    perms: ["admin","head_of_sales"] },
+      { action: "Record supplier payments",   perms: ["admin","head_of_sales"] },
+      { action: "Export supplier reports",    perms: ["admin","head_of_sales"] },
+    ],
+  },
+  {
+    label: "Production",
+    rows: [
+      { action: "View production board",       perms: ["admin","head_of_sales","production_manager","production_staff","viewer"] },
+      { action: "Update order / batch status", perms: ["admin","head_of_sales","production_manager","production_staff"] },
+      { action: "Manage batch deliveries",     perms: ["admin","head_of_sales","production_manager"] },
+      { action: "Export job cards & PDFs",     perms: ["admin","head_of_sales","production_manager"] },
+    ],
+  },
+  {
+    label: "Payroll",
+    rows: [
+      { action: "View employees & salaries",   perms: ["admin","head_of_sales","production_manager"] },
+      { action: "Create & edit employees",     perms: ["admin","head_of_sales","production_manager"] },
+      { action: "Create & manage runs",        perms: ["admin","head_of_sales","production_manager"] },
+      { action: "Approve payroll runs",        perms: ["admin"] },
+      { action: "Create payment batches",      perms: ["admin","head_of_sales","production_manager"] },
+      { action: "Download Chatpesa CSV",       perms: ["admin","head_of_sales","production_manager"] },
+      { action: "Reconcile / Mark Paid",       perms: ["admin"] },
+      { action: "Delete batches",              perms: ["admin"] },
+    ],
+  },
+  {
+    label: "Reports",
+    rows: [
+      { action: "View & export reports",        perms: ["admin","head_of_sales","production_manager","sales"] },
+      { action: "Order P&L reports",            perms: ["admin","head_of_sales"] },
+      { action: "Payroll & employee reports",   perms: ["admin","head_of_sales","production_manager"] },
+    ],
+  },
+  {
+    label: "Accounting",
+    rows: [
+      { action: "View GL / journal entries",    perms: ["admin","head_of_sales"] },
+      { action: "Post & reverse entries",       perms: ["admin"] },
+      { action: "Accounting review queue",      perms: ["admin","head_of_sales"] },
+    ],
+  },
+  {
+    label: "Admin",
+    rows: [
+      { action: "Manage users & roles",         perms: ["admin"] },
+      { action: "Client credit limits",         perms: ["admin"] },
+      { action: "System settings",              perms: ["admin"] },
+    ],
+  },
+];
+
+function RoleMatrix() {
+  const [activeRole, setActiveRole] = useState(null);
+
+  const roleIds = MATRIX_ROLES.map(r => r.id);
+
+  const tdBase = {
+    padding: "9px 10px",
+    borderBottom: "1px solid #f0f0f0",
+    textAlign: "center",
+    verticalAlign: "middle",
+    fontSize: "15px",
+  };
+
+  return (
+    <div>
+      <p style={{ fontSize: "12px", color: "#999", marginBottom: "14px" }}>
+        Click a role to highlight its column. Green = full access, grey dash = no access.
+      </p>
+
+      {/* Role filter pills */}
+      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "18px" }}>
+        {MATRIX_ROLES.map(r => (
+          <button
+            key={r.id}
+            onClick={() => setActiveRole(activeRole === r.id ? null : r.id)}
+            style={{
+              padding: "5px 14px", borderRadius: "20px", border: "1.5px solid",
+              borderColor: activeRole === r.id ? r.color : "#e0e0e0",
+              background: activeRole === r.id ? r.bg : "#fff",
+              color: activeRole === r.id ? r.color : "#888",
+              fontSize: "12px", fontWeight: 600, cursor: "pointer",
+            }}
+          >
+            {r.short}
+          </button>
+        ))}
+        {activeRole && (
+          <button onClick={() => setActiveRole(null)} style={{ padding: "5px 14px", borderRadius: "20px", border: "1.5px solid #e0e0e0", background: "#f5f5f5", color: "#888", fontSize: "12px", cursor: "pointer" }}>
+            Clear
+          </button>
+        )}
+      </div>
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", minWidth: "580px" }}>
+          <thead>
+            <tr style={{ background: "#fafafa", borderBottom: "2px solid #e8e8e5" }}>
+              <th style={{ padding: "10px 12px", textAlign: "left", fontWeight: 600, color: "#555", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.04em", minWidth: "180px" }}>
+                Action
+              </th>
+              {MATRIX_ROLES.map(r => (
+                <th
+                  key={r.id}
+                  onClick={() => setActiveRole(activeRole === r.id ? null : r.id)}
+                  style={{
+                    padding: "10px 8px", fontWeight: 700, fontSize: "11px", cursor: "pointer",
+                    color: activeRole === r.id ? r.color : "#888",
+                    background: activeRole === r.id ? r.bg : "transparent",
+                    textAlign: "center", userSelect: "none",
+                    transition: "background 0.15s",
+                  }}
+                >
+                  {r.short}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {MATRIX_SECTIONS.map(section => (
+              <React.Fragment key={section.label}>
+                <tr>
+                  <td
+                    colSpan={MATRIX_ROLES.length + 1}
+                    style={{ padding: "10px 12px 4px", fontSize: "10px", fontWeight: 700, color: "#bbb", textTransform: "uppercase", letterSpacing: "0.06em", background: "#fff" }}
+                  >
+                    {section.label}
+                  </td>
+                </tr>
+                {section.rows.map((row, i) => (
+                  <tr
+                    key={i}
+                    style={{ background: "#fff" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#fafafa"}
+                    onMouseLeave={e => e.currentTarget.style.background = "#fff"}
+                  >
+                    <td style={{ padding: "9px 12px", borderBottom: "1px solid #f0f0f0", color: "#444", fontSize: "12px" }}>
+                      {row.action}
+                    </td>
+                    {MATRIX_ROLES.map(r => {
+                      const has = row.perms.includes(r.id);
+                      const dimmed = activeRole && activeRole !== r.id;
+                      return (
+                        <td key={r.id} style={{
+                          ...tdBase,
+                          background: activeRole === r.id ? (has ? `${r.bg}` : "transparent") : "transparent",
+                          opacity: dimmed ? 0.25 : 1,
+                          transition: "opacity 0.15s, background 0.15s",
+                        }}>
+                          {has
+                            ? <span style={{ color: r.color, fontSize: "16px", fontWeight: 700 }}>✓</span>
+                            : <span style={{ color: "#ddd", fontSize: "14px" }}>—</span>
+                          }
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function UserAdmin() {
   const [users, setUsers] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
@@ -309,8 +524,14 @@ export default function UserAdmin() {
       {isAdmin && (
         <div style={{ display: "flex", gap: "4px", marginBottom: "20px" }}>
           <button onClick={() => setTab("users")} style={{ padding: "8px 16px", borderRadius: "6px", border: "1.5px solid " + (tab === "users" ? "#1a1a1a" : "#e0e0e0"), background: tab === "users" ? "#1a1a1a" : "#fff", color: tab === "users" ? "#fff" : "#666", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>Users</button>
+          <button onClick={() => setTab("roles")} style={{ padding: "8px 16px", borderRadius: "6px", border: "1.5px solid " + (tab === "roles" ? "#1a1a1a" : "#e0e0e0"), background: tab === "roles" ? "#1a1a1a" : "#fff", color: tab === "roles" ? "#fff" : "#666", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>Role Matrix</button>
           <button onClick={() => setTab("settings")} style={{ padding: "8px 16px", borderRadius: "6px", border: "1.5px solid " + (tab === "settings" ? "#1a1a1a" : "#e0e0e0"), background: tab === "settings" ? "#1a1a1a" : "#fff", color: tab === "settings" ? "#fff" : "#666", fontSize: "13px", fontWeight: 600, cursor: "pointer" }}>Settings</button>
         </div>
+      )}
+
+      {/* Role Matrix tab */}
+      {tab === "roles" && (
+        <RoleMatrix />
       )}
 
       {/* Settings tab */}

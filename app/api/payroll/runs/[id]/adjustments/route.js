@@ -7,7 +7,7 @@
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 
-const ALLOWED_ROLES = ['admin', 'production_manager'];
+const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 const OVERTIME_RATE = 200;
 
 export async function GET(request, { params }) {
@@ -111,7 +111,7 @@ export async function POST(request, { params }) {
 export async function DELETE(request, { params }) {
   try {
     const { user, role } = await getAuthContext();
-    const authError = requireRole(user, role, ['admin', 'production_manager']);
+    const authError = requireRole(user, role, ['admin', 'head_of_sales', 'production_manager']);
     if (authError) return authError;
 
     const runId = params.id;

@@ -35,7 +35,7 @@ async function buildRunNum(run_type, period_start) {
   return count > 0 ? null : run_num;
 }
 
-const ALLOWED_ROLES = ['admin', 'production_manager'];
+const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 
 export async function GET(request) {
   try {

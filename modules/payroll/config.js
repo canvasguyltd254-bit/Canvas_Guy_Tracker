@@ -3,7 +3,7 @@ const payrollConfig = {
   name: 'Payroll',
   icon: '💰',
   description: 'Employee payroll, attendance, and statutory deductions',
-  allowedRoles: ['admin', 'production_manager'],
+  allowedRoles: ['admin', 'head_of_sales', 'production_manager'],
   navItems: [
     { label: 'Payroll', path: '/payroll' },
   ],

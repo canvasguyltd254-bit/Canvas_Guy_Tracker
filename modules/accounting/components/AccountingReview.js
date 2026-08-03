@@ -14,6 +14,7 @@
  */
 
 import { useState, useEffect, useCallback } from "react";
+import { C, PageHeader, Btn } from "@/shared/ui/ds";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -27,15 +28,15 @@ const fmtDate = (d) => {
   return `${day} ${months[parseInt(m) - 1]} ${y}`;
 };
 
-// ─── palette ────────────────────────────────────────────────────────────────
+// ─── palette — aliased to ds.js design tokens ────────────────────────────────
 
-const BRAND   = "#E8512A";
-const DARK    = "#1a1a1a";
-const SURFACE = "#ffffff";
-const BG      = "#f7f7f5";
-const BORDER  = "#e5e5e5";
-const MUTED   = "#666";
-const TEXT    = "#111";
+const BRAND   = C.coral;
+const DARK    = C.ink;
+const SURFACE = C.card;
+const BG      = C.bg;
+const BORDER  = C.line;
+const MUTED   = C.muted;
+const TEXT    = C.ink;
 
 // ─── sub-components ─────────────────────────────────────────────────────────
 
@@ -607,34 +608,19 @@ export default function AccountingReview() {
   ];
 
   return (
-    <div style={{ padding: "24px 20px", maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ padding: "20px 16px", maxWidth: 1100, margin: "0 auto", color: C.ink }}>
 
-      {/* Page header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24, flexWrap: "wrap", gap: 12 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: DARK }}>GL Review</h1>
-          <p style={{ margin: "4px 0 0", color: MUTED, fontSize: 13 }}>
-            Unposted transactions, posting errors, and reversal history
-          </p>
-        </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          style={{
-            padding: "8px 18px", borderRadius: 6, fontSize: 13, fontWeight: 600,
-            background: DARK, color: "#fff", border: "none",
-            cursor: loading ? "default" : "pointer", opacity: loading ? 0.6 : 1,
-          }}
-        >
-          {loading ? "Loading…" : "Refresh"}
-        </button>
-      </div>
+      <PageHeader
+        title="GL Review"
+        description="Unposted transactions, posting errors, and reversal history"
+        actions={<Btn onClick={load} disabled={loading}>{loading ? "Loading…" : "Refresh"}</Btn>}
+      />
 
       {/* Error banner */}
       {error && (
         <div style={{
-          background: "#fff5f5", border: "1px solid #ffcdd2", color: "#c62828",
-          borderRadius: 8, padding: "12px 16px", marginBottom: 20, fontSize: 13,
+          background: C.redBg, border: `1px solid ${C.redBd}`, color: C.red,
+          borderRadius: C.radiusSm, padding: "12px 16px", marginBottom: 20, fontSize: 13,
         }}>
           {error}
         </div>
@@ -661,7 +647,7 @@ export default function AccountingReview() {
         </div>
       ) : data ? (
         <div style={{
-          background: SURFACE, borderRadius: 10, border: `1px solid ${BORDER}`,
+          background: SURFACE, borderRadius: C.radius, border: `1px solid ${BORDER}`,
           padding: "20px 24px",
         }}>
           {activeTab === "unposted" && (

@@ -4,6 +4,7 @@ import { useSearchParams } from "next/navigation";
 import { createClient } from "@/shared/supabase/client";
 import { useAuth } from "@/shared/context/AuthContext";
 import { ALL_STATUS_COLORS, CATEGORIES } from "@/modules/orders/components/constants";
+import { C, Btn, Loading } from "@/shared/ui/ds";
 // PDF generation handled server-side via /api/reports/pdf (build_report.py)
 
 // ── Report type definitions ──
@@ -120,7 +121,7 @@ export default function Reports() {
         items.forEach((i) => { if (!m[i.order_id]) m[i.order_id] = []; m[i.order_id].push(i); });
         setAllItems(m);
       }
-      const { data: pays } = await sb.from("order_payments").select("order_id,amount");
+      const { data: pays } = await sb.from("order_payments").select("order_id,amount").is("reversed_at", null);
       if (pays) {
         const t = {};
         pays.forEach((p) => { t[p.order_id] = (t[p.order_id] || 0) + parseFloat(p.amount); });
@@ -425,7 +426,7 @@ export default function Reports() {
     setExporting(false);
   };
 
-  if (!loaded) return <div style={{ padding: "40px", textAlign: "center", color: "#aaa" }}>Loading...</div>;
+  if (!loaded) return <Loading />;
 
   // ── Formatters ──
   const fmtDate    = (d) => d ? new Date(d + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "—";
@@ -877,24 +878,20 @@ export default function Reports() {
 
   // ── Desktop layout ────────────────────────────────────────────────────────────
   const DesktopLayout = () => (
-    <div style={{ padding: "20px 16px" }}>
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px", flexWrap: "wrap", gap: "10px" }}>
-        <div>
-          <h1 style={{ fontSize: "20px", fontWeight: 700, marginBottom: "4px" }}>{reportMeta.icon} {reportMeta.label} Report</h1>
-          <p style={{ fontSize: "13px", color: "#999" }}>
-            {filtered.length} order{filtered.length !== 1 ? "s" : ""} · {totalUnits} units
-            {showDateRange && <> · <span style={{ color: "#666" }}>{fmtDisplay(dateFrom)} – {fmtDisplay(dateTo)}</span></>}
-          </p>
+    <div style={{ padding: "20px 16px", color: C.ink }}>
+      <div style={{ marginBottom: "16px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "10px" }}>
+          <div>
+            <h1 style={{ fontSize: "20px", fontWeight: 800, letterSpacing: "-0.4px", margin: 0, color: C.ink }}>{reportMeta.icon} {reportMeta.label} Report</h1>
+            <p style={{ fontSize: "13px", color: C.muted, marginTop: "4px" }}>
+              {filtered.length} order{filtered.length !== 1 ? "s" : ""} · {totalUnits} units
+              {showDateRange && <> · <span style={{ color: C.ink }}>{fmtDisplay(dateFrom)} – {fmtDisplay(dateTo)}</span></>}
+            </p>
+          </div>
+          <Btn primary onClick={handleExport} disabled={exporting || filtered.length === 0}>
+            {exporting ? "Generating…" : "Download PDF"}
+          </Btn>
         </div>
-        <button onClick={handleExport} disabled={exporting || filtered.length === 0} style={{
-          padding: "10px 20px", borderRadius: "8px", border: "none",
-          background: filtered.length === 0 ? "#e0e0e0" : "#1a1a1a", color: "#fff",
-          fontSize: "13px", fontWeight: 600, cursor: filtered.length === 0 ? "not-allowed" : "pointer",
-          opacity: exporting ? 0.6 : 1, whiteSpace: "nowrap",
-        }}>
-          {exporting ? "Generating..." : "📄 Download PDF"}
-        </button>
       </div>
 
       <TabBar />

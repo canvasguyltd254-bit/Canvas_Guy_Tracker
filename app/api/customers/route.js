@@ -55,7 +55,8 @@ export async function GET(request) {
       serviceClient
         .from('order_payments')
         .select('order_id, amount, orders!inner(customer_id)')
-        .in('orders.customer_id', customerIds),
+        .in('orders.customer_id', customerIds)
+        .is('reversed_at', null),
     ]);
 
     const today = new Date().toISOString().split('T')[0];

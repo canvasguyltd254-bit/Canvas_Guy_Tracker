@@ -48,9 +48,12 @@ const nextConfig = {
   // the route files directly, so webpack never attempts to bundle it.
   experimental: {
     outputFileTracingIncludes: {
-      '/api/reports/pdf':                   PDF_ROUTES_INCLUDES,
-      '/api/orders/[id]/delivery-note/pdf': PDF_ROUTES_INCLUDES,
-      '/api/orders/[id]/pnl/pdf':           PDF_ROUTES_INCLUDES,
+      '/api/reports/pdf':                      PDF_ROUTES_INCLUDES,
+      '/api/orders/[id]/delivery-note/pdf':    PDF_ROUTES_INCLUDES,
+      '/api/orders/[id]/pnl/pdf':              PDF_ROUTES_INCLUDES,
+      '/api/orders/[id]/invoice/pdf':          PDF_ROUTES_INCLUDES,
+      '/api/crm/quotations/[id]/pdf':          PDF_ROUTES_INCLUDES,
+      '/api/crm/invoices/[id]/pdf':           PDF_ROUTES_INCLUDES,
     },
   },
 };

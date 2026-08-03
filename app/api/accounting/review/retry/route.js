@@ -51,6 +51,7 @@ const VALID_SOURCE_TYPES = [
   'manual_payment',
   'chatpesa_allocation',
   'supplier_opening_balance',
+  'order_payment',             // customer receipt — calls post_customer_payment RPC
 ];
 
 /**
@@ -289,6 +290,54 @@ export async function POST(request) {
       }
     }
 
+    // ── order_payment ────────────────────────────────────────────
+    else if (source_type === 'order_payment') {
+      const { data: op } = await serviceClient
+        .from('order_payments')
+        .select('id, amount, payment_date, journal_entry_id')
+        .eq('id', source_id)
+        .single();
+
+      if (!op) return NextResponse.json({ error: 'Record not found' }, { status: 404 });
+      if (op.journal_entry_id) return NextResponse.json({ error: 'Already posted' }, { status: 409 });
+
+      // Recovery: if the RPC posted the journal but failed to write back the id,
+      // re-link the existing journal instead of double-posting.
+      const existingJeId = await findExistingJournal(source_id);
+      if (existingJeId) {
+        result = { id: existingJeId };
+      } else {
+        const { data: jeId, error: rpcErr } = await serviceClient.rpc(
+          'post_customer_payment',
+          { p_payment_id: source_id, p_posted_by: user.id },
+        );
+        if (rpcErr) {
+          const msg = rpcErr.message || '';
+          if (msg.includes('INVOICE_NOT_POSTED')) {
+            return NextResponse.json(
+              { error: 'Invoice has not been posted for this order — post the invoice first' },
+              { status: 422 },
+            );
+          }
+          console.error('retry: post_customer_payment failed:', rpcErr.message);
+          return NextResponse.json({ error: rpcErr.message || 'Posting failed' }, { status: 500 });
+        }
+        // post_customer_payment returns the journal_entry_id directly (not wrapped)
+        result = { id: jeId };
+      }
+
+      if (result.id) {
+        const linkErr = await linkJournal('order_payments', 'journal_entry_id', result.id, source_id);
+        if (linkErr) {
+          console.error('retry: failed to write journal_entry_id to order_payments:', linkErr.message);
+          return NextResponse.json(
+            { error: `Journal ${result.id} was posted but source linking failed — call retry again to re-link without re-posting` },
+            { status: 422 },
+          );
+        }
+      }
+    }
+
     if (!result?.id) {
       // postJournal() already writes to accounting_posting_errors on failure —
       // do NOT insert a second row here (would cause duplicate error entries).
@@ -303,6 +352,8 @@ export async function POST(request) {
     // depending on which path wrote them. Resolve all known aliases unconditionally.
     const typesToResolve = new Set([rawType, source_type]);
     if (source_type === 'supplier_purchase') typesToResolve.add('purchase');
+    // order_payment errors may be logged under either the canonical name or 'customer_payment'
+    if (source_type === 'order_payment') typesToResolve.add('customer_payment');
 
     await Promise.all([...typesToResolve].map(t =>
       serviceClient

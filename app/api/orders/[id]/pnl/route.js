@@ -158,14 +158,54 @@ export async function GET(request, { params }) {
     }));
 
     const totalLabourCost = labourAllocations.reduce((s, l) => s + l.allocated_amount, 0);
-    const totalCost       = totalPurchaseCost + totalLabourCost;
-    const outstandingAP   = Math.max(0, totalPurchaseCost - totalPaidAP);
+
+    // ── Fetch direct expenses allocated to this order ──────────────────────────
+    const { data: expLinks, error: expErr } = await serviceClient
+      .from('order_direct_expense_links')
+      .select(`
+        allocated_amount,
+        order_direct_expenses (
+          id, expense_date, expense_category, category, description, payee_name,
+          amount, payment_status, payment_method, payment_reference,
+          receipt_url, receipt_name, notes, accounting_category_id,
+          is_posted, reversed_at, reversal_reason
+        )
+      `)
+      .eq('order_id', orderId);
+
+    if (expErr) {
+      console.error('GET /api/orders/[id]/pnl — expenses query error:', expErr.message);
+      return NextResponse.json({ error: 'Failed to fetch direct expenses' }, { status: 500 });
+    }
+
+    // Return ALL expenses (including reversed) so the UI can show "Reversed" badge.
+    // Only active (non-reversed) expenses count toward P&L totals.
+    const directExpenses = (expLinks || [])
+      .filter(l => l.order_direct_expenses)
+      .map(l => ({
+        ...l.order_direct_expenses,
+        allocated_amount: Number(l.allocated_amount),
+      }));
+
+    const totalDirectExpenses = directExpenses
+      .filter(e => !e.reversed_at)
+      .reduce((s, e) => s + e.allocated_amount, 0);
+    const totalCost            = totalPurchaseCost + totalLabourCost + totalDirectExpenses;
+    const outstandingAP        = Math.max(0, totalPurchaseCost - totalPaidAP);
 
     return NextResponse.json({
       success: true,
       purchases,
       labourAllocations,
-      totals: { totalCost, totalPurchaseCost, totalLabourCost, totalPaidAP, outstandingAP },
+      directExpenses,
+      totals: {
+        totalCost,
+        totalPurchaseCost,
+        totalLabourCost,
+        totalDirectExpenses,
+        totalPaidAP,
+        outstandingAP,
+      },
       hasUnallocatedPurchases,
     });
   } catch (err) {
