@@ -57,9 +57,20 @@ export async function PATCH(request, { params }) {
                      'bank_account', 'bank_name', 'bank_branch', 'paybill_number',
                      'nssf_number', 'id_number'];
 
+    const NUMERIC_FIELDS = new Set(['day_rate', 'monthly_salary', 'piece_rate', 'sha_amount']);
+    const DATE_FIELDS    = new Set(['hire_date']);
+
     const updates = {};
     for (const key of allowed) {
-      if (key in body) updates[key] = body[key];
+      if (!(key in body)) continue;
+      const val = body[key];
+      if (NUMERIC_FIELDS.has(key)) {
+        updates[key] = val === '' || val === null || val === undefined ? null : parseFloat(val);
+      } else if (DATE_FIELDS.has(key)) {
+        updates[key] = val === '' || val === null || val === undefined ? null : val;
+      } else {
+        updates[key] = val;
+      }
     }
 
     if (Object.keys(updates).length === 0) {

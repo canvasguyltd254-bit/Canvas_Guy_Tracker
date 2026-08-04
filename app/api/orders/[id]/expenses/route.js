@@ -219,7 +219,11 @@ export async function POST(request, { params }) {
     if (glErr && !glErr.startsWith('SKIP:')) {
       // GL failed — roll back by hard-deleting the expense (cascade removes links)
       console.error('POST /api/orders/[id]/expenses GL posting error:', glErr);
-      await serviceClient.from('order_direct_expenses').delete().eq('id', expenseId);
+      const { error: rollbackErr } = await serviceClient
+        .from('order_direct_expenses')
+        .delete()
+        .eq('id', expenseId);
+      if (rollbackErr) console.error('Direct expense rollback failed:', rollbackErr.message);
       return NextResponse.json(
         { error: 'Failed to post GL journal entry — expense was not saved' },
         { status: 500 }
