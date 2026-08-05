@@ -227,7 +227,7 @@ export async function POST(request) {
       p_notes:            notes || null,
       p_amount_available: amount_available,
       p_created_by:       user.id,
-      p_links:            JSON.stringify(links),
+      p_links:            links,
     });
 
     if (rpcErr) {
