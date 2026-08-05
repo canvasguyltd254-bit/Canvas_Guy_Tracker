@@ -45,6 +45,8 @@ export async function GET(request) {
     const customerId  = searchParams.get('customer_id') || '';
 
     // All orders that came from a quotation (quote_id is set)
+    // Note: delivery_batch_items is fetched separately — PostgREST double-nested
+    // embeds (batches → batch_items) cause a 500 when combined with other joins.
     let q = serviceClient
       .from('orders')
       .select(`
@@ -54,10 +56,7 @@ export async function GET(request) {
         customers ( id, name, email, phone ),
         order_payments ( id, amount, reversed_at ),
         order_items ( id, quantity ),
-        delivery_batches (
-          id, batch_number, status, deleted_at, actual_delivery_date,
-          delivery_batch_items ( quantity_delivered )
-        )
+        delivery_batches ( id, batch_number, status, deleted_at, actual_delivery_date )
       `)
       .not('quote_id', 'is', null)
       .order('invoice_issued_at', { ascending: false, nullsFirst: false })
@@ -101,12 +100,30 @@ export async function GET(request) {
       for (const qt of (quotes || [])) quotesMap[qt.id] = qt;
     }
 
+    // Fetch delivery_batch_items separately to avoid double-nested PostgREST embed failure
+    const batchIds = [...new Set((rows || []).flatMap(r => (r.delivery_batches || []).map(b => b.id)).filter(Boolean))];
+    let batchItemsMap = {}; // batch_id → [items]
+    if (batchIds.length > 0) {
+      const { data: batchItems } = await serviceClient
+        .from('delivery_batch_items')
+        .select('batch_id, quantity_delivered')
+        .in('batch_id', batchIds);
+      for (const item of (batchItems || [])) {
+        if (!batchItemsMap[item.batch_id]) batchItemsMap[item.batch_id] = [];
+        batchItemsMap[item.batch_id].push(item);
+      }
+    }
+
     // ── Post-query filters (needs joined data) ─────────────────────────────────
     let invoices = (rows || []).map(order => {
       const quote        = quotesMap[order.quote_id] || null;
       const payments     = order.order_payments || [];
       const items        = order.order_items || [];
-      const batches      = order.delivery_batches || [];
+      // Attach batch items from separate fetch
+      const batches      = (order.delivery_batches || []).map(b => ({
+        ...b,
+        delivery_batch_items: batchItemsMap[b.id] || [],
+      }));
 
       const totalPaid    = payments
         .filter(p => !p.reversed_at)
