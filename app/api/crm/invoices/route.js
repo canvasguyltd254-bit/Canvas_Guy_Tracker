@@ -104,10 +104,14 @@ export async function GET(request) {
     const batchIds = [...new Set((rows || []).flatMap(r => (r.delivery_batches || []).map(b => b.id)).filter(Boolean))];
     let batchItemsMap = {}; // batch_id → [items]
     if (batchIds.length > 0) {
-      const { data: batchItems } = await serviceClient
+      const { data: batchItems, error: batchItemsError } = await serviceClient
         .from('delivery_batch_items')
         .select('batch_id, quantity_delivered')
         .in('batch_id', batchIds);
+      if (batchItemsError) {
+        console.error('GET /api/crm/invoices — batch items fetch error:', batchItemsError.message);
+        return NextResponse.json({ error: 'Failed to fetch delivery batch details' }, { status: 500 });
+      }
       for (const item of (batchItems || [])) {
         if (!batchItemsMap[item.batch_id]) batchItemsMap[item.batch_id] = [];
         batchItemsMap[item.batch_id].push(item);
