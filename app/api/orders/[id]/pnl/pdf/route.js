@@ -180,7 +180,7 @@ export async function GET(request, { params }) {
       .select(`
         allocated_amount,
         order_direct_expenses (
-          id, expense_date, expense_category, description, amount, reversed_at
+          id, expense_date, category, expense_category, description, amount, reversed_at
         )
       `)
       .eq('order_id', orderId);

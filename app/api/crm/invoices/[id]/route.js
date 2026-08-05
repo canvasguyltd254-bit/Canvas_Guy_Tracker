@@ -86,7 +86,7 @@ export async function GET(request, { params }) {
 
     if (quoteErr) {
       console.error('GET /api/crm/invoices/[id] quote fetch error:', quoteErr.message);
-      // Non-fatal: continue without quote data
+      return NextResponse.json({ error: `Failed to fetch quotation: ${quoteErr.message}` }, { status: 500 });
     }
 
     // ── 3. Quote history — all revisions in the same quote_group_id ───────────
