@@ -52,7 +52,6 @@ export async function GET(request) {
         invoice_number, invoice_issued_at, customer_type, payment_terms,
         customer_id, quote_id,
         customers ( id, name, email, phone ),
-        quotations ( id, quote_num, revision, quote_group_id ),
         order_payments ( id, amount, reversed_at ),
         order_items ( id, quantity ),
         delivery_batches (
@@ -86,9 +85,20 @@ export async function GET(request) {
       return NextResponse.json({ error: 'Failed to fetch invoices' }, { status: 500 });
     }
 
+    // Fetch quote data separately to avoid ambiguous FK join
+    const quoteIds = [...new Set((rows || []).map(r => r.quote_id).filter(Boolean))];
+    let quotesMap = {};
+    if (quoteIds.length > 0) {
+      const { data: quotes } = await serviceClient
+        .from('quotations')
+        .select('id, quote_num, revision, quote_group_id')
+        .in('id', quoteIds);
+      for (const qt of (quotes || [])) quotesMap[qt.id] = qt;
+    }
+
     // ── Post-query filters (needs joined data) ─────────────────────────────────
     let invoices = (rows || []).map(order => {
-      const quote        = order.quotations;
+      const quote        = quotesMap[order.quote_id] || null;
       const payments     = order.order_payments || [];
       const items        = order.order_items || [];
       const batches      = order.delivery_batches || [];
