@@ -169,7 +169,7 @@ async function recomputeEntry(runId, employeeId, userId) {
       .eq('employee_id', employeeId);
 
     const days_worked     = (att || []).filter(a => a.present).length;
-    const overtime_amount = (att || []).reduce((s, a) => s + Number(a.overtime_hours || 0), 0); // field stores KES amount directly
+    const overtime_amount = (att || []).filter(a => a.present).reduce((s, a) => s + Number(a.overtime_hours || 0), 0); // field stores KES amount; only count days worked
     const overtime_hours  = 0; // hours no longer tracked; OT is entered as a fixed KES amount
     const day_rate        = entry.snapshot_day_rate || 0;
     const gross_pay       = days_worked * day_rate + overtime_amount;
