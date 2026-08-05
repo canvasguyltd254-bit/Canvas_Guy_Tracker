@@ -66,6 +66,11 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
     }
 
+    // Coerce empty strings to null for UUID and date fields
+    if (body.customer_id === '')  body.customer_id  = null;
+    if (body.enquiry_id  === '')  body.enquiry_id   = null;
+    if (body.valid_until === '')  body.valid_until   = null;
+
     // Must have customer or prospect
     if (!body.customer_id && !body.prospect_name?.trim()) {
       return NextResponse.json(
