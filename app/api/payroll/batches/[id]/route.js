@@ -82,12 +82,60 @@ export async function PATCH(request, { params }) {
           .eq('id', params.id);
       }
 
+      // ── Auto-close run if all entries are now fully paid ──────
+      try {
+        const { data: batchRow, error: batchLookupErr } = await serviceClient
+          .from('payroll_payment_batches')
+          .select('run_id')
+          .eq('id', params.id)
+          .single();
+
+        if (batchLookupErr) throw new Error(`batch lookup: ${batchLookupErr.message}`);
+
+        const runId = batchRow?.run_id;
+        if (runId) {
+          // .neq() uses SQL != which excludes NULLs — OR on null covers
+          // entries where payment_status was never set.
+          const { count: unpaidCount, error: countErr } = await serviceClient
+            .from('payroll_entries')
+            .select('id', { count: 'exact', head: true })
+            .eq('run_id', runId)
+            .or('payment_status.neq.paid,payment_status.is.null');
+
+          if (countErr) throw new Error(`unpaid count: ${countErr.message}`);
+
+          if (unpaidCount === 0) {
+            const { error: closeErr } = await serviceClient
+              .from('payroll_runs')
+              .update({ status: 'closed', updated_at: new Date().toISOString() })
+              .eq('id', runId)
+              .eq('status', 'approved'); // guard: only close if still approved
+
+            if (closeErr) throw new Error(`run close: ${closeErr.message}`);
+
+            const { error: actErr } = await serviceClient.from('payroll_activities').insert({
+              entity_type:   'run',
+              entity_id:     runId,
+              activity_type: 'closed',
+              description:   `Run automatically closed — all entries fully paid after batch ${batch.batch_num} reconciliation`,
+              created_by:    user.id,
+            });
+
+            if (actErr) throw new Error(`activity log: ${actErr.message}`);
+          }
+        }
+      } catch (autoCloseErr) {
+        // Log but do not fail the response — reconciliation already committed.
+        console.error('PATCH /api/payroll/batches/[id] auto-close error:', autoCloseErr.message);
+      }
+
+      const resultObj = result && typeof result === 'object' ? result : {};
       await serviceClient.from('payroll_activities').insert({
         entity_type:   'batch',
         entity_id:     params.id,
         activity_type: 'reconciled',
-        description:   `Batch ${batch.batch_num} reconciled by ${displayName}. Ref: ${chatpesa_ref}. ${result?.payments_created} payments created, KES ${result?.total_paid?.toLocaleString()} disbursed`,
-        new_value:     JSON.stringify({ chatpesa_ref, ...result }),
+        description:   `Batch ${batch.batch_num} reconciled by ${displayName}. Ref: ${chatpesa_ref}. ${resultObj.payments_created ?? '?'} payments created, KES ${Number(resultObj.total_paid ?? 0).toLocaleString()} disbursed`,
+        new_value:     JSON.stringify({ chatpesa_ref, ...resultObj }),
         created_by:    user.id,
       });
 
