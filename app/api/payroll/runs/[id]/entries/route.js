@@ -8,6 +8,7 @@
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { resolveShaDeduction } from '@/shared/lib/resolveShaDeduction';
 
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 const OVERTIME_RATE = 200; // KES per hour
@@ -93,7 +94,11 @@ export async function POST(request, { params }) {
     // For permanent employees: gross = monthly_salary; days_worked = 0
     // For casual/skilled_casual: gross computed from attendance (0 at creation)
     const gross_pay = emp.type === 'permanent' ? (emp.monthly_salary || 0) : 0;
-    const sha_deduction = emp.sha_amount || 0;
+
+    // SHA deducts once per calendar month per employee.
+    // The RPC determines ownership atomically by earliest period_start in the month.
+    const sha_deduction = await resolveShaDeduction(emp.sha_amount || 0, employee_id, runId);
+
     const net_pay = Math.max(0, gross_pay - sha_deduction);
 
     const { data: entry, error: insertErr } = await serviceClient
@@ -158,3 +163,4 @@ export async function POST(request, { params }) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
+

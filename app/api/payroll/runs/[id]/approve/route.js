@@ -26,7 +26,7 @@ export async function POST(request, { params }) {
 
     const { data: run } = await serviceClient
       .from('payroll_runs')
-      .select('status, run_num, run_type')
+      .select('status, run_num, run_type, period_start')
       .eq('id', params.id)
       .single();
 
@@ -80,6 +80,15 @@ export async function POST(request, { params }) {
         reopen_reason:    reason,
       }).eq('id', params.id);
 
+      // Release SHA ownership so a re-approval can re-race for the claim.
+      // Without this, re-approval would find existing claim rows for this run
+      // and either conflict on insert (wrong run_id) or incorrectly apply SHA
+      // to a different run that has since claimed ownership.
+      await serviceClient
+        .from('payroll_sha_claims')
+        .delete()
+        .eq('run_id', params.id);
+
       await serviceClient.from('payroll_activities').insert({
         entity_type:   'run',
         entity_id:     params.id,
@@ -98,53 +107,26 @@ export async function POST(request, { params }) {
       return NextResponse.json({ error: 'Only draft runs can be approved' }, { status: 409 });
     }
 
-    // Compute and snapshot totals from entries
-    const { data: entries, error: entErr } = await serviceClient
-      .from('payroll_entries')
-      .select('gross_pay, total_deductions, net_pay, snapshot_type')
-      .eq('run_id', params.id);
+    // Delegate to atomic RPC:
+    // - Locks run + all entries with FOR UPDATE
+    // - Enforces SHA once-per-month: committed approved/closed owner always wins
+    // - Corrects sha_deduction, total_deductions, net_pay on each entry
+    // - Snapshots totals and sets status = 'approved' in one transaction
+    const { data: result, error: rpcErr } = await serviceClient.rpc('approve_payroll_run', {
+      p_run_id:           params.id,
+      p_approved_by:      user.id,
+      p_approved_by_name: displayName,
+    });
 
-    if (entErr) {
-      return NextResponse.json({ error: 'Failed to read entries for approval' }, { status: 500 });
+    if (rpcErr) {
+      const status = rpcErr.message?.includes('no entries') ? 400
+                   : rpcErr.message?.includes('Only draft') ? 409
+                   : rpcErr.message?.includes('does not match') ? 400
+                   : 500;
+      return NextResponse.json({ error: rpcErr.message || 'Failed to approve run' }, { status });
     }
 
-    if (!entries || entries.length === 0) {
-      return NextResponse.json({ error: 'Cannot approve a run with no entries' }, { status: 400 });
-    }
-
-    // Validate run type matches employee types
-    if (run.run_type !== 'combined') {
-      const mismatch = entries.filter(e => e.snapshot_type !== run.run_type);
-      if (mismatch.length > 0) {
-        return NextResponse.json({
-          error: `Run type "${run.run_type}" does not match ${mismatch.length} employee(s) of type "${mismatch[0].snapshot_type}". Use run_type "combined" for mixed payrolls.`,
-        }, { status: 400 });
-      }
-    }
-
-    const total_gross      = entries.reduce((s, e) => s + Number(e.gross_pay || 0), 0);
-    const total_deductions = entries.reduce((s, e) => s + Number(e.total_deductions || 0), 0);
-    const total_net        = entries.reduce((s, e) => s + Number(e.net_pay || 0), 0);
-    const employee_count   = entries.length;
-
-    const { error: updateErr } = await serviceClient
-      .from('payroll_runs')
-      .update({
-        status:           'approved',
-        approved_by:      user.id,
-        approved_at:      new Date().toISOString(),
-        approved_by_name: displayName,
-        total_gross,
-        total_deductions,
-        total_net,
-        employee_count,
-        reopen_reason:    null,  // clear any prior reopen reason
-      })
-      .eq('id', params.id);
-
-    if (updateErr) {
-      return NextResponse.json({ error: 'Failed to approve run' }, { status: 500 });
-    }
+    const { total_gross, total_deductions, total_net, employee_count } = result;
 
     await serviceClient.from('payroll_activities').insert({
       entity_type:   'run',

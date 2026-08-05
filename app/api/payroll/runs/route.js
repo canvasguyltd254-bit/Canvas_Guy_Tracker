@@ -72,18 +72,19 @@ export async function GET(request) {
     if (runIds.length > 0) {
       const { data: entries } = await serviceClient
         .from('payroll_entries')
-        .select('run_id, gross_pay, net_pay')
+        .select('run_id, gross_pay, net_pay, amount_paid')
         .in('run_id', runIds);
 
       for (const e of (entries || [])) {
-        if (!totalsMap[e.run_id]) totalsMap[e.run_id] = { employee_count: 0, total_gross: 0, total_net: 0 };
-        totalsMap[e.run_id].employee_count += 1;
-        totalsMap[e.run_id].total_gross   += Number(e.gross_pay || 0);
-        totalsMap[e.run_id].total_net     += Number(e.net_pay   || 0);
+        if (!totalsMap[e.run_id]) totalsMap[e.run_id] = { employee_count: 0, total_gross: 0, total_net: 0, total_outstanding: 0 };
+        totalsMap[e.run_id].employee_count    += 1;
+        totalsMap[e.run_id].total_gross       += Number(e.gross_pay   || 0);
+        totalsMap[e.run_id].total_net         += Number(e.net_pay     || 0);
+        totalsMap[e.run_id].total_outstanding += Math.max(0, Number(e.net_pay || 0) - Number(e.amount_paid || 0));
       }
     }
 
-    const enriched = (runs || []).map(r => ({ ...r, ...(totalsMap[r.id] || { employee_count: 0, total_gross: 0, total_net: 0 }) }));
+    const enriched = (runs || []).map(r => ({ ...r, ...(totalsMap[r.id] || { employee_count: 0, total_gross: 0, total_net: 0, total_outstanding: 0 }) }));
 
     return NextResponse.json({ runs: enriched, total: count });
   } catch (err) {

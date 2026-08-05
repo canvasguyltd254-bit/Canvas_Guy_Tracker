@@ -8,6 +8,7 @@
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { resolveShaDeduction } from '@/shared/lib/resolveShaDeduction';
 
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 const OVERTIME_RATE = 200;
@@ -199,7 +200,8 @@ async function recomputeEntry(runId, employeeId, userId) {
     }
 
     const gross_with_bonus  = gross_pay + bonus_addition;
-    const sha_deduction     = entry.snapshot_sha || 0;
+    // SHA deducts once per calendar month — check other runs in the same month
+    const sha_deduction     = await resolveShaDeduction(entry.snapshot_sha || 0, employeeId, runId);
     const total_deductions  = sha_deduction + advance_deduction + damage_deduction + other_deductions;
     const net_pay           = Math.max(0, gross_with_bonus - total_deductions);
 

@@ -203,7 +203,7 @@ function OverviewTab({ userRole }) {
 
   if (loading) return <Spinner />;
 
-  const totalUnpaid = (stats?.pendingRuns || []).reduce((s, r) => s + Number(r.total_net || 0), 0);
+  const totalUnpaid = (stats?.pendingRuns || []).reduce((s, r) => s + Number(r.total_outstanding || 0), 0);
 
   const metricStyle = { flex: 1, minWidth: 160 };
   const metricCard = (label, value, sub, color = DARK) => (

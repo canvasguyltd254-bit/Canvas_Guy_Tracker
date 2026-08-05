@@ -94,20 +94,28 @@ export async function PATCH(request, { params }) {
 
         const runId = batchRow?.run_id;
         if (runId) {
-          // .neq() uses SQL != which excludes NULLs — OR on null covers
-          // entries where payment_status was never set.
-          const { count: unpaidCount, error: countErr } = await serviceClient
+          // Check per-entry balance: amount_paid < net_pay on any entry means the run
+          // is still open. Using raw balance (not payment_status) so a status drift
+          // can't cause a premature close. COALESCE handled server-side via lt filter
+          // against a computed column isn't possible in PostgREST — fetch balances and
+          // evaluate in JS instead (entry count is bounded to one run, never large).
+          const { data: entryBalances, error: countErr } = await serviceClient
             .from('payroll_entries')
-            .select('id', { count: 'exact', head: true })
-            .eq('run_id', runId)
-            .or('payment_status.neq.paid,payment_status.is.null');
+            .select('net_pay, amount_paid')
+            .eq('run_id', runId);
 
           if (countErr) throw new Error(`unpaid count: ${countErr.message}`);
 
-          if (unpaidCount === 0) {
+          // Run must have at least one entry and every entry must be fully paid
+          const hasEntries  = entryBalances?.length > 0;
+          const unpaidCount = (entryBalances || []).filter(
+            e => (Number(e.amount_paid) || 0) < (Number(e.net_pay) || 0)
+          ).length;
+
+          if (hasEntries && unpaidCount === 0) {
             const { error: closeErr } = await serviceClient
               .from('payroll_runs')
-              .update({ status: 'closed', updated_at: new Date().toISOString() })
+              .update({ status: 'closed' })
               .eq('id', runId)
               .eq('status', 'approved'); // guard: only close if still approved
 
