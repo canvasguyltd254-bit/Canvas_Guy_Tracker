@@ -71,8 +71,9 @@ export async function GET(request) {
     if (order)         q = q.ilike('order_num', `%${order}%`);
     // Date filters: include pending invoices (invoice_issued_at IS NULL) regardless of range,
     // so "pending invoice" orders always appear even when a date range is applied.
+    // Both bounds must be combined with AND (not OR) to properly constrain the range.
     if (dateFrom && dateTo) {
-      q = q.or(`invoice_issued_at.gte.${dateFrom},invoice_issued_at.lte.${dateTo}T23:59:59,invoice_issued_at.is.null`);
+      q = q.or(`and(invoice_issued_at.gte.${dateFrom},invoice_issued_at.lte.${dateTo}T23:59:59),invoice_issued_at.is.null`);
     } else if (dateFrom) {
       q = q.or(`invoice_issued_at.gte.${dateFrom},invoice_issued_at.is.null`);
     } else if (dateTo) {
@@ -89,10 +90,14 @@ export async function GET(request) {
     const quoteIds = [...new Set((rows || []).map(r => r.quote_id).filter(Boolean))];
     let quotesMap = {};
     if (quoteIds.length > 0) {
-      const { data: quotes } = await serviceClient
+      const { data: quotes, error: quotesError } = await serviceClient
         .from('quotations')
         .select('id, quote_num, revision, quote_group_id')
         .in('id', quoteIds);
+      if (quotesError) {
+        console.error('GET /api/crm/invoices — quotations fetch error:', quotesError.message);
+        return NextResponse.json({ error: 'Failed to fetch invoice quote details' }, { status: 500 });
+      }
       for (const qt of (quotes || [])) quotesMap[qt.id] = qt;
     }
 
