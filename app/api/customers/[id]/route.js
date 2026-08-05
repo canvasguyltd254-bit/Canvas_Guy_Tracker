@@ -110,7 +110,7 @@ export async function GET(request, { params }) {
 
     for (const o of [...nonCancelled].sort((a, b) => {
       // Sort by invoice date if issued, otherwise by creation date
-      const aDate = o.invoice_issued_at || o.created_at;
+      const aDate = a.invoice_issued_at || a.created_at;
       const bDate = b.invoice_issued_at || b.created_at;
       return aDate > bDate ? 1 : -1;
     })) {
