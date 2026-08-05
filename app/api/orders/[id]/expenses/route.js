@@ -48,7 +48,7 @@ export async function GET(request, { params }) {
       .select(`
         allocated_amount,
         order_direct_expenses (
-          id, expense_date, expense_category, category, description, payee_name,
+          id, expense_date, expense_category, description, payee_name,
           amount, payment_status, payment_method, payment_reference,
           receipt_url, receipt_name, notes, accounting_category_id,
           journal_entry_id, is_posted, reversed_at, reversal_reason, created_at
