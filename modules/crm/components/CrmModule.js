@@ -290,7 +290,7 @@ function QuoteFormModal({ quote, enquiries, onSave, onClose, prefill = {} }) {
     if (useProspect || custQ.length < 2) { setCustResults([]); return; }
     setCustLoading(true);
     const t = setTimeout(async () => {
-      const res = await fetch(`/api/customers?q=${encodeURIComponent(custQ)}&limit=10`);
+      const res = await fetch(`/api/customers?search=${encodeURIComponent(custQ)}&limit=10`);
       const j   = await res.json();
       setCustResults(j.data || []);
       setCustLoading(false);
