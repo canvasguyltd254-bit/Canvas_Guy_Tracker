@@ -145,17 +145,12 @@ export async function GET(request, { params }) {
     let deliveryHistory = [];
 
     if (order.batch_delivery) {
-      // Batch orders: full batch breakdown with gross line values
+      // Batch orders: full batch breakdown with gross line values.
+      // Fetch delivery_batch_items and order_items separately to avoid
+      // triple-nested PostgREST embeds (batches → items → order_items) which cause 500s.
       const { data: batches, error: batchErr } = await serviceClient
         .from('delivery_batches')
-        .select(`
-          id, batch_number, status, actual_delivery_date, created_at,
-          delivery_batch_items (
-            id, quantity_planned, quantity_delivered, quantity_rejected,
-            order_item_id,
-            order_items ( id, description, category, unit_price, quantity, gross_amount )
-          )
-        `)
+        .select('id, batch_number, status, actual_delivery_date, created_at')
         .eq('order_id', orderId)
         .is('deleted_at', null)
         .order('batch_number', { ascending: true });
@@ -165,8 +160,40 @@ export async function GET(request, { params }) {
         return NextResponse.json({ error: 'Failed to fetch delivery data' }, { status: 500 });
       }
 
+      const detailBatchIds = (batches || []).map(b => b.id);
+      let detailBatchItemsMap = {}; // batch_id → [items with order_item joined]
+      if (detailBatchIds.length > 0) {
+        const { data: batchItems, error: batchItemsErr } = await serviceClient
+          .from('delivery_batch_items')
+          .select('id, batch_id, order_item_id, quantity_planned, quantity_delivered, quantity_rejected')
+          .in('batch_id', detailBatchIds);
+        if (batchItemsErr) {
+          console.error('GET /api/crm/invoices/[id] batch items fetch error:', batchItemsErr.message);
+          return NextResponse.json({ error: 'Failed to fetch delivery batch items' }, { status: 500 });
+        }
+
+        const orderItemIds = [...new Set((batchItems || []).map(i => i.order_item_id).filter(Boolean))];
+        let orderItemsMap = {};
+        if (orderItemIds.length > 0) {
+          const { data: orderItems, error: oiErr } = await serviceClient
+            .from('order_items')
+            .select('id, description, category, unit_price, quantity, gross_amount')
+            .in('id', orderItemIds);
+          if (oiErr) {
+            console.error('GET /api/crm/invoices/[id] order items fetch error:', oiErr.message);
+            return NextResponse.json({ error: 'Failed to fetch order item details' }, { status: 500 });
+          }
+          for (const oi of (orderItems || [])) orderItemsMap[oi.id] = oi;
+        }
+
+        for (const item of (batchItems || [])) {
+          if (!detailBatchItemsMap[item.batch_id]) detailBatchItemsMap[item.batch_id] = [];
+          detailBatchItemsMap[item.batch_id].push({ ...item, order_items: orderItemsMap[item.order_item_id] || null });
+        }
+      }
+
       deliveryHistory = (batches || []).map(batch => {
-        const items = batch.delivery_batch_items || [];
+        const items = detailBatchItemsMap[batch.id] || [];
 
         // Fix 4: use gross unit value (gross_amount ÷ quantity) so VAT + discounts are correct
         // Fix 7: only count quantities from confirmed-delivery batches toward value
