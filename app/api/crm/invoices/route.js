@@ -52,7 +52,7 @@ export async function GET(request) {
         invoice_number, invoice_issued_at, customer_type, payment_terms,
         customer_id, quote_id,
         customers ( id, name, email, phone ),
-        quotations!orders_quote_id_fkey ( id, quote_num, revision, quote_group_id ),
+        quotations ( id, quote_num, revision, quote_group_id ),
         order_payments ( id, amount, reversed_at ),
         order_items ( id, quantity ),
         delivery_batches (
