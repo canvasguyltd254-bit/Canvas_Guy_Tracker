@@ -453,9 +453,9 @@ export default function SuppliersModule() {
                         <div style={{ fontSize: 13, fontWeight: 700, color: C.red, whiteSpace: "nowrap", fontFamily: C.mono }}>
                           {fmt(s._stats.balance_owed)} owed
                         </div>
-                        {(s._stats?.total_purchased || 0) > 0 && (
-                          <div style={{ fontSize: 10, color: C.faint, marginTop: 1, whiteSpace: "nowrap" }}>of {fmt(s._stats.total_purchased)}</div>
-                        )}
+                        {(() => { const tot = (s._stats?.total_purchased || 0) + parseFloat(s.opening_balance || 0); return tot > 0 && (
+                          <div style={{ fontSize: 10, color: C.faint, marginTop: 1, whiteSpace: "nowrap" }}>of {fmt(tot)}</div>
+                        ); })()}
                       </>
                     ) : (
                       <>
