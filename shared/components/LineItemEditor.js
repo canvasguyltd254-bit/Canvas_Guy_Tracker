@@ -348,13 +348,13 @@ export default function LineItemEditor({
             {item.description || (mode === 'order' ? item.category : '') || 'New item'}
           </span>
           <button onClick={() => moveItem(i, -1)} disabled={i === 0}
-            style={{ border: 0, background: 'none', cursor: i === 0 ? 'default' : 'pointer', color: i === 0 ? '#d0cbc5' : C.muted, fontSize: 10, padding: '2px 3px' }}>▲</button>
+            style={{ border: 0, background: 'none', cursor: i === 0 ? 'default' : 'pointer', color: i === 0 ? '#d0cbc5' : C.muted, fontSize: 10, minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>▲</button>
           <button onClick={() => moveItem(i, 1)} disabled={i === items.length - 1}
-            style={{ border: 0, background: 'none', cursor: i === items.length - 1 ? 'default' : 'pointer', color: i === items.length - 1 ? '#d0cbc5' : C.muted, fontSize: 10, padding: '2px 3px' }}>▼</button>
+            style={{ border: 0, background: 'none', cursor: i === items.length - 1 ? 'default' : 'pointer', color: i === items.length - 1 ? '#d0cbc5' : C.muted, fontSize: 10, minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>▼</button>
           <button onClick={() => removeItem(i)}
-            style={{ border: 0, background: 'none', cursor: 'pointer', color: C.red, fontSize: 12, fontWeight: 600, padding: '2px 6px' }}>Remove</button>
+            style={{ border: 0, background: 'none', cursor: 'pointer', color: C.red, fontSize: 12, fontWeight: 600, minHeight: 44, padding: '0 8px', display: 'inline-flex', alignItems: 'center' }}>Remove</button>
           <button onClick={() => setActiveItem(null)}
-            style={{ border: 0, background: 'none', cursor: 'pointer', color: C.muted, fontSize: 11.5, fontWeight: 600, padding: '2px 4px' }}>Collapse ‹</button>
+            style={{ border: 0, background: 'none', cursor: 'pointer', color: C.muted, fontSize: 11.5, fontWeight: 600, minHeight: 44, padding: '0 6px', display: 'inline-flex', alignItems: 'center' }}>Collapse ‹</button>
         </div>
 
         <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>

@@ -2101,28 +2101,37 @@ export default function OrderFormPage() {
         </div>{/* end dark header inner */}
 
         {/* ── Tab bar ── */}
-        <div style={{ background: '#fff', borderBottom: '1px solid #e5e7eb', display: 'flex', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }} className="print-hidden order-tab-bar">
-          {[
-            { id: 'info',     label: 'Info',     icon: '📋' },
-            { id: 'payments', label: 'Payments', icon: '💰' },
-            { id: 'pnl',      label: 'P&L',      icon: '📊' },
-            { id: 'delivery', label: 'Delivery', icon: '🚚' },
-            { id: 'drawings', label: 'Files',    icon: '📐' },
-            { id: 'activity', label: 'Activity', icon: '🕐' },
-          ].map(t => (
-            <button key={t.id} onClick={() => setActiveTab(t.id)} style={{
-              padding: '10px 16px', border: 'none', background: 'transparent',
-              borderBottom: activeTab === t.id ? '2.5px solid #E8512A' : '2.5px solid transparent',
-              color: activeTab === t.id ? '#E8512A' : '#6b7280',
-              fontWeight: activeTab === t.id ? 700 : 500,
-              fontSize: '13px', cursor: 'pointer', whiteSpace: 'nowrap',
-              display: 'flex', alignItems: 'center', gap: '5px',
-            }}>
-              <span>{t.icon}</span>
-              <span className="tab-label">{t.label}</span>
-            </button>
-          ))}
+        <div style={{ position: 'relative', background: '#fff', borderBottom: '1px solid #e5e7eb' }} className="print-hidden order-tab-bar">
+          <div style={{ display: 'flex', overflowX: 'auto', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+            {[
+              { id: 'info',     label: 'Info',     icon: '📋' },
+              { id: 'payments', label: 'Payments', icon: '💰' },
+              { id: 'pnl',      label: 'P&L',      icon: '📊' },
+              { id: 'delivery', label: 'Delivery', icon: '🚚' },
+              { id: 'drawings', label: 'Files',    icon: '📐' },
+              { id: 'activity', label: 'Activity', icon: '🕐' },
+            ].map(t => (
+              <button key={t.id} data-order-tab={t.id} onClick={() => {
+                setActiveTab(t.id);
+                document.querySelector(`[data-order-tab="${t.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+              }} style={{
+                padding: '10px 16px', border: 'none', background: 'transparent',
+                borderBottom: activeTab === t.id ? '2.5px solid #E8512A' : '2.5px solid transparent',
+                color: activeTab === t.id ? '#E8512A' : '#6b7280',
+                fontWeight: activeTab === t.id ? 700 : 500,
+                fontSize: '13px', cursor: 'pointer', whiteSpace: 'nowrap',
+                display: 'flex', alignItems: 'center', gap: '5px',
+                minHeight: 44, flexShrink: 0,
+              }}>
+                <span>{t.icon}</span>
+                <span className="tab-label">{t.label}</span>
+              </button>
+            ))}
+          </div>
+          {/* Right-edge fade */}
+          <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 32, pointerEvents: 'none', background: 'linear-gradient(to right, transparent, #fff)' }} />
         </div>
+        <style>{`.order-tab-bar div::-webkit-scrollbar { display: none; }`}</style>
       </div>{/* end sticky wrapper */}
 
       {/* ── MAIN ───────────────────────────────────────────────────────────── */}

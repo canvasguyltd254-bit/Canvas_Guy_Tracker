@@ -120,7 +120,7 @@ export default function ProductionBoard(){
     </div>
   );
 
-  return(<div style={{padding:"20px 16px",color:C.ink}}>
+  return(<div style={{padding:"20px 16px",color:C.ink,maxWidth:"100%",minWidth:0,overflowX:"hidden"}}>
     {/* QC Gate Modal */}
     {qcPrompt&&<Modal title="QC Approval Required" onClose={()=>setQcPrompt(null)} footer={<><Btn onClick={()=>setQcPrompt(null)}>Cancel</Btn><Btn primary onClick={confirmQc}>✓ Approve & Advance</Btn></>}>
       <p style={{fontSize:"13px",color:C.muted,marginBottom:"16px"}}>Confirm quality inspection for <Mono>{qcPrompt.order.order_num}</Mono> — {qcPrompt.order.client}</p>
@@ -148,31 +148,43 @@ export default function ProductionBoard(){
       </div>}
     </Modal>}
 
-    <PageHeader title="Production" description={`${orders.length} orders · ${totalUnits} units in pipeline`} actions={<div style={{display:"flex",gap:"10px",alignItems:"center"}}>{pdfActions}{viewToggle}</div>} />
+    {/* Header — stacks on mobile */}
+    <div className="prod-header" style={{marginBottom:16}}>
+      <div className="prod-title-row" style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:10,flexWrap:"wrap",marginBottom:10}}>
+        <div>
+          <div style={{fontSize:22,fontWeight:800,color:C.ink,letterSpacing:"-0.4px"}}>Production</div>
+          <div style={{fontSize:12,color:C.muted,marginTop:2}}>{orders.length} orders · {totalUnits} units in pipeline</div>
+        </div>
+        <div className="prod-view-toggle">{viewToggle}</div>
+      </div>
+      <div className="prod-pdf-actions" style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>{pdfActions}</div>
+    </div>
 
-    {/* Stage summary strip */}
-    <div style={{display:"flex",gap:"8px",marginBottom:"16px",overflowX:"auto",paddingBottom:"4px"}}>
-      {PROD_STAGES.map(s=>{const c2=ALL_STATUS_COLORS[s];return <div key={s} style={{padding:"10px 14px",borderRadius:C.radiusSm,background:C.card,border:`1.5px solid ${c2.border}`,borderLeft:`4px solid ${c2.text}`,flex:"1 1 0",minWidth:"120px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)"}}><Mono style={{fontSize:"22px",fontWeight:800,color:c2.text,display:"block"}}>{stageCounts[s]}</Mono><div style={{fontSize:"11px",color:C.muted,fontWeight:600,marginTop:2}}>{s}</div></div>})}
+    {/* Stage summary strip — contained horizontal scroller on mobile */}
+    <div className="prod-kpi-scroll" style={{display:"flex",gap:"8px",marginBottom:"16px",overflowX:"auto",paddingBottom:"4px",scrollSnapType:"x mandatory",WebkitOverflowScrolling:"touch"}}>
+      {PROD_STAGES.map(s=>{const c2=ALL_STATUS_COLORS[s];return <div key={s} className="prod-kpi-card" style={{padding:"10px 14px",borderRadius:C.radiusSm,background:C.card,border:`1.5px solid ${c2.border}`,borderLeft:`4px solid ${c2.text}`,flex:"1 1 0",minWidth:"120px",boxShadow:"0 1px 3px rgba(0,0,0,0.05)",scrollSnapAlign:"start"}}><Mono style={{fontSize:"22px",fontWeight:800,color:c2.text,display:"block"}}>{stageCounts[s]}</Mono><div style={{fontSize:"11px",color:C.muted,fontWeight:600,marginTop:2}}>{s}</div></div>})}
     </div>
 
     <TInput type="text" placeholder="Search orders…" value={search} onChange={e=>setSearch(e.target.value)} style={{maxWidth:"320px",marginBottom:"16px"}}/>
 
-    {/* Board View */}
+    {/* Board View — own horizontal scroller on mobile */}
     {viewMode==="board"&&(
-      <div className="prod-board" style={{display:"grid",gridTemplateColumns:"repeat(4, 1fr)",gap:"12px",alignItems:"start"}}>
-        {PROD_STAGES.map(stage=>{
-          const c2=ALL_STATUS_COLORS[stage];
-          const stageOrders=filtered.filter(o=>o.status===stage);
-          return(<div key={stage}>
-            <div style={{padding:"10px 12px",borderRadius:`${C.radiusSm}px ${C.radiusSm}px 0 0`,background:c2.bg,borderBottom:`3px solid ${c2.text}`,marginBottom:"8px"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <span style={{fontSize:"13px",fontWeight:700,color:c2.text}}>{STAGE_ICONS[stage]} {stage}</span>
-                <Mono style={{fontSize:"14px",fontWeight:800,color:c2.text}}>{stageOrders.length}</Mono>
+      <div className="prod-board-scroll">
+        <div className="prod-board" style={{display:"grid",gridTemplateColumns:"repeat(4, 1fr)",gap:"12px",alignItems:"start"}}>
+          {PROD_STAGES.map(stage=>{
+            const c2=ALL_STATUS_COLORS[stage];
+            const stageOrders=filtered.filter(o=>o.status===stage);
+            return(<div key={stage}>
+              <div style={{padding:"10px 12px",borderRadius:`${C.radiusSm}px ${C.radiusSm}px 0 0`,background:c2.bg,borderBottom:`3px solid ${c2.text}`,marginBottom:"8px"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <span style={{fontSize:"13px",fontWeight:700,color:c2.text}}>{STAGE_ICONS[stage]} {stage}</span>
+                  <Mono style={{fontSize:"14px",fontWeight:800,color:c2.text}}>{stageOrders.length}</Mono>
+                </div>
               </div>
-            </div>
-            {stageOrders.length===0?<div style={{padding:"20px",textAlign:"center",fontSize:"12px",color:C.muted,background:C.bg,borderRadius:C.radiusSm,border:`1px dashed ${C.line}`}}>No orders</div>:stageOrders.map(o=>renderCard(o))}
-          </div>);
-        })}
+              {stageOrders.length===0?<div style={{padding:"20px",textAlign:"center",fontSize:"12px",color:C.muted,background:C.bg,borderRadius:C.radiusSm,border:`1px dashed ${C.line}`}}>No orders</div>:stageOrders.map(o=>renderCard(o))}
+            </div>);
+          })}
+        </div>
       </div>
     )}
 
@@ -184,8 +196,12 @@ export default function ProductionBoard(){
     )}
 
     <style>{`
-      @media(max-width:768px){
-        .prod-board{grid-template-columns:1fr!important}
+      @media(max-width:640px){
+        .prod-board-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -16px;padding:0 16px}
+        .prod-board{grid-template-columns:repeat(4,minmax(220px,1fr))!important;min-width:max-content}
+        .prod-kpi-card{flex:0 0 145px!important;min-width:0!important}
+        .prod-pdf-actions{display:grid!important;grid-template-columns:1fr 1fr;gap:6px}
+        .prod-view-toggle{order:2}
       }
     `}</style>
   </div>);

@@ -78,6 +78,7 @@ export default function SuppliersModule({ refreshKey = 0 } = {}) {
   const { userRole = 'viewer', loaded: authLoaded } = useAuth();
   const [tab, setTab] = useState("suppliers");
   const [loaded, setLoaded] = useState(false);
+  const [dataErrors, setDataErrors] = useState({}); // { purchases: 'msg', orders: 'msg', categories: 'msg' }
 
   // Data
   const [suppliers, setSuppliers]             = useState([]);
@@ -142,7 +143,18 @@ export default function SuppliersModule({ refreshKey = 0 } = {}) {
   useEffect(() => {
     if (!authLoaded) return;
     (async () => {
-      await Promise.all([loadSuppliers(), loadPurchases(), loadOrders(), loadAccountingCategories()]);
+      const errs = {};
+      const results = await Promise.allSettled([
+        loadSuppliers(),
+        loadPurchases(),
+        loadOrders(),
+        loadAccountingCategories(),
+      ]);
+      const labels = ['suppliers', 'purchases', 'orders', 'categories'];
+      results.forEach((r, i) => {
+        if (r.status === 'rejected') errs[labels[i]] = r.reason?.message || 'Failed to load';
+      });
+      setDataErrors(errs);
       setLoaded(true);
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -150,27 +162,31 @@ export default function SuppliersModule({ refreshKey = 0 } = {}) {
 
   const loadSuppliers = async () => {
     const res = await fetch("/api/suppliers");
+    if (!res.ok) throw new Error(`Suppliers: server error ${res.status}`);
     const json = await res.json();
     setSuppliers(json.data || []);
   };
 
   const loadPurchases = async () => {
     const res = await fetch("/api/purchases");
+    if (!res.ok) throw new Error(`Purchases: server error ${res.status}`);
     const json = await res.json();
     setPurchases(json.data || []);
   };
 
   const loadOrders = async () => {
-    const { data } = await sb
+    const { data, error } = await sb
       .from("orders")
       .select("id, order_num, client, status")
       .order("created_at", { ascending: false })
       .limit(200);
+    if (error) throw new Error(`Orders: ${error.message}`);
     setOrders(data || []);
   };
 
   const loadAccountingCategories = async () => {
     const res  = await fetch("/api/accounting-categories?for_purchases=true");
+    if (!res.ok) throw new Error(`Categories: server error ${res.status}`);
     const json = await res.json();
     setAccountingCategories(json.data || []);
   };
@@ -382,6 +398,29 @@ export default function SuppliersModule({ refreshKey = 0 } = {}) {
           </>
         )}
       />
+
+      {/* Data error notices */}
+      {Object.entries(dataErrors).filter(([k]) => k !== 'suppliers').map(([key, msg]) => (
+        <div key={key} style={{ marginBottom: 10, padding: "8px 12px", background: "#FEF3C7", border: "1px solid #FCD34D", borderRadius: 7, fontSize: 12, color: "#92400E", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>⚠ {msg}</span>
+          <button onClick={() => {
+            const fns = { purchases: loadPurchases, orders: loadOrders, categories: loadAccountingCategories };
+            fns[key]?.()
+              .then(() => setDataErrors(prev => { const next = { ...prev }; delete next[key]; return next; }))
+              .catch(err => setDataErrors(prev => ({ ...prev, [key]: err.message || `Failed to load ${key}` })));
+          }} style={{ marginLeft: 12, padding: "3px 10px", borderRadius: 5, border: "1px solid #FCD34D", background: "#fff", fontSize: 11, cursor: "pointer", fontWeight: 600, color: "#92400E", minHeight: 44 }}>Retry</button>
+        </div>
+      ))}
+      {dataErrors.suppliers && (
+        <div style={{ padding: "40px 20px", textAlign: "center" }}>
+          <div style={{ fontSize: 14, color: "#dc2626", marginBottom: 12 }}>⚠ {dataErrors.suppliers}</div>
+          <button onClick={() => {
+            loadSuppliers()
+              .then(() => setDataErrors(prev => { const next = { ...prev }; delete next.suppliers; return next; }))
+              .catch(err => setDataErrors(prev => ({ ...prev, suppliers: err.message || 'Failed to load suppliers' })));
+          }} style={{ padding: "9px 20px", borderRadius: 8, border: "none", background: "#1a1a1a", color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer", minHeight: 44 }}>Retry</button>
+        </div>
+      )}
 
       {/* KPI Bar */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10, marginBottom: 18 }}>

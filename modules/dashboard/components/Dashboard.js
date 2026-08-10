@@ -223,8 +223,11 @@ export default function Dashboard({ refreshKey = 0 } = {}) {
   const itemSums = {};
   itemData.forEach(i => { itemSums[i.order_id] = (itemSums[i.order_id] || 0) + (i.quantity || 1); });
 
+  const TERMINAL_STATUSES = ['Delivered', 'Closed', 'Cancelled / Refunded'];
+
   const stalledOrders = orders.filter(o =>
     !COMPLETED_STATUSES.includes(o.status) &&
+    !TERMINAL_STATUSES.includes(o.status) &&
     (now - new Date(o.updated_at)) / 86400000 > 3
   );
 
@@ -235,20 +238,26 @@ export default function Dashboard({ refreshKey = 0 } = {}) {
     return tq > 0 && td > 0 && td < tq;
   });
 
-  const alerts = [
-    ...overdueOrders.map(o => ({
-      dot: '#C62828',
-      text: `${o.order_num} — ${o.client} overdue since ${fmtDate(o.due_date)}`,
-    })),
-    ...stalledOrders.map(o => ({
+  // Build alerts with deduplication: each order appears once, overdue takes priority over stalled.
+  const overdueIds = new Set(overdueOrders.map(o => o.id));
+  const alertsMap = new Map();
+  overdueOrders.forEach(o => alertsMap.set(o.id, {
+    dot: '#C62828',
+    text: `${o.order_num} — ${o.client} overdue since ${fmtDate(o.due_date)}`,
+  }));
+  stalledOrders.forEach(o => {
+    if (!alertsMap.has(o.id)) alertsMap.set(o.id, {
       dot: '#FF6F00',
       text: `${o.order_num} — ${o.client} stalled ${Math.floor((now - new Date(o.updated_at)) / 86400000)}d in ${o.status}`,
-    })),
-    ...partialDeliveries.map(o => ({
+    });
+  });
+  partialDeliveries.forEach(o => {
+    if (!alertsMap.has(o.id)) alertsMap.set(o.id, {
       dot: '#1565C0',
       text: `${o.order_num} — ${o.client} partial delivery (${delTotals[o.id] || 0}/${itemSums[o.id] || 0} units)`,
-    })),
-  ];
+    });
+  });
+  const alerts = Array.from(alertsMap.values());
 
   // ── This week calendar ──────────────────────────────────────────────────
   const weekDays = Array.from({ length: 7 }, (_, i) => {

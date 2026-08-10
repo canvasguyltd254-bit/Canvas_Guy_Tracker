@@ -613,16 +613,23 @@ export default function CustomerProfile({ customerId }) {
       </div>
 
       {/* Tabs */}
-      <div style={{ display: "flex", gap: 0, marginBottom: "20px", borderBottom: "2px solid #e8e8e5", overflowX: "auto" }}>
-        {TABS.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)} style={{
-            padding: "10px 18px", fontSize: "13px", fontWeight: 600, border: "none", background: "none", cursor: "pointer",
-            color: tab === t.key ? "#1a1a1a" : "#999",
-            borderBottom: tab === t.key ? "2px solid #E8512A" : "2px solid transparent",
-            marginBottom: "-2px", whiteSpace: "nowrap",
-          }}>{t.label}</button>
-        ))}
+      <div className="cp-tab-wrap" style={{ position: 'relative', marginBottom: '20px' }}>
+        <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #e8e8e5", overflowX: "auto", scrollbarWidth: "none", msOverflowStyle: "none" }}>
+          {TABS.map(t => (
+            <button key={t.key} onClick={() => {
+              setTab(t.key);
+              document.querySelector(`.cp-tab-btn-${t.key}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+            }} className={`cp-tab-btn-${t.key}`} style={{
+              padding: "10px 18px", fontSize: "13px", fontWeight: 600, border: "none", background: "none", cursor: "pointer",
+              minHeight: 44, color: tab === t.key ? "#1a1a1a" : "#999",
+              borderBottom: tab === t.key ? "2px solid #E8512A" : "2px solid transparent",
+              marginBottom: "-2px", whiteSpace: "nowrap", flexShrink: 0,
+            }}>{t.label}</button>
+          ))}
+        </div>
+        <div style={{ position: 'absolute', right: 0, top: 0, bottom: 2, width: 32, pointerEvents: 'none', background: 'linear-gradient(to right, transparent, #fff)' }} />
       </div>
+      <style>{`.cp-tab-wrap div::-webkit-scrollbar { display: none; }`}</style>
 
       {/* Tab content */}
       {tab === "overview"  && <OverviewTab  customer={data} stats={stats} onUpdated={loadProfile} canWrite={canWrite} />}

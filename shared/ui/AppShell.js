@@ -41,8 +41,19 @@ export default function AppShell({ children }) {
   const moreModules       = accessibleModules.filter(mod => !PRIMARY_MODULE_IDS.includes(mod.id));
   const moreActive        = moreModules.some(mod => mod.navItems?.some(item => pathname.startsWith(item.path)));
 
+  // Lock QuickActions while the mobile menu is open; unlock on close or unmount.
+  // Only dispatch lock when opening (not on every false→false re-run) to avoid
+  // accidentally releasing another modal's lock when the menu closes normally.
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    window.dispatchEvent(new Event('quickactions:lock'));
+    return () => {
+      window.dispatchEvent(new Event('quickactions:unlock'));
+    };
+  }, [mobileMenuOpen]);
+
   return (
-    <div style={{ minHeight: "100vh", background: "var(--bg, #f7f6f3)" }}>
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--bg, #f7f6f3)" }}>
       {/* Top bar — compact */}
       <header style={{
         background: "#1a1a1a", color: "#fff", padding: "0 16px",
@@ -53,7 +64,8 @@ export default function AppShell({ children }) {
           {/* Hamburger — mobile */}
           <button className="mobile-burger" onClick={() => setMobileMenuOpen(!mobileMenuOpen)} style={{
             background: "none", border: "none", color: "#fff", fontSize: "20px",
-            cursor: "pointer", padding: "4px", display: "flex",
+            cursor: "pointer", padding: "0", display: "flex", alignItems: "center", justifyContent: "center",
+            minWidth: 44, minHeight: 44,
           }}>
             {mobileMenuOpen ? "✕" : "☰"}
           </button>
@@ -185,7 +197,7 @@ export default function AppShell({ children }) {
           <button onClick={handleLogout} style={{
             padding: "5px 12px", borderRadius: "5px", border: "1px solid #555",
             background: "transparent", color: "#ccc", fontSize: "12px", cursor: "pointer",
-            fontWeight: 500,
+            fontWeight: 500, minHeight: 44, minWidth: 70,
           }}>Sign out</button>
         </div>
       </header>
@@ -235,14 +247,19 @@ export default function AppShell({ children }) {
       {/* Main content — WorkspaceShell is injected from layout.js, not here.
           AppShell is unaware of workspace tabs; it simply renders its children.
           layout.js wraps children with WorkspaceShell before passing them in. */}
-      {children}
+      <div style={{ flex: 1 }}>
+        {children}
+      </div>
 
-      {/* Trademark — fixed bottom-right */}
+      {/* Trademark — static footer */}
       <div style={{
-        position: "fixed", bottom: "10px", right: "14px",
         fontSize: "10px", color: "#bbb", letterSpacing: "0.3px",
-        pointerEvents: "none", userSelect: "none", zIndex: 50,
+        userSelect: "none",
         fontFamily: "'DM Mono', 'Courier New', monospace",
+        padding: "10px 14px",
+        paddingBottom: "calc(10px + env(safe-area-inset-bottom))",
+        textAlign: "right",
+        borderTop: "1px solid #ececec",
       }}>
         © {new Date().getFullYear()} Canvas Guy Limited. All rights reserved.
       </div>

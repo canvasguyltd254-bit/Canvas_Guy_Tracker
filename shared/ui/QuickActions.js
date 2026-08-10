@@ -85,6 +85,7 @@ export default function QuickActions({ prefill = {} }) {
           width: '100%', padding: '9px 12px', borderRadius: '6px',
           border: 'none', background: 'transparent', color: '#ccc',
           fontSize: '13px', fontWeight: 500, cursor: 'pointer', textAlign: 'left',
+          minHeight: 44,
         }}
         onMouseEnter={e => { e.currentTarget.style.background = 'rgba(232,81,42,0.15)'; e.currentTarget.style.color = '#fff'; }}
         onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#ccc'; }}
@@ -115,6 +116,7 @@ export default function QuickActions({ prefill = {} }) {
             background: '#E8512A', color: '#fff', fontWeight: 700,
             fontSize: '13px', cursor: 'pointer',
             display: 'flex', alignItems: 'center', gap: '5px',
+            minHeight: 44,
           }}
         >
           <span style={{ fontSize: '15px', lineHeight: 1 }}>＋</span>
@@ -135,8 +137,8 @@ export default function QuickActions({ prefill = {} }) {
         )}
       </div>
 
-      {/* ── Mobile: FAB pinned above footer ── */}
-      <div ref={fabRef} className="qa-fab" style={{ position: 'fixed', bottom: '72px', right: '20px', zIndex: 250 }}>
+      {/* ── Mobile: FAB pinned above nav with safe-area ── */}
+      <div ref={fabRef} className="qa-fab" style={{ position: 'fixed', bottom: 'calc(72px + env(safe-area-inset-bottom))', right: '20px', zIndex: 250 }}>
         {open && (
           <>
             <div

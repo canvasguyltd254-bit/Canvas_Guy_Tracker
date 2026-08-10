@@ -42,6 +42,7 @@ export default function ContactsModule({ refreshKey = 0 } = {}) {
   const router                      = useRouter();
   const [contacts, setContacts]     = useState([]);
   const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [search, setSearch]         = useState("");
   const [showForm, setShowForm]     = useState(false);
@@ -51,14 +52,28 @@ export default function ContactsModule({ refreshKey = 0 } = {}) {
   const [editContact, setEditContact] = useState(null);
 
   // Always load all contacts — filter and count client-side.
-  // This eliminates: (a) the two-effect double-fetch on mount and
-  // (b) a full-directory re-download on every save just to recount.
   const loadContacts = async () => {
-    setLoading(true);
-    const res  = await fetch("/api/contacts?type=all");
-    const json = await res.json();
-    setContacts(json.data || []);
-    setLoading(false);
+    // Keep stale records visible during background refreshes
+    if (contacts.length === 0) setLoading(true);
+    setError("");
+    const controller = new AbortController();
+    const timeoutId  = setTimeout(() => controller.abort(), 10000); // 10 s timeout
+    try {
+      const res  = await fetch("/api/contacts?type=all", { signal: controller.signal });
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      const json = await res.json();
+      if (!json || !Array.isArray(json.data)) throw new Error("Unexpected response format");
+      setContacts(json.data);
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        setError("Request timed out. Check your connection and retry.");
+      } else {
+        setError(err.message || "Could not load contacts");
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      setLoading(false);
+    }
   };
 
   useEffect(() => { loadContacts(); }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -157,14 +172,38 @@ export default function ContactsModule({ refreshKey = 0 } = {}) {
 
       {/* List */}
       {loading ? (
-        <div style={{ padding: "60px 20px", textAlign: "center", color: "#aaa" }}>Loading…</div>
-      ) : filtered.length === 0 ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+          {[1,2,3,4].map(i => (
+            <div key={i} style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e8e8e5", padding: "14px", height: "64px",
+              background: "linear-gradient(90deg, #f0f0f0 25%, #e8e8e8 50%, #f0f0f0 75%)",
+              backgroundSize: "200% 100%", animation: "contacts-shimmer 1.4s infinite" }} />
+          ))}
+          <style>{`@keyframes contacts-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}`}</style>
+        </div>
+      ) : contacts.length === 0 && error ? (
+        /* First-load failure — nothing to show, block with error panel */
+        <div style={{ padding: "40px 20px", textAlign: "center" }}>
+          <div style={{ fontSize: "36px", marginBottom: "10px" }}>⚠️</div>
+          <div style={{ fontSize: "14px", color: "#dc2626", marginBottom: "12px" }}>{error}</div>
+          <button onClick={loadContacts} style={{ padding: "9px 20px", borderRadius: "8px", border: "none", background: "#1a1a1a", color: "#fff", fontSize: "13px", fontWeight: 700, cursor: "pointer", minHeight: "44px" }}>
+            Retry
+          </button>
+        </div>
+      ) : filtered.length === 0 && !error ? (
         <div style={{ padding: "60px 20px", textAlign: "center" }}>
           <div style={{ fontSize: "36px", marginBottom: "10px" }}>📇</div>
           <div style={{ fontSize: "14px", color: "#999" }}>{search ? "No contacts match your search." : "No contacts in this category."}</div>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+        <>
+          {/* Background refresh failure — show warning above stale list */}
+          {error && contacts.length > 0 && (
+            <div style={{ background: "#FFF7ED", border: "1px solid #FDBA74", borderRadius: "8px", padding: "10px 14px", marginBottom: "10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}>
+              <span style={{ fontSize: "13px", color: "#92400E" }}>⚠️ {error} — showing cached data.</span>
+              <button onClick={loadContacts} style={{ fontSize: "12px", fontWeight: 700, color: "#92400E", background: "none", border: "1px solid #FDBA74", borderRadius: "6px", padding: "4px 10px", cursor: "pointer", minHeight: "44px", whiteSpace: "nowrap" }}>Retry</button>
+            </div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
           {filtered.map(c => (
             <div key={`${c.source}-${c.id}`}
               style={{ background: "#fff", borderRadius: "10px", border: "1px solid #e8e8e5", padding: "12px 14px", display: "flex", alignItems: "center", gap: "12px" }}>
@@ -202,7 +241,8 @@ export default function ContactsModule({ refreshKey = 0 } = {}) {
               </div>
             </div>
           ))}
-        </div>
+          </div>
+        </>
       )}
 
       {/* Add / Edit Modal (General + Transporter only) */}

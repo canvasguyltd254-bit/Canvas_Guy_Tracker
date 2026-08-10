@@ -121,6 +121,12 @@ function Card({ children, style = {} }) {
 
 // ── Modal ─────────────────────────────────────────────────────
 function Modal({ title, onClose, children, width = 520 }) {
+  // Lock QuickActions FAB while this modal is open
+  React.useEffect(() => {
+    window.dispatchEvent(new Event('quickactions:lock'));
+    return () => window.dispatchEvent(new Event('quickactions:unlock'));
+  }, []);
+
   return (
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
@@ -133,7 +139,7 @@ function Modal({ title, onClose, children, width = 520 }) {
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, borderBottom: `1px solid ${C.line}`, paddingBottom: 14 }}>
           <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: C.ink }}>{title}</h3>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: C.muted, lineHeight: 1 }}>×</button>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: C.muted, lineHeight: 1, minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
         </div>
         {children}
       </div>
@@ -364,46 +370,87 @@ function EmployeesTab({ userRole }) {
 
       {loading ? <Spinner /> : employees.length === 0
         ? <EmptyState icon="👥" message="No employees found" />
-        : <Card style={{ padding: 0, overflow: 'hidden' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
-              <thead>
-                <tr style={{ background: LIGHT, borderBottom: `2px solid ${BORDER}` }}>
-                  {['#', 'Name', 'Type', 'Rate', 'SHA', 'Phone', 'Status', ''].map(h => (
-                    <th key={h} style={{ textAlign: 'left', padding: '10px 12px', fontWeight: 600, color: '#374151', fontSize: 12 }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {employees.map(emp => (
-                  <tr key={emp.id} style={{ borderBottom: `1px solid ${BORDER}`, opacity: emp.is_active ? 1 : 0.55 }}>
-                    <td style={{ padding: '10px 12px', color: '#9ca3af', fontFamily: 'monospace', fontSize: 12 }}>{emp.employee_num}</td>
-                    <td style={{ padding: '10px 12px', fontWeight: 600 }}>{emp.name}</td>
-                    <td style={{ padding: '10px 12px' }}><StatusBadge status={emp.type} /></td>
-                    <td style={{ padding: '10px 12px', fontSize: 13 }}>
-                      {emp.type === 'permanent'
-                        ? `KES ${fmt(emp.monthly_salary)}/mo`
-                        : `KES ${fmt(emp.day_rate)}/day`}
-                    </td>
-                    <td style={{ padding: '10px 12px', fontSize: 13 }}>KES {fmt(emp.sha_amount)}</td>
-                    <td style={{ padding: '10px 12px', fontSize: 13, color: '#6b7280' }}>{emp.phone || '—'}</td>
-                    <td style={{ padding: '10px 12px' }}>
-                      <Badge label={emp.is_active ? 'Active' : 'Inactive'} bg={emp.is_active ? '#dcfce7' : '#f3f4f6'} color={emp.is_active ? GREEN : '#6b7280'} />
-                    </td>
-                    <td style={{ padding: '10px 12px' }}>
-                      {canEdit && (
-                        <div style={{ display: 'flex', gap: 6 }}>
-                          <Btn onClick={() => openEdit(emp)} variant="secondary" small>Edit</Btn>
-                          <Btn onClick={() => toggleActive(emp)} variant={emp.is_active ? 'danger' : 'success'} small>
-                            {emp.is_active ? 'Deactivate' : 'Activate'}
-                          </Btn>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Card>
+        : <>
+            {/* Desktop table */}
+            <div className="emp-table-wrap">
+              <Card style={{ padding: 0, overflow: 'hidden' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+                  <thead>
+                    <tr style={{ background: LIGHT, borderBottom: `2px solid ${BORDER}` }}>
+                      {['#', 'Name', 'Type', 'Rate', 'SHA', 'Phone', 'Status', ''].map(h => (
+                        <th key={h} style={{ textAlign: 'left', padding: '10px 12px', fontWeight: 600, color: '#374151', fontSize: 12 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {employees.map(emp => (
+                      <tr key={emp.id} style={{ borderBottom: `1px solid ${BORDER}`, opacity: emp.is_active ? 1 : 0.55 }}>
+                        <td style={{ padding: '10px 12px', color: '#9ca3af', fontFamily: 'monospace', fontSize: 12 }}>{emp.employee_num}</td>
+                        <td style={{ padding: '10px 12px', fontWeight: 600 }}>{emp.name}</td>
+                        <td style={{ padding: '10px 12px' }}><StatusBadge status={emp.type} /></td>
+                        <td style={{ padding: '10px 12px', fontSize: 13 }}>
+                          {emp.type === 'permanent'
+                            ? `KES ${fmt(emp.monthly_salary)}/mo`
+                            : `KES ${fmt(emp.day_rate)}/day`}
+                        </td>
+                        <td style={{ padding: '10px 12px', fontSize: 13 }}>KES {fmt(emp.sha_amount)}</td>
+                        <td style={{ padding: '10px 12px', fontSize: 13, color: '#6b7280' }}>{emp.phone || '—'}</td>
+                        <td style={{ padding: '10px 12px' }}>
+                          <Badge label={emp.is_active ? 'Active' : 'Inactive'} bg={emp.is_active ? '#dcfce7' : '#f3f4f6'} color={emp.is_active ? GREEN : '#6b7280'} />
+                        </td>
+                        <td style={{ padding: '10px 12px' }}>
+                          {canEdit && (
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              <Btn onClick={() => openEdit(emp)} variant="secondary" small>Edit</Btn>
+                              <Btn onClick={() => toggleActive(emp)} variant={emp.is_active ? 'danger' : 'success'} small>
+                                {emp.is_active ? 'Deactivate' : 'Activate'}
+                              </Btn>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Card>
+            </div>
+
+            {/* Mobile cards */}
+            <div className="emp-cards-wrap" style={{ display: 'none', flexDirection: 'column', gap: 10 }}>
+              {employees.map(emp => (
+                <Card key={emp.id} style={{ opacity: emp.is_active ? 1 : 0.6, padding: '14px 16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 15, color: '#1a1a1a' }}>{emp.name}</div>
+                      <div style={{ fontSize: 12, color: '#9ca3af', fontFamily: 'monospace' }}>{emp.employee_num}</div>
+                    </div>
+                    <Badge label={emp.is_active ? 'Active' : 'Inactive'} bg={emp.is_active ? '#dcfce7' : '#f3f4f6'} color={emp.is_active ? GREEN : '#6b7280'} />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px', fontSize: 13, marginBottom: 10 }}>
+                    <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Type</span><br /><StatusBadge status={emp.type} /></div>
+                    <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Rate</span><br /><span style={{ fontWeight: 600 }}>{emp.type === 'permanent' ? `KES ${fmt(emp.monthly_salary)}/mo` : `KES ${fmt(emp.day_rate)}/day`}</span></div>
+                    <div><span style={{ color: '#9ca3af', fontSize: 11 }}>SHA</span><br />KES {fmt(emp.sha_amount)}</div>
+                    <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Phone</span><br />{emp.phone || '—'}</div>
+                  </div>
+                  {canEdit && (
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <Btn onClick={() => openEdit(emp)} variant="secondary" small style={{ flex: 1 }}>Edit</Btn>
+                      <Btn onClick={() => toggleActive(emp)} variant={emp.is_active ? 'danger' : 'success'} small style={{ flex: 1 }}>
+                        {emp.is_active ? 'Deactivate' : 'Activate'}
+                      </Btn>
+                    </div>
+                  )}
+                </Card>
+              ))}
+            </div>
+
+            <style>{`
+              @media (max-width: 700px) {
+                .emp-table-wrap { display: none !important; }
+                .emp-cards-wrap { display: flex !important; }
+              }
+            `}</style>
+          </>
       }
 
       {/* Add/Edit Modal */}
@@ -1938,7 +1985,10 @@ function PaymentsTab({ userRole }) {
 
       {loading ? <Spinner /> : batches.length === 0
         ? <EmptyState icon="💳" message="No payment batches yet. Approve a payroll run first." />
-        : <Card style={{ padding: 0 }}>
+        : <>
+            {/* ── Desktop table ── */}
+            <div className="batch-table-wrap">
+            <Card style={{ padding: 0, minWidth: 0 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
               <thead>
                 <tr style={{ background: LIGHT, borderBottom: `2px solid ${BORDER}` }}>
@@ -2078,7 +2128,139 @@ function PaymentsTab({ userRole }) {
                 })}
               </tbody>
             </table>
-          </Card>
+            </Card>
+            </div>{/* /batch-table-wrap */}
+
+            {/* ── Mobile cards ── */}
+            <div className="batch-cards-wrap" style={{ display: 'none', flexDirection: 'column', gap: 12 }}>
+              {batches.map(b => {
+                const isOpen = expandedId === b.id;
+                const det    = detail[b.id];
+                const links  = det?.links || [];
+                const paidCount   = links.filter(l => l.payroll_entries?.payment_status === 'paid').length;
+                const unpaidCount = links.length - paidCount;
+                return (
+                  <Card key={b.id} style={{ padding: '14px 16px', minWidth: 0 }}>
+                    {/* Card header */}
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 10 }}>
+                      <div>
+                        <div style={{ fontWeight: 700, fontFamily: 'monospace', fontSize: 15, color: '#111' }}>{b.batch_num}</div>
+                        <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>{b.payroll_runs?.run_num || '—'}</div>
+                      </div>
+                      <StatusBadge status={b.status} />
+                    </div>
+
+                    {/* Key fields */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 12px', marginBottom: 10 }}>
+                      <div>
+                        <div style={{ fontSize: 10, color: '#aaa', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '.5px', marginBottom: 2 }}>Method</div>
+                        <Badge label={b.payment_method} bg="#dbeafe" color={BLUE} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 10, color: '#aaa', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '.5px', marginBottom: 2 }}>Amount</div>
+                        <div style={{ fontSize: 14, fontWeight: 700, fontFamily: 'monospace', color: '#111' }}>KES {fmt(b.total_amount)}</div>
+                      </div>
+                      {b.chatpesa_ref && (
+                        <div style={{ gridColumn: '1 / -1' }}>
+                          <div style={{ fontSize: 10, color: '#aaa', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '.5px', marginBottom: 2 }}>Ref</div>
+                          <div style={{ fontSize: 12, color: '#374151', fontFamily: 'monospace' }}>{b.chatpesa_ref}</div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Action row */}
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }} onClick={e => e.stopPropagation()}>
+                      {canExportBatch && b.payment_method === 'mpesa' && b.status !== 'reconciled' && (
+                        <Btn onClick={() => downloadCsv(b.id, b.batch_num)} variant="secondary" small>⬇ CSV</Btn>
+                      )}
+                      {canReconcileBatch && b.payment_method === 'mpesa' && b.status === 'exported' && (
+                        reconcileId === b.id
+                          ? <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', width: '100%' }}>
+                              <input style={{ ...inputStyle, flex: 1, minWidth: 120, padding: '6px 8px' }} placeholder="Chatpesa ref…" value={chatpesaRef} onChange={e => setChatpesaRef(e.target.value)} />
+                              <Btn onClick={() => reconcile(b.id)} variant="success" small>Confirm</Btn>
+                              <Btn onClick={() => setReconcileId(null)} variant="secondary" small>Cancel</Btn>
+                            </div>
+                          : <Btn onClick={() => setReconcileId(b.id)} variant="success" small>Reconcile</Btn>
+                      )}
+                      {canReconcileBatch && b.payment_method !== 'mpesa' && b.status === 'draft' && (
+                        reconcileId === b.id
+                          ? <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', width: '100%' }}>
+                              <input style={{ ...inputStyle, flex: 1, minWidth: 120, padding: '6px 8px' }} placeholder="Reference / receipt no." value={chatpesaRef} onChange={e => setChatpesaRef(e.target.value)} />
+                              <Btn onClick={() => reconcile(b.id)} variant="success" small>Mark Paid</Btn>
+                              <Btn onClick={() => setReconcileId(null)} variant="secondary" small>Cancel</Btn>
+                            </div>
+                          : <Btn onClick={() => setReconcileId(b.id)} variant="success" small>Mark Paid</Btn>
+                      )}
+                      {canDeleteBatch && b.status !== 'reconciled' && (
+                        <Btn onClick={() => deleteBatch(b.id, b.batch_num)} variant="danger" small loading={deletingId === b.id}>Delete</Btn>
+                      )}
+                    </div>
+
+                    {/* Expand toggle */}
+                    <button
+                      onClick={() => toggleExpand(b.id)}
+                      style={{ background: 'none', border: 'none', fontSize: 12, color: CORAL, fontWeight: 600, cursor: 'pointer', padding: '4px 0', display: 'flex', alignItems: 'center', gap: 4 }}
+                    >
+                      {isOpen ? '▾ Hide employees' : `▸ Show employees (${links.length || '…'})`}
+                    </button>
+
+                    {/* Expanded employee list */}
+                    {isOpen && (
+                      <div style={{ marginTop: 10, borderTop: `1px solid ${BORDER}`, paddingTop: 10 }}>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: '#6b7280' }}>{links.length} employee{links.length !== 1 ? 's' : ''}</span>
+                          <span style={{ fontSize: 12, background: '#dcfce7', color: '#166534', padding: '2px 10px', borderRadius: 10, fontWeight: 600 }}>✓ {paidCount} paid</span>
+                          {unpaidCount > 0 && <span style={{ fontSize: 12, background: '#fef3c7', color: '#92400e', padding: '2px 10px', borderRadius: 10, fontWeight: 600 }}>⏳ {unpaidCount} outstanding</span>}
+                        </div>
+                        {det?.loading ? (
+                          <div style={{ fontSize: 13, color: '#aaa' }}>Loading…</div>
+                        ) : links.length === 0 ? (
+                          <div style={{ fontSize: 13, color: '#aaa' }}>No entries linked.</div>
+                        ) : (
+                          <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 320 }}>
+                              <thead>
+                                <tr style={{ color: '#9ca3af', fontSize: 11, fontWeight: 600 }}>
+                                  <th style={{ textAlign: 'left', padding: '4px 8px 4px 0', textTransform: 'uppercase' }}>Employee</th>
+                                  <th style={{ textAlign: 'right', padding: '4px 8px', textTransform: 'uppercase' }}>Net</th>
+                                  <th style={{ textAlign: 'right', padding: '4px 8px', textTransform: 'uppercase' }}>Paid</th>
+                                  <th style={{ textAlign: 'center', padding: '4px 0 4px 8px', textTransform: 'uppercase' }}>Status</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {links.map((l, i) => {
+                                  const e      = l.payroll_entries || {};
+                                  const netPay = Number(e.net_pay || 0);
+                                  const paid   = Number(e.amount_paid || 0);
+                                  const isSent = b.status === 'exported' && Array.isArray(b.exported_entry_ids) && b.exported_entry_ids.includes(e.id);
+                                  const displayStatus = isSent && (e.payment_status === 'unpaid' || e.payment_status === 'part_paid') ? 'sent' : (e.payment_status || 'unpaid');
+                                  return (
+                                    <tr key={i} style={{ borderTop: '1px solid #f0ede8' }}>
+                                      <td style={{ padding: '6px 8px 6px 0', fontWeight: 600, color: '#1a1a1a' }}>{e.snapshot_name || '—'}</td>
+                                      <td style={{ padding: '6px 8px', textAlign: 'right', color: '#374151' }}>KES {fmt(netPay)}</td>
+                                      <td style={{ padding: '6px 8px', textAlign: 'right', color: GREEN, fontWeight: paid > 0 ? 600 : 400 }}>{paid > 0 ? `KES ${fmt(paid)}` : '—'}</td>
+                                      <td style={{ padding: '6px 0 6px 8px', textAlign: 'center' }}><StatusBadge status={displayStatus} /></td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </Card>
+                );
+              })}
+            </div>
+
+            <style>{`
+              @media (max-width: 700px) {
+                .batch-table-wrap { display: none !important; }
+                .batch-cards-wrap { display: flex !important; }
+              }
+            `}</style>
+          </>
       }
 
       {showCreate && (

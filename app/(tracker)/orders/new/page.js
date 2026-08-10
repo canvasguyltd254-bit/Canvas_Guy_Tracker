@@ -80,53 +80,61 @@ function ItemsBuilder({ items, onChange }) {
             <span style={{ fontSize: '12px', fontWeight: 700, color: '#9ca3af' }}>Item {idx + 1}</span>
             <button type="button" onClick={() => del(item._id)} style={{
               background: 'none', border: 'none', color: '#ef4444',
-              cursor: 'pointer', fontSize: '12px', fontWeight: 700,
+              cursor: 'pointer', fontSize: '12px', fontWeight: 700, minHeight: '44px', padding: '0 8px',
             }}>Remove</button>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
-            <div>
+          <div className="item-specs-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px' }}>
+            {/* Description - full width */}
+            <div className="item-f">
+              <label style={lbl}>Description / Notes</label>
+              <input type="text" value={item.description} placeholder="Additional details"
+                onChange={e => upd(item._id, 'description', e.target.value)} style={{ ...smInp, minHeight: '44px' }} />
+            </div>
+            {/* Category - full width */}
+            <div className="item-f">
               <label style={lbl}>Category</label>
-              <select value={item.category} onChange={e => upd(item._id, 'category', e.target.value)} style={smInp}>
+              <select value={item.category} onChange={e => upd(item._id, 'category', e.target.value)} style={{ ...smInp, minHeight: '44px' }}>
                 {CATEGORIES.map(c => <option key={c}>{c}</option>)}
               </select>
             </div>
+            {/* Qty */}
             <div>
               <label style={lbl}>Qty</label>
               <input type="number" min="1" value={item.quantity}
-                onChange={e => upd(item._id, 'quantity', e.target.value)} style={smInp} />
+                onChange={e => upd(item._id, 'quantity', e.target.value)} style={{ ...smInp, minHeight: '44px' }} />
             </div>
+            {/* Size */}
             <div>
               <label style={lbl}>Size</label>
               <input type="text" value={item.size} placeholder="e.g. 60×40cm"
-                onChange={e => upd(item._id, 'size', e.target.value)} style={smInp} />
+                onChange={e => upd(item._id, 'size', e.target.value)} style={{ ...smInp, minHeight: '44px' }} />
             </div>
+            {/* Finish Type */}
             <div>
               <label style={lbl}>Finish Type</label>
-              <select value={item.finish_type} onChange={e => upd(item._id, 'finish_type', e.target.value)} style={smInp}>
+              <select value={item.finish_type} onChange={e => upd(item._id, 'finish_type', e.target.value)} style={{ ...smInp, minHeight: '44px' }}>
                 {FINISH_TYPES.map(f => <option key={f}>{f}</option>)}
               </select>
             </div>
+            {/* Finish Color */}
             <div>
               <label style={lbl}>Finish Color</label>
               <input type="text" value={item.finish_color} placeholder="e.g. Dark Walnut"
-                onChange={e => upd(item._id, 'finish_color', e.target.value)} style={smInp} />
+                onChange={e => upd(item._id, 'finish_color', e.target.value)} style={{ ...smInp, minHeight: '44px' }} />
             </div>
-            <div>
-              <label style={lbl}>Wood Type</label>
-              <select value={item.wood_type} onChange={e => upd(item._id, 'wood_type', e.target.value)} style={smInp}>
+            {/* Wood Type - full width */}
+            <div className="item-f">
+              <label style={lbl}>Wood / Board Type</label>
+              <select value={item.wood_type} onChange={e => upd(item._id, 'wood_type', e.target.value)} style={{ ...smInp, minHeight: '44px' }}>
                 <option value="">—</option>
                 {WOOD_TYPES.map(w => <option key={w}>{w}</option>)}
               </select>
             </div>
-            <div>
+            {/* Unit Price - full width */}
+            <div className="item-f">
               <label style={lbl}>Unit Price (KES)</label>
               <input type="number" min="0" value={item.unit_price} placeholder="0"
-                onChange={e => upd(item._id, 'unit_price', e.target.value)} style={smInp} />
-            </div>
-            <div style={{ gridColumn: '2 / -1' }}>
-              <label style={lbl}>Description / Notes</label>
-              <input type="text" value={item.description} placeholder="Additional details"
-                onChange={e => upd(item._id, 'description', e.target.value)} style={smInp} />
+                onChange={e => upd(item._id, 'unit_price', e.target.value)} style={{ ...smInp, minHeight: '44px' }} />
             </div>
           </div>
           {parseFloat(item.unit_price) > 0 && (
@@ -477,7 +485,7 @@ function NewOrderContent() {
 
           {/* Section 1 — Client + Order Info */}
           <div style={sectionLabel}>📋 Order Details</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
+          <div className="order-details-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
 
             {/* Client card */}
             <div style={card}>
@@ -642,12 +650,13 @@ function NewOrderContent() {
             />
           </div>
 
-          {/* Bottom save */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', paddingBottom: '40px' }}>
+          {/* Bottom save — sticky on mobile */}
+          <div className="form-save-bar" style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', paddingBottom: '40px' }}>
             <Link href="/orders" style={{
               padding: '10px 20px', borderRadius: '7px',
               border: '1px solid #e0e0e0', color: '#6b7280',
-              fontSize: '13px', fontWeight: 600, textDecoration: 'none',
+              fontSize: '13px', fontWeight: 600, textDecoration: 'none', minHeight: '44px',
+              display: 'inline-flex', alignItems: 'center',
             }}>
               Cancel
             </Link>
@@ -655,7 +664,7 @@ function NewOrderContent() {
               onClick={handleSave}
               disabled={!canSubmit}
               style={{
-                padding: '10px 28px', borderRadius: '7px', border: 'none',
+                padding: '10px 28px', borderRadius: '7px', border: 'none', minHeight: '44px',
                 background: canSubmit ? '#E8512A' : '#d1d5db',
                 color: canSubmit ? '#fff' : '#9ca3af',
                 fontWeight: 700, fontSize: '13px',
@@ -665,6 +674,22 @@ function NewOrderContent() {
               {saving ? 'Creating order...' : 'Create Order →'}
             </button>
           </div>
+
+          <style>{`
+            @media (max-width: 640px) {
+              .order-details-grid { grid-template-columns: 1fr !important; }
+              .item-specs-grid { grid-template-columns: 1fr 1fr !important; }
+              .item-specs-grid .item-f { grid-column: 1 / -1; }
+              .form-save-bar {
+                position: sticky; bottom: 0; left: 0; right: 0;
+                background: #fff; border-top: 1px solid #e5e7eb;
+                padding: 12px 16px !important; margin: 0 -20px;
+                justify-content: stretch; gap: 8px;
+                padding-bottom: calc(12px + env(safe-area-inset-bottom)) !important;
+              }
+              .form-save-bar a, .form-save-bar button { flex: 1; text-align: center; justify-content: center; }
+            }
+          `}</style>
         </main>
       </div>
 

@@ -98,35 +98,40 @@ export const StatusBadge = ({ status, colorMap = {}, style }) => {
 
 // ─── Button ───────────────────────────────────────────────────────────────────
 export const Btn = ({ primary, danger, small, onClick, disabled, children, style, type = 'button' }) => (
-  <button
-    type={type}
-    onClick={onClick}
-    disabled={disabled}
-    style={{
-      border: primary
-        ? `1px solid ${C.coral}`
-        : danger
-          ? `1px solid ${C.red}`
-          : `1px solid ${C.line}`,
-      background: primary ? C.coral : danger ? C.redBg : C.card,
-      color: primary ? '#fff' : danger ? C.red : C.ink,
-      padding: small ? '6px 11px' : '9px 15px',
-      borderRadius: C.radiusSm,
-      fontWeight: 700,
-      fontSize: small ? 12 : 13,
-      cursor: disabled ? 'not-allowed' : 'pointer',
-      opacity: disabled ? 0.45 : 1,
-      display: 'inline-flex',
-      alignItems: 'center',
-      gap: 5,
-      whiteSpace: 'nowrap',
-      transition: 'background 0.1s, border-color 0.1s',
-      fontFamily: 'inherit',
-      ...style,
-    }}
-  >
-    {children}
-  </button>
+  <>
+    <button
+      type={type}
+      onClick={onClick}
+      disabled={disabled}
+      className={small ? 'ds-btn-small' : undefined}
+      style={{
+        border: primary
+          ? `1px solid ${C.coral}`
+          : danger
+            ? `1px solid ${C.red}`
+            : `1px solid ${C.line}`,
+        background: primary ? C.coral : danger ? C.redBg : C.card,
+        color: primary ? '#fff' : danger ? C.red : C.ink,
+        padding: small ? '6px 11px' : '9px 15px',
+        minHeight: small ? 36 : 44,
+        borderRadius: C.radiusSm,
+        fontWeight: 700,
+        fontSize: small ? 12 : 13,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.45 : 1,
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        whiteSpace: 'nowrap',
+        transition: 'background 0.1s, border-color 0.1s',
+        fontFamily: 'inherit',
+        ...style,
+      }}
+    >
+      {children}
+    </button>
+    <style>{`@media (max-width: 640px) { .ds-btn-small { min-height: 44px !important; } }`}</style>
+  </>
 );
 
 // ─── Notice / Alert ───────────────────────────────────────────────────────────
@@ -288,41 +293,53 @@ export const PageHeader = ({ title, description, actions, style }) => (
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
 export const TabBar = ({ tabs, active, onSelect, style }) => (
-  <div style={{
-    display: 'flex',
-    overflowX: 'auto',
-    border: `1px solid ${C.line}`,
-    background: C.card,
-    borderRadius: 10,
-    padding: '0 14px',
-    marginBottom: 18,
-    ...style,
-  }}>
-    {tabs.map((t) => {
-      const label = typeof t === 'string' ? t : t.label;
-      const key   = typeof t === 'string' ? t : t.key ?? t.label;
-      return (
-        <button
-          key={key}
-          onClick={() => onSelect(key)}
-          style={{
-            border: 0,
-            background: 'transparent',
-            padding: '13px 4px',
-            marginRight: 24,
-            color: active === key ? C.ink : C.muted,
-            fontWeight: 700,
-            fontSize: 13,
-            borderBottom: `3px solid ${active === key ? C.coral : 'transparent'}`,
-            cursor: 'pointer',
-            whiteSpace: 'nowrap',
-            fontFamily: 'inherit',
-          }}
-        >
-          {label}
-        </button>
-      );
-    })}
+  <div style={{ position: 'relative', marginBottom: 18, ...style }}>
+    <div className="tabbar-scroll" style={{
+      display: 'flex',
+      overflowX: 'auto',
+      border: `1px solid ${C.line}`,
+      background: C.card,
+      borderRadius: 10,
+      padding: '0 14px',
+      scrollbarWidth: 'none',
+      msOverflowStyle: 'none',
+    }}>
+      {tabs.map((t) => {
+        const label = typeof t === 'string' ? t : t.label;
+        const key   = typeof t === 'string' ? t : t.key ?? t.label;
+        return (
+          <button
+            key={key}
+            onClick={(e) => {
+              onSelect(key);
+              // Scroll active tab into view on mobile (use currentTarget to avoid cross-module querySelector issues)
+              e.currentTarget.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+            }}
+            data-tabkey={key}
+            style={{
+              border: 0,
+              background: 'transparent',
+              padding: '13px 4px',
+              marginRight: 24,
+              color: active === key ? C.ink : C.muted,
+              fontWeight: 700,
+              fontSize: 13,
+              minHeight: 44,
+              borderBottom: `3px solid ${active === key ? C.coral : 'transparent'}`,
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+              fontFamily: 'inherit',
+              flexShrink: 0,
+            }}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+    {/* Right-edge fade to hint at more tabs */}
+    <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 32, pointerEvents: 'none', background: `linear-gradient(to right, transparent, ${C.card})`, borderRadius: '0 10px 10px 0' }} />
+    <style>{`.tabbar-scroll::-webkit-scrollbar { display: none; }`}</style>
   </div>
 );
 
@@ -423,7 +440,8 @@ export const Modal = ({ title, onClose, footer, children, wide }) => {
             onClick={onClose}
             style={{
               marginLeft: 'auto', border: 0, background: 'none',
-              fontSize: 22, cursor: 'pointer', color: C.muted, lineHeight: 1, padding: '0 4px',
+              fontSize: 22, cursor: 'pointer', color: C.muted, lineHeight: 1,
+              minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}
           >
             ×

@@ -1631,12 +1631,12 @@ export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnq
     <div ref={containerRef} style={{ position: 'relative', maxWidth: 1220, margin: '0 auto', padding: '24px 20px 60px', background: C.bg, minHeight: '100vh' }}>
 
       {/* Module header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 18 }}>
-        <div style={{ flex: 1 }}>
+      <div className="crm-header" style={{ marginBottom: 18 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800, color: C.ink }}>Quotes & CRM</h1>
           <p style={{ margin: '5px 0 0', color: C.muted, fontSize: 13 }}>Track enquiries, quotations and follow-ups without changing the existing order workflow.</p>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div className="crm-header-btns" style={{ display: 'flex', gap: 8 }}>
           <Btn onClick={() => setShowQtForm(true)}>+ Direct Quote</Btn>
           <Btn primary onClick={() => setShowEnqForm(true)}>+ New Enquiry</Btn>
         </div>
@@ -1649,16 +1649,30 @@ export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnq
       </Notice>
 
       {/* Tabs */}
-      <div style={{ display: 'flex', overflowX: 'auto', border: `1px solid ${C.line}`, background: C.card, borderRadius: 10, padding: '0 14px', marginBottom: 18 }}>
-        {TABS.map(t => (
-          <button key={t} onClick={() => handleTabChange(t)} style={{
-            border: 0, background: 'transparent', padding: '13px 4px', marginRight: 24,
-            color: tab === t ? C.ink : C.muted, fontWeight: 700, fontSize: 13,
-            borderBottom: `3px solid ${tab === t ? C.coral : 'transparent'}`,
-            cursor: 'pointer', whiteSpace: 'nowrap',
-          }}>{t}</button>
-        ))}
+      <div className="crm-tab-row" style={{ position: 'relative', marginBottom: 18 }}>
+        <div style={{ display: 'flex', overflowX: 'auto', border: `1px solid ${C.line}`, background: C.card, borderRadius: 10, padding: '0 14px', scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+          {TABS.map(t => (
+            <button key={t} onClick={e => { handleTabChange(t); e.currentTarget.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' }); }} style={{
+              border: 0, background: 'transparent', padding: '13px 4px', marginRight: 24,
+              color: tab === t ? C.ink : C.muted, fontWeight: 700, fontSize: 13, minHeight: 44,
+              borderBottom: `3px solid ${tab === t ? C.coral : 'transparent'}`,
+              cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
+            }}>{t}</button>
+          ))}
+        </div>
+        {/* Right-edge fade for tab scroll */}
+        <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 32, pointerEvents: 'none', background: `linear-gradient(to right, transparent, ${C.card})`, borderRadius: '0 10px 10px 0' }} />
       </div>
+
+      <style>{`
+        .crm-header { display: flex; align-items: flex-start; gap: 14; }
+        .crm-tab-row div::-webkit-scrollbar { display: none; }
+        @media (max-width: 640px) {
+          .crm-header { flex-direction: column; gap: 12px; }
+          .crm-header-btns { display: grid !important; grid-template-columns: 1fr 1fr; width: 100%; }
+          .crm-header-btns button, .crm-header-btns a { width: 100%; justify-content: center; }
+        }
+      `}</style>
 
       {/* Tab bodies — lazy keep-mounted: mount on first visit, hide not unmount thereafter.
           CrmTabPane provides its own portal ref + isActive so modals are per-tab isolated. */}

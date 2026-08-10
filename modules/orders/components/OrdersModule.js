@@ -79,74 +79,28 @@ export default function OrdersModule({ workspaceActive = false, refreshKey = 0 }
         background: '#fff', borderBottom: '1px solid #e5e7eb',
         position: 'sticky', top: stickyTop, zIndex: 9,
       }}>
-        <div style={{ padding: '16px 20px 0' }}>
+        <div style={{ padding: '12px 16px 0' }}>
 
-          {/* Title row */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
-            <div>
-              <h1 style={{ fontSize: '22px', fontWeight: 800, color: '#111', margin: 0 }}>Orders</h1>
-              <p style={{ fontSize: '12px', color: '#9ca3af', margin: '2px 0 0' }}>
-                {filteredOrders.length} shown
-                {filterStatus === 'All' && (() => {
-                  const closedCount = orders.filter(o => o.status === 'Closed').length;
-                  const cancelledCount = orders.filter(o => o.status === 'Cancelled / Refunded').length;
-                  const parts = [];
-                  if (closedCount) parts.push(`${closedCount} closed`);
-                  if (cancelledCount) parts.push(`${cancelledCount} cancelled`);
-                  return parts.length ? (
-                    <span style={{ marginLeft: '6px', color: '#bbb' }}>· {parts.join(', ')} hidden</span>
-                  ) : null;
-                })()}
-              </p>
-            </div>
+          {/* Row 1: Title + New Order */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+            <h1 style={{ fontSize: '20px', fontWeight: 800, color: '#111', margin: 0 }}>All Orders</h1>
             <Link href="/orders/new" style={{
               display: 'inline-flex', alignItems: 'center', gap: '5px',
-              padding: '8px 16px', borderRadius: '7px',
+              padding: '8px 14px', borderRadius: '7px',
               background: '#E8512A', color: '#fff',
-              fontWeight: 700, fontSize: '13px', textDecoration: 'none',
+              fontWeight: 700, fontSize: '13px', textDecoration: 'none', minHeight: '44px',
             }}>
               + New Order
             </Link>
           </div>
 
-          {/* Status pills */}
-          <div style={{ display: 'flex', gap: '5px', overflowX: 'auto', paddingBottom: '12px', WebkitOverflowScrolling: 'touch' }}>
-            <button onClick={() => setFilterStatus('All')} style={{
-              flexShrink: 0, padding: '5px 12px', borderRadius: '6px', cursor: 'pointer', border: '1.5px solid',
-              background: filterStatus === 'All' ? '#1a1a1a' : '#fff',
-              borderColor: filterStatus === 'All' ? '#1a1a1a' : '#e0e0e0',
-              fontSize: '11px', whiteSpace: 'nowrap', fontWeight: 700,
-              color: filterStatus === 'All' ? '#fff' : '#888',
-            }}>
-              <span style={{ fontFamily: 'monospace' }}>{orders.filter(o => o.status !== 'Closed' && o.status !== 'Cancelled / Refunded').length}</span>
-              <span style={{ marginLeft: '4px' }}>All Active</span>
-            </button>
-
-            {ALL_STATUSES.map(s => {
-              const count  = statusCounts[s] || 0;
-              const colors = ALL_STATUS_COLORS[s] || { bg: '#eee', text: '#333', border: '#ccc' };
-              const active = filterStatus === s;
-              return (
-                <button key={s} onClick={() => setFilterStatus(prev => prev === s ? 'All' : s)} style={{
-                  flexShrink: 0, padding: '5px 10px', borderRadius: '6px', cursor: 'pointer', border: '1.5px solid',
-                  background: active ? colors.bg : '#fff',
-                  borderColor: active ? colors.border : '#e0e0e0',
-                  fontSize: '11px', whiteSpace: 'nowrap',
-                }}>
-                  <span style={{ fontWeight: 700, fontFamily: 'monospace', color: active ? colors.text : '#555' }}>{count}</span>
-                  <span style={{ color: active ? colors.text : '#888', marginLeft: '4px' }}>{s}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Search + filters */}
-          <div style={{ display: 'flex', gap: '10px', paddingBottom: '14px', flexWrap: 'wrap' }}>
-            <div style={{ flex: 1, minWidth: '200px', position: 'relative' }}>
+          {/* Row 2: Search + type select (always visible) */}
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+            <div style={{ flex: 1, position: 'relative' }}>
               <span style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#9ca3af', fontSize: '13px' }}>🔍</span>
               <input
                 type="text"
-                placeholder="Search order number or client..."
+                placeholder="Search order or client..."
                 value={searchTerm}
                 onChange={e => setSearchTerm(e.target.value)}
                 style={{
@@ -167,13 +121,64 @@ export default function OrdersModule({ workspaceActive = false, refreshKey = 0 }
             </select>
             {isFiltering && (
               <button onClick={clearFilters} style={{
-                padding: '7px 14px', border: '1.5px solid #e0e0e0', borderRadius: '7px',
+                padding: '7px 12px', border: '1.5px solid #e0e0e0', borderRadius: '7px',
                 fontSize: '12px', fontWeight: 600, color: '#9ca3af', background: '#fff', cursor: 'pointer',
               }}>Clear</button>
             )}
           </div>
+
+          {/* Status pills — horizontal scroll on all screen sizes */}
+          <div className="orders-status-pills" style={{ display: 'flex', gap: '5px', overflowX: 'auto', paddingBottom: '12px', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+            <button onClick={() => setFilterStatus('All')} style={{
+              flexShrink: 0, padding: '5px 12px', borderRadius: '6px', cursor: 'pointer', border: '1.5px solid', minHeight: '30px',
+              background: filterStatus === 'All' ? '#1a1a1a' : '#fff',
+              borderColor: filterStatus === 'All' ? '#1a1a1a' : '#e0e0e0',
+              fontSize: '11px', whiteSpace: 'nowrap', fontWeight: 700,
+              color: filterStatus === 'All' ? '#fff' : '#888',
+            }}>
+              <span style={{ fontFamily: 'monospace' }}>{orders.filter(o => o.status !== 'Closed' && o.status !== 'Cancelled / Refunded').length}</span>
+              <span style={{ marginLeft: '4px' }}>All Active</span>
+            </button>
+            {ALL_STATUSES.map(s => {
+              const count  = statusCounts[s] || 0;
+              const colors = ALL_STATUS_COLORS[s] || { bg: '#eee', text: '#333', border: '#ccc' };
+              const active = filterStatus === s;
+              return (
+                <button key={s} onClick={() => setFilterStatus(prev => prev === s ? 'All' : s)} style={{
+                  flexShrink: 0, padding: '5px 10px', borderRadius: '6px', cursor: 'pointer', border: '1.5px solid', minHeight: '30px',
+                  background: active ? colors.bg : '#fff',
+                  borderColor: active ? colors.border : '#e0e0e0',
+                  fontSize: '11px', whiteSpace: 'nowrap',
+                }}>
+                  <span style={{ fontWeight: 700, fontFamily: 'monospace', color: active ? colors.text : '#555' }}>{count}</span>
+                  <span style={{ color: active ? colors.text : '#888', marginLeft: '4px' }}>{s}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Active filter chip — shown on mobile when a filter is active */}
+          {filterStatus !== 'All' && (
+            <div className="orders-active-filter" style={{ display: 'none', paddingBottom: '10px', alignItems: 'center', gap: '6px' }}>
+              <span style={{ fontSize: '12px', fontWeight: 600, color: '#555' }}>
+                {filterStatus}: <span style={{ fontFamily: 'monospace' }}>{filteredOrders.length}</span>
+              </span>
+              <button onClick={() => setFilterStatus('All')} style={{
+                background: 'none', border: 'none', color: '#E8512A', fontSize: '13px', cursor: 'pointer', padding: '0 4px', lineHeight: 1,
+              }}>✕</button>
+            </div>
+          )}
         </div>
       </div>
+
+      <style>{`
+        .orders-status-pills::-webkit-scrollbar { display: none; }
+        @media (max-width: 640px) {
+          .orders-active-filter { display: flex !important; }
+          .orders-status-pills button { min-height: 44px !important; }
+          .orders-active-filter button { min-height: 44px !important; min-width: 44px !important; }
+        }
+      `}</style>
 
       {/* ── Orders Grid ── */}
       <div style={{ padding: '20px' }}>
