@@ -253,8 +253,12 @@ function WorkspaceShellInner({ children }) {
             top: '56px',          // flush below the 56px AppShell header
             zIndex: 90,
             overflowX: 'auto',
+            overflowY: 'hidden',
             scrollbarWidth: 'none',
             msOverflowStyle: 'none',
+            width: '100%',
+            maxWidth: '100vw',
+            boxSizing: 'border-box',
           }}
         >
           {tabs.map(tab => {

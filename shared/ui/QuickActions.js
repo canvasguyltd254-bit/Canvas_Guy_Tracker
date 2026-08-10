@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/shared/context/AuthContext';
 
 // Role → allowed quick-create actions
@@ -20,8 +20,11 @@ const ACTION_CONFIG = {
 };
 
 export default function QuickActions({ prefill = {} }) {
-  const router  = useRouter();
+  const router   = useRouter();
+  const pathname = usePathname();
   const { userRole, loaded } = useAuth();
+  // CRM has its own visible New Enquiry / Direct Quote buttons — suppress the mobile FAB there
+  const hideMobileFab = pathname === '/crm';
   const [open,   setOpen]   = useState(false);
   const [locked, setLocked] = useState(false); // true when any modal is open
 
@@ -138,7 +141,7 @@ export default function QuickActions({ prefill = {} }) {
       </div>
 
       {/* ── Mobile: FAB pinned above nav with safe-area ── */}
-      <div ref={fabRef} className="qa-fab" style={{ position: 'fixed', bottom: 'calc(72px + env(safe-area-inset-bottom))', right: '20px', zIndex: 250 }}>
+      {!hideMobileFab && <div ref={fabRef} className="qa-fab" style={{ position: 'fixed', bottom: 'calc(72px + env(safe-area-inset-bottom))', right: '20px', zIndex: 250 }}>
         {open && (
           <>
             <div
@@ -166,7 +169,7 @@ export default function QuickActions({ prefill = {} }) {
         >
           {open ? '✕' : '＋'}
         </button>
-      </div>
+      </div>}
 
       <style>{`
         .qa-desktop { display: flex; }

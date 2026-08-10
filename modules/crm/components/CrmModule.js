@@ -727,7 +727,28 @@ function EnquiryFormModal({ onSave, onClose, prefill = {} }) {
 const STAGE_ORDER = ['new', 'contacted', 'quoted', 'won', 'lost'];
 const KANBAN_COL  = { new: C.blueBg, contacted: C.amberBg, quoted: '#ede9f7', won: C.greenBg, lost: C.redBg };
 
+function PipelineCard({ e }) {
+  return (
+    <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 9, padding: 11, marginBottom: 8 }}>
+      <div style={{ fontWeight: 700, fontSize: 13, color: C.ink, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {e.customers?.name || e.prospect_name || '—'}
+      </div>
+      <div style={{ fontSize: 11.5, color: C.muted, margin: '5px 0', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {e.title || e.category || '—'}
+      </div>
+      {e.estimated_value > 0 && (
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.green }}>KES {fmtKes(e.estimated_value)}</div>
+      )}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, fontSize: 10.5 }}>
+        <Chip>{(e.source || '—').replace('_', ' ')}</Chip>
+        <span style={{ color: C.muted }}>{fmtDate(e.created_at)}</span>
+      </div>
+    </div>
+  );
+}
+
 function PipelineTab({ enquiries, stats }) {
+  const [mobileStage, setMobileStage] = React.useState('new');
   const columns = STAGE_ORDER.map(stage => ({ stage, items: enquiries.filter(e => e.stage === stage) }));
   const kpis = [
     { label: 'Open Pipeline',         value: `KES ${fmtKes(stats?.pipelineValue)}`,        sub: 'Draft and sent quotes only' },
@@ -738,12 +759,15 @@ function PipelineTab({ enquiries, stats }) {
 
   return (
     <div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+      {/* KPI cards — 4-col desktop, 2×2 mobile */}
+      <div className="pipeline-kpi-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
         {kpis.map(k => <StatCard key={k.label} {...k} />)}
       </div>
       <Panel>
         <PanelHead title="Sales Pipeline" sub="Five stages only. Follow-up is a task date, not a stage." />
-        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${STAGE_ORDER.length}, minmax(205px, 1fr))`, gap: 11, padding: 14, overflowX: 'auto' }}>
+
+        {/* Desktop Kanban — hidden on mobile */}
+        <div className="pipeline-kanban" style={{ display: 'grid', gridTemplateColumns: `repeat(${STAGE_ORDER.length}, minmax(205px, 1fr))`, alignItems: 'start', gap: 11, padding: 14, overflowX: 'auto' }}>
           {columns.map(({ stage, items }) => (
             <div key={stage} style={{ background: '#f1efeb', borderRadius: 10, padding: 9, minWidth: 205 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, fontWeight: 700, color: C.muted, textTransform: 'uppercase', margin: '2px 4px 10px' }}>
@@ -753,27 +777,63 @@ function PipelineTab({ enquiries, stats }) {
               {items.length === 0 && (
                 <div style={{ textAlign: 'center', padding: '20px 0', color: C.muted, fontSize: 11, border: `2px dashed ${C.line}`, borderRadius: 9 }}>Empty</div>
               )}
-              {items.map(e => (
-                <div key={e.id} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 9, padding: 11, marginBottom: 8 }}>
-                  <div style={{ fontWeight: 700, fontSize: 13, color: C.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {e.customers?.name || e.prospect_name || '—'}
-                  </div>
-                  <div style={{ fontSize: 11.5, color: C.muted, margin: '5px 0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {e.title || e.category || '—'}
-                  </div>
-                  {e.estimated_value > 0 && (
-                    <div style={{ fontSize: 13, fontWeight: 800, color: C.green }}>KES {fmtKes(e.estimated_value)}</div>
-                  )}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, fontSize: 10.5 }}>
-                    <Chip>{(e.source || '—').replace('_', ' ')}</Chip>
-                    <span style={{ color: C.muted }}>{fmtDate(e.created_at)}</span>
-                  </div>
-                </div>
-              ))}
+              {items.map(e => <PipelineCard key={e.id} e={e} />)}
             </div>
           ))}
         </div>
+
+        {/* Mobile stage selector + list — hidden on desktop */}
+        <div className="pipeline-mobile">
+          {/* Horizontal stage pill selector */}
+          <div style={{ display: 'flex', gap: 8, overflowX: 'auto', scrollbarWidth: 'none', msOverflowStyle: 'none', padding: '4px 14px 12px' }}>
+            {columns.map(({ stage, items }) => (
+              <button
+                key={stage}
+                onClick={e => { setMobileStage(stage); e.currentTarget.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' }); }}
+                style={{
+                  flexShrink: 0, padding: '6px 14px', borderRadius: 20, border: '1.5px solid',
+                  minHeight: 44, cursor: 'pointer', fontWeight: 700, fontSize: 12,
+                  background: mobileStage === stage ? C.ink : C.card,
+                  borderColor: mobileStage === stage ? C.ink : C.line,
+                  color: mobileStage === stage ? '#fff' : C.muted,
+                  textTransform: 'capitalize',
+                  whiteSpace: 'nowrap',
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                }}
+              >
+                {stage}
+                <span style={{
+                  background: mobileStage === stage ? 'rgba(255,255,255,0.25)' : C.bg,
+                  padding: '1px 6px', borderRadius: 20, fontSize: 11,
+                }}>{items.length}</span>
+              </button>
+            ))}
+          </div>
+          {/* Selected stage list */}
+          <div style={{ padding: '0 14px 14px' }}>
+            {(() => {
+              const col = columns.find(c => c.stage === mobileStage);
+              if (!col || col.items.length === 0) {
+                return <div style={{ textAlign: 'center', padding: '24px 0', color: C.muted, fontSize: 13, border: `2px dashed ${C.line}`, borderRadius: 9 }}>No enquiries in this stage</div>;
+              }
+              return col.items.map(e => <PipelineCard key={e.id} e={e} />);
+            })()}
+          </div>
+        </div>
       </Panel>
+
+      <style>{`
+        .pipeline-kpi-grid { grid-template-columns: repeat(4, 1fr); }
+        .pipeline-kanban   { display: grid !important; }
+        .pipeline-mobile   { display: none !important; }
+        @media (max-width: 640px) {
+          .pipeline-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 10px !important; }
+          .pipeline-kpi-grid > * { min-height: 110px; box-sizing: border-box; }
+          .pipeline-kanban   { display: none !important; }
+          .pipeline-mobile   { display: block !important; }
+          .pipeline-mobile div::-webkit-scrollbar { display: none; }
+        }
+      `}</style>
     </div>
   );
 }
@@ -1628,7 +1688,7 @@ export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnq
 
   return (
     <CrmPortalContext.Provider value={{ ref: containerRef, isActive: workspaceActive }}>
-    <div ref={containerRef} style={{ position: 'relative', maxWidth: 1220, margin: '0 auto', padding: '24px 20px 60px', background: C.bg, minHeight: '100vh' }}>
+    <div ref={containerRef} data-crm-root style={{ position: 'relative', maxWidth: 1220, margin: '0 auto', padding: '24px 20px 60px', background: C.bg, minHeight: '100vh', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
 
       {/* Module header */}
       <div className="crm-header" style={{ marginBottom: 18 }}>
@@ -1665,12 +1725,15 @@ export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnq
       </div>
 
       <style>{`
-        .crm-header { display: flex; align-items: flex-start; gap: 14; }
+        .crm-header { display: flex; align-items: flex-start; gap: 14px; min-width: 0; }
+        .crm-header > * { min-width: 0; }
         .crm-tab-row div::-webkit-scrollbar { display: none; }
         @media (max-width: 640px) {
-          .crm-header { flex-direction: column; gap: 12px; }
-          .crm-header-btns { display: grid !important; grid-template-columns: 1fr 1fr; width: 100%; }
-          .crm-header-btns button, .crm-header-btns a { width: 100%; justify-content: center; }
+          .crm-header { flex-direction: column; gap: 12px; width: 100%; }
+          .crm-header-btns { display: grid !important; grid-template-columns: 1fr 1fr; width: 100%; min-width: 0; }
+          .crm-header-btns button, .crm-header-btns a { width: 100%; justify-content: center; min-width: 0; }
+          /* Contain padding on mobile */
+          [data-crm-root] { padding-left: 12px !important; padding-right: 12px !important; }
         }
       `}</style>
 
