@@ -38,7 +38,7 @@ function Avatar({ name, type, size = 36 }) {
   );
 }
 
-export default function ContactsModule() {
+export default function ContactsModule({ refreshKey = 0 } = {}) {
   const router                      = useRouter();
   const [contacts, setContacts]     = useState([]);
   const [loading, setLoading]       = useState(true);
@@ -61,7 +61,7 @@ export default function ContactsModule() {
     setLoading(false);
   };
 
-  useEffect(() => { loadContacts(); }, []);
+  useEffect(() => { loadContacts(); }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Client-side filtering by type + search
   const filtered = useMemo(() => {

@@ -1857,8 +1857,75 @@ function buildReportPDF(data) {
           y += TOT_ROW_H;
         }
 
-        // ── 6. SIGNATURE BLOCK ──────────────────────────────────────────────────
-        y += 8 * MM;
+        // ── 6. PAYMENT DETAILS ──────────────────────────────────────────────────
+        y += 10 * MM;
+        const PAY_NEEDED = 52 * MM;
+        y = ensureSpace(y, PAY_NEEDED, false);
+
+        // Section heading
+        fillRect(doc, PM, y, ACCENT_W, 3.5 * MM, CORAL);
+        doc.font('Helvetica-Bold').fontSize(7).fillColor(CORAL)
+           .text('PAYMENT DETAILS', PM + ACCENT_W + 2, y + 0.5 * MM, { lineBreak: false });
+        y += 5.5 * MM;
+
+        // Two-column layout: Bank (left) | M-PESA (right)
+        const PAY_MID   = PM + PCW / 2 + 4 * MM;
+        const PAY_COL_W = PCW / 2 - 6 * MM;
+        const PAY_ROW_H = 5 * MM;
+        const LBL_COLOR = '#888888';
+        const VAL_COLOR = DGRAY;
+
+        const bankRows = [
+          { label: 'Bank',           value: 'ABSA Bank Kenya' },
+          { label: 'Branch',         value: 'Thika' },
+          { label: 'Account Name',   value: 'Canvas Guy Limited' },
+          { label: 'Account Number', value: '2045216104' },
+          { label: 'Sort Code',      value: '031' },
+          { label: 'SWIFT',          value: 'BARCKEN' },
+        ];
+        const mpesaRows = [
+          { label: 'M-PESA Paybill', value: '4079031' },
+          { label: 'Account Number', value: 'Your Name' },
+          { label: 'Reference',      value: 'Project Name' },
+        ];
+
+        // Sub-headings
+        doc.font('Helvetica-Bold').fontSize(7).fillColor(DGRAY)
+           .text('Bank Transfer (EFT / RTGS)', PM, y, { lineBreak: false });
+        doc.font('Helvetica-Bold').fontSize(7).fillColor(DGRAY)
+           .text('M-PESA Paybill', PAY_MID, y, { lineBreak: false });
+        y += 4 * MM;
+
+        const maxRows = Math.max(bankRows.length, mpesaRows.length);
+        for (let i = 0; i < maxRows; i++) {
+          const br = bankRows[i];
+          const mr = mpesaRows[i];
+          // Bank column
+          if (br) {
+            doc.font('Helvetica').fontSize(7).fillColor(LBL_COLOR)
+               .text(br.label, PM, y, { lineBreak: false });
+            doc.font('Helvetica-Bold').fontSize(7.5).fillColor(VAL_COLOR)
+               .text(br.value, PM + 28 * MM, y, { lineBreak: false });
+          }
+          // M-PESA column
+          if (mr) {
+            doc.font('Helvetica').fontSize(7).fillColor(LBL_COLOR)
+               .text(mr.label, PAY_MID, y, { lineBreak: false });
+            doc.font('Helvetica-Bold').fontSize(7.5).fillColor(VAL_COLOR)
+               .text(mr.value, PAY_MID + 28 * MM, y, { lineBreak: false });
+          }
+          y += PAY_ROW_H;
+        }
+
+        // Proof-of-payment note
+        y += 2 * MM;
+        doc.font('Helvetica').fontSize(6.5).fillColor('#999999')
+           .text('Send proof of payment to holla@canvasguy.co.ke and quote your order reference.',
+             PM, y, { lineBreak: false });
+        y += 5 * MM;
+
+        // ── 7. SIGNATURE BLOCK ──────────────────────────────────────────────────
+        y += 6 * MM;
         const SIG_LABELS = ['PREPARED BY (CANVAS GUY)', 'AUTHORISED BY (CLIENT)'];
         const SIG_COL_W  = PCW / SIG_LABELS.length;
         const SIG_NEEDED = 20 * MM;
@@ -2135,8 +2202,8 @@ function buildReportPDF(data) {
            .text('Payment Details', PM + 2 * MM, y + 0.5 * MM, { lineBreak: false });
         y += 5 * MM;
         const payDetails = [
-          'Bank: ABSA Bank Kenya | Account: Canvas Guy Limited | A/C: 2048527698',
-          'M-PESA Paybill: 303030 | Account No: Use Invoice Number as reference',
+          'Bank: ABSA Bank Kenya | Branch: Thika | Account: Canvas Guy Limited | A/C: 2045216104 | Sort: 031 | SWIFT: BARCKEN',
+          'M-PESA Paybill: 4079031 | Account: Your Name | Reference: Invoice / Order Number',
         ];
         for (const line of payDetails) {
           doc.font('Helvetica').fontSize(7).fillColor(DGRAY).text(line, PM, y, { lineBreak: false });

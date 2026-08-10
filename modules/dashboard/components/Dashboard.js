@@ -105,7 +105,7 @@ function WorkloadBar({ category, count, max }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function Dashboard() {
+export default function Dashboard({ refreshKey = 0 } = {}) {
   const [orders, setOrders]         = useState([]);
   const [activities, setActivities] = useState([]);
   const [payTotals, setPayTotals]   = useState({});
@@ -141,7 +141,10 @@ export default function Dashboard() {
       setItemData(itemRes.data || []);
       setLoaded(true);
     })();
-  }, []);
+  // refreshKey is bumped by WorkspaceShell to trigger a re-fetch when this tab
+  // becomes active after being stale (alwaysFresh or 15-min threshold).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey]);
 
   if (!loaded) {
     return <div style={{ padding: '40px', textAlign: 'center', color: '#aaa' }}>Loading...</div>;

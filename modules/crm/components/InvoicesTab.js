@@ -363,7 +363,7 @@ function InvoiceDetailPanel({ orderId, onClose }) {
 }
 
 // ─── InvoicesTab (exported) ───────────────────────────────────────────────────
-export default function InvoicesTab({ customerId } = {}) {
+export default function InvoicesTab({ customerId, refreshKey = 0 } = {}) {
   const [invoices, setInvoices]   = useState([]);
   const [loading, setLoad]        = useState(true);
   const [expandedId, setExpanded] = useState(null);
@@ -399,7 +399,7 @@ export default function InvoicesTab({ customerId } = {}) {
         setLoad(false);
       })
       .catch(err => { console.error('invoices fetch failed:', err); setLoad(false); });
-  }, [customerId, fCustomer, fInvoice, fQuote, fOrder, fVatMode, fPmtStatus, fOrderStatus, fDateFrom, fDateTo]);
+  }, [customerId, fCustomer, fInvoice, fQuote, fOrder, fVatMode, fPmtStatus, fOrderStatus, fDateFrom, fDateTo, refreshKey]);
 
   useEffect(() => { fetchInvoices(); }, [fetchInvoices]);
 

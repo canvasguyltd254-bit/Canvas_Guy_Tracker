@@ -552,7 +552,7 @@ function ReversalsTab({ reversals }) {
 
 // ─── Root component ──────────────────────────────────────────────────────────
 
-export default function AccountingReview() {
+export default function AccountingReview({ refreshKey = 0 } = {}) {
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState(null);
   const [data, setData]           = useState(null);
@@ -580,7 +580,8 @@ export default function AccountingReview() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey]);
 
   useEffect(() => { load(); }, [load]);
 

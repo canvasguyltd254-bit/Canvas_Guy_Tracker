@@ -13,7 +13,30 @@
  */
 
 import AppShell from '@/shared/ui/AppShell';
+import WorkspaceShell from '@/shared/ui/WorkspaceShell';
+import { WorkspaceProvider } from '@/shared/context/WorkspaceContext';
 
+/**
+ * WorkspaceShell lives here — not inside AppShell — so AppShell stays
+ * unaware of the workspace feature. The <main> wrapper also moves here
+ * so WorkspaceShell can render its tab strip full-width before the
+ * content container and still receive the page as its children.
+ */
 export default function TrackerLayout({ children }) {
-  return <AppShell>{children}</AppShell>;
+  return (
+    <WorkspaceProvider>
+      <AppShell>
+        <WorkspaceShell>
+          <main style={{
+            maxWidth: '1200px',
+            margin: '0 auto',
+            minHeight: 'calc(100vh - 56px)',
+            paddingBottom: '32px',
+          }}>
+            {children}
+          </main>
+        </WorkspaceShell>
+      </AppShell>
+    </WorkspaceProvider>
+  );
 }

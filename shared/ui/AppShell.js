@@ -232,10 +232,10 @@ export default function AppShell({ children }) {
         </div>
       )}
 
-      {/* Main content */}
-      <main style={{ maxWidth: "1200px", margin: "0 auto", minHeight: "calc(100vh - 52px)", paddingBottom: "32px" }}>
-        {children}
-      </main>
+      {/* Main content — WorkspaceShell is injected from layout.js, not here.
+          AppShell is unaware of workspace tabs; it simply renders its children.
+          layout.js wraps children with WorkspaceShell before passing them in. */}
+      {children}
 
       {/* Trademark — fixed bottom-right */}
       <div style={{

@@ -77,7 +77,7 @@ function toInputDate(d) {
   return `${y}-${m}-${day}`;
 }
 
-export default function Reports() {
+export default function Reports({ refreshKey = 0 } = {}) {
   const searchParams = useSearchParams();
   const initialType = searchParams.get("type") || "production";
   const { displayName } = useAuth();
@@ -169,7 +169,8 @@ export default function Reports() {
 
       setLoaded(true);
     })();
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey]);
 
   // ── Mobile detection ──
   useEffect(() => {

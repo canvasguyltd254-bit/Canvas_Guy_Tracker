@@ -1,10 +1,42 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import calcTotals from '@/shared/lib/calcTotals';
 import LineItemEditor, { BLANK_ITEM, BLANK_CHARGE } from '@/shared/components/LineItemEditor';
 import InvoicesTab from '@/modules/crm/components/InvoicesTab';
+
+// ─── Portal context ───────────────────────────────────────────────────────────
+// { ref, isActive }
+// ref      = the owning pane's DOM node; portal targets this so display:none hides portals.
+// isActive = whether the owning tab is currently visible; gates Quick Actions lock.
+const CrmPortalContext = React.createContext({ ref: null, isActive: true });
+
+// useQuickActionsLock — lock Quick Actions while `active` is true, release on cleanup.
+// Used by every overlay (Modal shell, QuoteFormModal, confirm portal) so all three paths
+// respect both internal-tab visibility and workspace-level visibility.
+function useQuickActionsLock(active) {
+  useEffect(() => {
+    if (!active) return;
+    window.dispatchEvent(new CustomEvent('quickactions:lock'));
+    return () => window.dispatchEvent(new CustomEvent('quickactions:unlock'));
+  }, [active]);
+}
+
+// CrmTabPane — always in the DOM after first visit, hidden via display:none when inactive.
+// Accepts workspaceActive so isActive = workspaceActive && (this tab is selected).
+// This means switching CRM → Payroll in WorkspaceShell releases lock for any open modal.
+function CrmTabPane({ name, activeTab, workspaceActive, visited, children }) {
+  const paneRef = useRef(null);
+  const isActive = workspaceActive && activeTab === name;
+  return (
+    <CrmPortalContext.Provider value={{ ref: paneRef, isActive }}>
+      <div ref={paneRef} style={{ display: isActive ? 'block' : 'none', position: 'relative' }}>
+        {visited && children}
+      </div>
+    </CrmPortalContext.Provider>
+  );
+}
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 const C = {
@@ -134,11 +166,10 @@ const Fta = ({ ...props }) => (
 
 // ─── Modal shell ──────────────────────────────────────────────────────────────
 const Modal = ({ title, onClose, footer, children, wide }) => {
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent('quickactions:lock'));
-    return () => window.dispatchEvent(new CustomEvent('quickactions:unlock'));
-  }, []);
+  const { ref: portalRef, isActive } = React.useContext(CrmPortalContext);
+  useQuickActionsLock(isActive);
   if (typeof document === 'undefined') return null;
+  const target = portalRef?.current ?? document.body;
   return createPortal(
     <div
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
@@ -153,7 +184,7 @@ const Modal = ({ title, onClose, footer, children, wide }) => {
         {footer && <div style={{ padding: '15px 18px', borderTop: `1px solid ${C.line}`, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>{footer}</div>}
       </div>
     </div>,
-    document.body,
+    target,
   );
 };
 
@@ -183,6 +214,8 @@ function useWindowWidth() {
 
 // ─── QuoteFormModal ───────────────────────────────────────────────────────────
 function QuoteFormModal({ quote, enquiries, onSave, onClose, prefill = {} }) {
+  const { ref: portalRef, isActive } = React.useContext(CrmPortalContext);
+  useQuickActionsLock(isActive); // lock while modal is open and its tab is visible
   const isEdit  = !!quote;
   const winW    = useWindowWidth();
   const mobile      = winW < 640;
@@ -636,7 +669,7 @@ function QuoteFormModal({ quote, enquiries, onSave, onClose, prefill = {} }) {
 
       </div>
     </div>,
-    document.body,
+    portalRef?.current ?? document.body,
   );
 }
 
@@ -746,7 +779,7 @@ function PipelineTab({ enquiries, stats }) {
 }
 
 // ─── Enquiries tab ────────────────────────────────────────────────────────────
-function EnquiriesTab({ onRefresh }) {
+function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
   const [enquiries, setEnquiries] = useState([]);
   const [loading, setLoading]     = useState(true);
   const [stage, setStage]         = useState('');
@@ -764,7 +797,7 @@ function EnquiriesTab({ onRefresh }) {
     const json = await res.json();
     setEnquiries(json.data || []);
     setLoading(false);
-  }, [stage, q]);
+  }, [stage, q, refreshKey]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -889,7 +922,8 @@ function EnquiriesTab({ onRefresh }) {
 // Statuses still shown in the filter dropdown (superseded quotes from old revisions can still be viewed)
 const QUOTE_STATUSES = ['draft', 'sent', 'accepted', 'rejected', 'expired', 'superseded'];
 
-function QuotationsTab({ onRefresh }) {
+function QuotationsTab({ onRefresh, refreshKey = 0 }) {
+  const { ref: portalRef, isActive } = React.useContext(CrmPortalContext);
   const [quotes, setQuotes]             = useState([]);
   const [loading, setLoading]           = useState(true);
   const [status, setStatus]             = useState('');
@@ -905,6 +939,7 @@ function QuotationsTab({ onRefresh }) {
   const [changelog, setChangelog]       = useState({});
   // { type: 'accept'|'reject'|'revise'|'convert', qt }
   const [confirmAction, setConfirmAction] = useState(null);
+  useQuickActionsLock(!!confirmAction && isActive);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -915,7 +950,7 @@ function QuotationsTab({ onRefresh }) {
     const json = await res.json();
     setQuotes(json.data || []);
     setLoading(false);
-  }, [status, q]);
+  }, [status, q, refreshKey]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { fetch('/api/crm/enquiries?limit=100').then(r => r.json()).then(j => setEnquiries(j.data || [])).catch(() => {}); }, []);
@@ -1284,14 +1319,14 @@ function QuotationsTab({ onRefresh }) {
             })()}
           </div>
         </div>,
-        document.body,
+        portalRef?.current ?? document.body,
       )}
     </div>
   );
 }
 
 // ─── Follow-ups tab ───────────────────────────────────────────────────────────
-function FollowupsTab({ onRefresh }) {
+function FollowupsTab({ onRefresh, refreshKey = 0 }) {
   const [followups, setFollowups]   = useState([]);
   const [loading, setLoading]       = useState(true);
   const [filter, setFilter]         = useState('pending');
@@ -1318,7 +1353,7 @@ function FollowupsTab({ onRefresh }) {
       return new Date(a.due_date) - new Date(b.due_date);
     });
     setFollowups(data); setLoading(false);
-  }, [filter]);
+  }, [filter, refreshKey]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1439,10 +1474,10 @@ function FollowupsTab({ onRefresh }) {
 }
 
 // ─── Insights tab ─────────────────────────────────────────────────────────────
-function InsightsTab() {
+function InsightsTab({ refreshKey = 0 }) {
   const [stats, setStats] = useState(null);
   const [loading, setLoad] = useState(true);
-  useEffect(() => { fetch('/api/crm/insights').then(r => r.json()).then(j => { setStats(j.data || {}); setLoad(false); }); }, []);
+  useEffect(() => { fetch('/api/crm/insights').then(r => r.json()).then(j => { setStats(j.data || {}); setLoad(false); }); }, [refreshKey]);
 
   if (loading) return <div style={{ textAlign: 'center', padding: '60px 0', color: C.muted }}>Loading…</div>;
 
@@ -1504,22 +1539,68 @@ function InsightsTab() {
 // ─── Root component ───────────────────────────────────────────────────────────
 const TABS = ['Pipeline', 'Enquiries', 'Quotations', 'Invoices', 'Follow-ups', 'Insights'];
 
-export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnquiryId } = {}) {
+export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnquiryId, workspaceActive = true, actionNonce, refreshKey = 0 } = {}) {
+  const containerRef = useRef(null);
   const [tab, setTab]           = useState('Pipeline');
+  // visited: Set of tab names that have been mounted at least once (lazy keep-mounted)
+  const [visited, setVisited]   = useState(() => new Set(['Pipeline']));
+  // tabState: per-tab { key (refresh counter), stale (needs reload on next visit) }
+  const [tabState, setTabState] = useState(() =>
+    Object.fromEntries(TABS.map(t => [t, { key: 0, stale: false }]))
+  );
   const [enquiries, setEnq]     = useState([]);
   const [enqLoading, setEnqL]   = useState(true);
   const [stats, setStats]       = useState(null);
-  const [refreshKey, setRefKey] = useState(0);
   const [showEnqForm, setShowEnqForm]   = useState(false);
   const [showQtForm,  setShowQtForm]    = useState(false);
   const [enqPrefill,  setEnqPrefill]    = useState({});
 
-  const refresh = useCallback(() => setRefKey(k => k + 1), []);
+  // When the workspace refreshKey bumps (15-min staleness), immediately refresh
+  // the active CRM tab and lazily mark all other visited tabs stale so they
+  // re-fetch only when the user next opens them. Skip on initial mount (key === 0).
+  useEffect(() => {
+    if (refreshKey === 0) return;
+    setTabState(ts => {
+      const next = { ...ts };
+      TABS.forEach(t => {
+        if (t === tab) {
+          next[t] = { key: ts[t].key + 1, stale: false };   // refresh now
+        } else if (visited.has(t)) {
+          next[t] = { ...ts[t], stale: true };               // lazy on next open
+        }
+      });
+      return next;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey]);
+
+  // refresh() — bumps the active tab immediately; marks all other visited tabs stale.
+  // Stale tabs re-fetch when the user next activates them (not eagerly).
+  const refresh = useCallback(() => {
+    setTabState(ts => {
+      const next = { ...ts };
+      next[tab] = { key: ts[tab].key + 1, stale: false };
+      TABS.forEach(t => {
+        if (t !== tab && visited.has(t)) next[t] = { ...ts[t], stale: true };
+      });
+      return next;
+    });
+  }, [tab, visited]);
+
+  // handleTabChange — switches tab, mounts it if first visit, refreshes if stale.
+  const handleTabChange = useCallback((t) => {
+    setTab(t);
+    setVisited(prev => { const next = new Set(prev); next.add(t); return next; });
+    setTabState(ts => {
+      if (!ts[t].stale) return ts;
+      return { ...ts, [t]: { key: ts[t].key + 1, stale: false } };
+    });
+  }, []);
 
   // Open form triggered by ?new= query param (from Quick Actions)
   useEffect(() => {
     if (defaultAction === 'enquiry') {
-      setTab('Enquiries');
+      handleTabChange('Enquiries');
       if (defaultCustomerId) {
         // Resolve customer so EnquiryFormModal can prefill prospect_name
         fetch('/api/customers').then(r => r.json()).then(j => {
@@ -1531,10 +1612,11 @@ export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnq
         setShowEnqForm(true);
       }
     } else if (defaultAction === 'quote') {
-      setTab('Quotations');
+      handleTabChange('Quotations');
       setShowQtForm(true);
     }
-  }, [defaultAction]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultAction, actionNonce]);
 
   useEffect(() => {
     setEnqL(true);
@@ -1542,10 +1624,11 @@ export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnq
       .then(r => r.json()).then(j => { setEnq(j.data || []); setEnqL(false); }).catch(() => setEnqL(false));
     fetch('/api/crm/insights')
       .then(r => r.json()).then(j => setStats(j.data || null)).catch(() => {});
-  }, [refreshKey]);
+  }, [tabState.Pipeline.key]);
 
   return (
-    <div style={{ maxWidth: 1220, margin: '0 auto', padding: '24px 20px 60px', background: C.bg, minHeight: '100vh' }}>
+    <CrmPortalContext.Provider value={{ ref: containerRef, isActive: workspaceActive }}>
+    <div ref={containerRef} style={{ position: 'relative', maxWidth: 1220, margin: '0 auto', padding: '24px 20px 60px', background: C.bg, minHeight: '100vh' }}>
 
       {/* Module header */}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 18 }}>
@@ -1568,7 +1651,7 @@ export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnq
       {/* Tabs */}
       <div style={{ display: 'flex', overflowX: 'auto', border: `1px solid ${C.line}`, background: C.card, borderRadius: 10, padding: '0 14px', marginBottom: 18 }}>
         {TABS.map(t => (
-          <button key={t} onClick={() => setTab(t)} style={{
+          <button key={t} onClick={() => handleTabChange(t)} style={{
             border: 0, background: 'transparent', padding: '13px 4px', marginRight: 24,
             color: tab === t ? C.ink : C.muted, fontWeight: 700, fontSize: 13,
             borderBottom: `3px solid ${tab === t ? C.coral : 'transparent'}`,
@@ -1577,17 +1660,33 @@ export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnq
         ))}
       </div>
 
-      {/* Tab bodies */}
-      {tab === 'Pipeline'   && (enqLoading ? <div style={{ textAlign: 'center', padding: '60px 0', color: C.muted }}>Loading…</div> : <PipelineTab enquiries={enquiries} stats={stats} />)}
-      {tab === 'Enquiries'  && <EnquiriesTab key={refreshKey} onRefresh={refresh} />}
-      {tab === 'Quotations' && <QuotationsTab key={refreshKey} onRefresh={refresh} />}
-      {tab === 'Invoices'   && <InvoicesTab key={refreshKey} />}
-      {tab === 'Follow-ups' && <FollowupsTab key={refreshKey} onRefresh={refresh} />}
-      {tab === 'Insights'   && <InsightsTab key={refreshKey} />}
+      {/* Tab bodies — lazy keep-mounted: mount on first visit, hide not unmount thereafter.
+          CrmTabPane provides its own portal ref + isActive so modals are per-tab isolated. */}
+      <CrmTabPane name="Pipeline" activeTab={tab} workspaceActive={workspaceActive} visited={visited.has('Pipeline')}>
+        {enqLoading
+          ? <div style={{ textAlign: 'center', padding: '60px 0', color: C.muted }}>Loading…</div>
+          : <PipelineTab enquiries={enquiries} stats={stats} />}
+      </CrmTabPane>
+      <CrmTabPane name="Enquiries" activeTab={tab} workspaceActive={workspaceActive} visited={visited.has('Enquiries')}>
+        <EnquiriesTab onRefresh={refresh} refreshKey={tabState.Enquiries.key} />
+      </CrmTabPane>
+      <CrmTabPane name="Quotations" activeTab={tab} workspaceActive={workspaceActive} visited={visited.has('Quotations')}>
+        <QuotationsTab onRefresh={refresh} refreshKey={tabState.Quotations.key} />
+      </CrmTabPane>
+      <CrmTabPane name="Invoices" activeTab={tab} workspaceActive={workspaceActive} visited={visited.has('Invoices')}>
+        <InvoicesTab refreshKey={tabState.Invoices.key} />
+      </CrmTabPane>
+      <CrmTabPane name="Follow-ups" activeTab={tab} workspaceActive={workspaceActive} visited={visited.has('Follow-ups')}>
+        <FollowupsTab onRefresh={refresh} refreshKey={tabState['Follow-ups'].key} />
+      </CrmTabPane>
+      <CrmTabPane name="Insights" activeTab={tab} workspaceActive={workspaceActive} visited={visited.has('Insights')}>
+        <InsightsTab refreshKey={tabState.Insights.key} />
+      </CrmTabPane>
 
       {/* Global shortcuts */}
       {showEnqForm && <EnquiryFormModal prefill={enqPrefill} onSave={() => { setShowEnqForm(false); setEnqPrefill({}); refresh(); }} onClose={() => { setShowEnqForm(false); setEnqPrefill({}); }} />}
       {showQtForm  && <QuoteFormModal quote={null} enquiries={enquiries} prefill={{ customer_id: defaultCustomerId, enquiry_id: defaultEnquiryId }} onSave={() => { setShowQtForm(false); refresh(); }} onClose={() => setShowQtForm(false)} />}
     </div>
+    </CrmPortalContext.Provider>
   );
 }

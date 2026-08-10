@@ -3,6 +3,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/shared/context/AuthContext';
 import { C, PageHeader, TabBar } from '@/shared/ui/ds';
+import { createClient } from '@/shared/supabase/client';
+
+const supabase = createClient();
 
 // ── Role constants ────────────────────────────────────────────
 const PAYROLL_ROLES  = ['admin', 'head_of_sales', 'production_manager'];
@@ -1294,17 +1297,11 @@ function RunDetail({ run: initialRun, userRole, onBack }) {
   const totalGross = entries.reduce((s, e) => s + Number(e.gross_pay || 0), 0);
   const totalNet   = entries.reduce((s, e) => s + Number(e.net_pay || 0), 0);
 
-  // Live net payable computed from gridData (used on attendance tab before save)
-  const liveNetPayable = activeTab === 'attendance' && Object.keys(gridData).length > 0
-    ? entries.reduce((sum, entry) => {
-        const empGrid = gridData[entry.employee_id] || {};
-        if (entry.snapshot_type === 'permanent') return sum + Number(entry.net_pay || 0);
-        const days    = Object.values(empGrid).filter(c => c.present).length;
-        const otKes   = Object.values(empGrid).reduce((s, c) => s + Number(c.overtime_hours || 0), 0);
-        const gross   = days * Number(entry.snapshot_day_rate || 0) + otKes;
-        return sum + Math.max(0, gross - Number(entry.snapshot_sha || 0));
-      }, 0)
-    : totalNet;
+  // Live net payable: always use saved entry values.
+  // The server recomputes entries after every attendance save, so entry.net_pay
+  // is always current. A client-side recompute would miss adjustments (bonuses,
+  // advances, damages) and apply SHA to zero-gross employees.
+  const liveNetPayable = totalNet;
 
   const tabStyle = (t) => ({
     padding: '8px 16px', borderBottom: activeTab === t ? `3px solid ${CORAL}` : '3px solid transparent',
@@ -1328,7 +1325,7 @@ function RunDetail({ run: initialRun, userRole, onBack }) {
         <div style={{ flex: 1 }} />
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontSize: 12, color: '#9ca3af' }}>
-            Net Payable{activeTab === 'attendance' && Object.keys(gridData).length > 0 ? ' (live)' : ''}
+            Net Payable
           </div>
           <div style={{ fontSize: 22, fontWeight: 800, color: CORAL }}>KES {fmt(liveNetPayable)}</div>
         </div>
@@ -2395,7 +2392,7 @@ function ReportsTab({ userRole }) {
 // ════════════════════════════════════════════════════════════════
 // MAIN MODULE SHELL
 // ════════════════════════════════════════════════════════════════
-export default function PayrollModule() {
+export default function PayrollModule({ refreshKey = 0 } = {}) {
   const [activeTab, setActiveTab] = useState('overview');
   const { userRole, loaded }      = useAuth();
 
@@ -2430,12 +2427,12 @@ export default function PayrollModule() {
 
       <TabBar tabs={TABS} active={activeTab} onSelect={setActiveTab} style={{ marginBottom: 24 }} />
 
-      {activeTab === 'overview'   && <OverviewTab   userRole={userRole} />}
-      {activeTab === 'employees'  && <EmployeesTab  userRole={userRole} />}
-      {activeTab === 'runs'       && <PayrollRunsTab userRole={userRole} />}
-      {activeTab === 'payments'   && <PaymentsTab   userRole={userRole} />}
-      {activeTab === 'compliance' && <ComplianceTab userRole={userRole} />}
-      {activeTab === 'reports'    && <ReportsTab    userRole={userRole} />}
+      {activeTab === 'overview'   && <OverviewTab    key={refreshKey} userRole={userRole} />}
+      {activeTab === 'employees'  && <EmployeesTab   key={refreshKey} userRole={userRole} />}
+      {activeTab === 'runs'       && <PayrollRunsTab key={refreshKey} userRole={userRole} />}
+      {activeTab === 'payments'   && <PaymentsTab    key={refreshKey} userRole={userRole} />}
+      {activeTab === 'compliance' && <ComplianceTab  key={refreshKey} userRole={userRole} />}
+      {activeTab === 'reports'    && <ReportsTab     key={refreshKey} userRole={userRole} />}
     </div>
   );
 }

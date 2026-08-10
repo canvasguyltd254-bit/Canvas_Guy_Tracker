@@ -28,17 +28,19 @@ import { createContext, useContext, useState, useEffect } from 'react';
 import { createClient } from '@/shared/supabase/client';
 
 const AuthContext = createContext({
-  user:        null,
-  userRole:    'viewer',
-  displayName: '',
-  loaded:      false,
+  user:             null,
+  userRole:         'viewer',
+  displayName:      '',
+  loaded:           false,
+  workspaceEnabled: false,
 });
 
 export function AuthProvider({ children }) {
-  const [user,        setUser]        = useState(null);
-  const [userRole,    setUserRole]    = useState('viewer');
-  const [displayName, setDisplayName] = useState('');
-  const [loaded,      setLoaded]      = useState(false);
+  const [user,             setUser]             = useState(null);
+  const [userRole,         setUserRole]         = useState('viewer');
+  const [displayName,      setDisplayName]      = useState('');
+  const [loaded,           setLoaded]           = useState(false);
+  const [workspaceEnabled, setWorkspaceEnabled] = useState(false);
 
   useEffect(() => {
     const supabase = createClient();
@@ -59,6 +61,22 @@ export function AuthProvider({ children }) {
           setUserRole(profile.role || 'viewer');
           setDisplayName(profile.display_name || '');
         }
+
+        // Runtime workspace-tabs feature flag.
+        // admin_settings row: { key: 'workspace_tabs_enabled', value: 'true' | 'false' }
+        // Set value to "true" to enable for the whole team; "false" or missing = disabled.
+        // Change the DB row to roll out or roll back without a code deploy.
+        try {
+          const { data: setting } = await supabase
+            .from('admin_settings')
+            .select('value')
+            .eq('key', 'workspace_tabs_enabled')
+            .maybeSingle();
+
+          setWorkspaceEnabled(setting?.value === 'true');
+        } catch {
+          // Non-fatal — workspace tabs remain disabled if the setting can't be read.
+        }
       }
 
       setLoaded(true);
@@ -73,6 +91,7 @@ export function AuthProvider({ children }) {
         if (!u) {
           setUserRole('viewer');
           setDisplayName('');
+          setWorkspaceEnabled(false);
           setLoaded(true);
         }
       },
@@ -82,7 +101,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, userRole, displayName, loaded }}>
+    <AuthContext.Provider value={{ user, userRole, displayName, loaded, workspaceEnabled }}>
       {children}
     </AuthContext.Provider>
   );

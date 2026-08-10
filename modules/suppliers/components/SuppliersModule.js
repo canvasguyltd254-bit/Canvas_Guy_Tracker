@@ -74,7 +74,7 @@ function SummaryBar({ purchases }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function SuppliersModule() {
+export default function SuppliersModule({ refreshKey = 0 } = {}) {
   const { userRole = 'viewer', loaded: authLoaded } = useAuth();
   const [tab, setTab] = useState("suppliers");
   const [loaded, setLoaded] = useState(false);
@@ -145,7 +145,8 @@ export default function SuppliersModule() {
       await Promise.all([loadSuppliers(), loadPurchases(), loadOrders(), loadAccountingCategories()]);
       setLoaded(true);
     })();
-  }, [authLoaded]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoaded, refreshKey]);
 
   const loadSuppliers = async () => {
     const res = await fetch("/api/suppliers");

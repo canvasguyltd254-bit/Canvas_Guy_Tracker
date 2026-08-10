@@ -96,8 +96,11 @@ export async function POST(request, { params }) {
     const gross_pay = emp.type === 'permanent' ? (emp.monthly_salary || 0) : 0;
 
     // SHA deducts once per calendar month per employee.
-    // The RPC determines ownership atomically by earliest period_start in the month.
-    const sha_deduction = await resolveShaDeduction(emp.sha_amount || 0, employee_id, runId);
+    // Only apply if the employee has gross pay — casual workers start at 0
+    // until attendance is saved, so don't waste their monthly SHA claim on a zero entry.
+    const sha_deduction = gross_pay > 0
+      ? await resolveShaDeduction(emp.sha_amount || 0, employee_id, runId)
+      : 0;
 
     const net_pay = Math.max(0, gross_pay - sha_deduction);
 

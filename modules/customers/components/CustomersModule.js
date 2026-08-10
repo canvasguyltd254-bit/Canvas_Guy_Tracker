@@ -380,7 +380,7 @@ function CustomerReportsTab({ customers }) {
 
 
 // ── MAIN MODULE ───────────────────────────────────────────────────────────────
-export default function CustomersModule({ defaultAction, defaultProspectName, defaultPhone } = {}) {
+export default function CustomersModule({ defaultAction, defaultProspectName, defaultPhone, actionNonce, refreshKey = 0 } = {}) {
   const router = useRouter();
   const { userRole = '', loaded: authLoaded } = useAuth();
   const [customers, setCustomers]     = useState([]);
@@ -395,7 +395,8 @@ export default function CustomersModule({ defaultAction, defaultProspectName, de
   useEffect(() => {
     if (!authLoaded) return;
     loadCustomers();
-  }, [authLoaded]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoaded, refreshKey]);
 
   // Open new-customer form triggered by ?new=customer query param
   useEffect(() => {
@@ -404,7 +405,8 @@ export default function CustomersModule({ defaultAction, defaultProspectName, de
       setFormError('');
       setShowForm(true);
     }
-  }, [defaultAction, authLoaded, userRole]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultAction, actionNonce, authLoaded, userRole]);
 
   const loadCustomers = async () => {
     setLoading(true);

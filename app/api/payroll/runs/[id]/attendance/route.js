@@ -200,8 +200,12 @@ async function recomputeEntry(runId, employeeId, userId) {
     }
 
     const gross_with_bonus  = gross_pay + bonus_addition;
-    // SHA deducts once per calendar month — check other runs in the same month
-    const sha_deduction     = await resolveShaDeduction(entry.snapshot_sha || 0, employeeId, runId);
+    // SHA deducts once per calendar month — but only if the employee has gross pay.
+    // An employee with 0 days worked and no bonus earns nothing; applying SHA
+    // would waste their monthly SHA claim and show a misleading -300 on a KES 0 entry.
+    const sha_deduction     = gross_with_bonus > 0
+      ? await resolveShaDeduction(entry.snapshot_sha || 0, employeeId, runId)
+      : 0;
     const total_deductions  = sha_deduction + advance_deduction + damage_deduction + other_deductions;
     const net_pay           = Math.max(0, gross_with_bonus - total_deductions);
 
