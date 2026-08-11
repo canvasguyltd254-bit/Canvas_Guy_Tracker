@@ -30,6 +30,7 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
 import { ROLES_CAN_CREATE_BATCH } from '@/modules/orders/components/constants';
+import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 
 // ── GET ───────────────────────────────────────────────────────────────────────
 
@@ -74,12 +75,16 @@ export async function POST(request, { params }) {
   try {
     const orderId = params.id;
 
-    // 1. Auth — only PM / Admin can create batches
+    // 1. Auth first — never leak suspension state to unauthenticated callers
     const { user, role } = await getAuthContext();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const authError = requireRole(user, role, ROLES_CAN_CREATE_BATCH);
     if (authError) return authError;
+
+    // 2. Suspension guard
+    const suspendedErr = await checkOrderSuspended(orderId);
+    if (suspendedErr) return suspendedErr;
 
     // 2. Parse body
     let body;

@@ -23,8 +23,9 @@ export default function QuickActions({ prefill = {} }) {
   const router   = useRouter();
   const pathname = usePathname();
   const { userRole, loaded } = useAuth();
-  // CRM has its own visible New Enquiry / Direct Quote buttons — suppress the mobile FAB there
-  const hideMobileFab = pathname === '/crm';
+  // CRM and order forms have their own actions — suppress the global mobile FAB there
+  const isOrderForm = /^\/orders\/[^/]+\/form$/.test(pathname);
+  const hideMobileFab = pathname === '/crm' || pathname === '/orders/new' || isOrderForm;
   const [open,   setOpen]   = useState(false);
   const [locked, setLocked] = useState(false); // true when any modal is open
 

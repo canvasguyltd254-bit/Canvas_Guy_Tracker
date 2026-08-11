@@ -22,15 +22,20 @@ export async function GET(request) {
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const { searchParams } = new URL(request.url);
-    const status = searchParams.get('status') || 'all';
-    const search = searchParams.get('search')?.trim() || '';
-    const limit  = Math.min(parseInt(searchParams.get('limit') || '200', 10), 500);
+    const status           = searchParams.get('status') || 'all';
+    const search           = searchParams.get('search')?.trim() || '';
+    const limit            = Math.min(parseInt(searchParams.get('limit') || '200', 10), 500);
+    const includeSuspended = searchParams.get('include_suspended') === 'true';
 
     let query = serviceClient
       .from('orders')
-      .select('id, order_num, client, status')
+      .select('id, order_num, client, due_date, status, total_value, order_type, suspended_at, created_at')
       .order('created_at', { ascending: false })
       .limit(limit);
+
+    if (!includeSuspended) {
+      query = query.is('suspended_at', null);
+    }
 
     if (status && status !== 'all') {
       query = query.eq('status', status);

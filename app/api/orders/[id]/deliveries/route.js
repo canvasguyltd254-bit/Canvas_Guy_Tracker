@@ -19,6 +19,7 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
 import { ROLES_CAN_DELIVER } from '@/modules/orders/components/constants';
+import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 
 // ── GET ───────────────────────────────────────────────────────────────────────
 
@@ -84,7 +85,11 @@ export async function POST(request, { params }) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 });
     }
 
-    // 4. Compute batch_number server-side — client cannot supply this
+    // 4. Suspension guard
+    const suspendErr = await checkOrderSuspended(orderId);
+    if (suspendErr) return suspendErr;
+
+    // 5. Compute batch_number server-side — client cannot supply this
     const { data: existing } = await serviceClient
       .from('order_deliveries')
       .select('batch_number')
@@ -216,6 +221,10 @@ export async function PATCH(request, { params }) {
     if (!batch) {
       return NextResponse.json({ error: 'Delivery batch not found' }, { status: 404 });
     }
+
+    // 4. Suspension guard
+    const suspendErr = await checkOrderSuspended(orderId);
+    if (suspendErr) return suspendErr;
 
     // 4. Whitelist update fields
     const safeUpdate = pick(body, ALLOWED_FIELDS.order_deliveries.update);

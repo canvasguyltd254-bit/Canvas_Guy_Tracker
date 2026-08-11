@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import calcTotals from '@/shared/lib/calcTotals';
 import LineItemEditor, { BLANK_ITEM, BLANK_CHARGE } from '@/shared/components/LineItemEditor';
 import InvoicesTab from '@/modules/crm/components/InvoicesTab';
+import { useAuth } from '@/shared/context/AuthContext';
 
 // ─── Portal context ───────────────────────────────────────────────────────────
 // { ref, isActive }
@@ -978,25 +979,181 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
   );
 }
 
+// ─── QuotationDangerZone ──────────────────────────────────────────────────────
+// Admin-only inline section in the expanded quote row.
+function QuotationDangerZone({ quoteId, quoteNum, onDeleted, onSuspended }) {
+  const [eligibility, setEligibility]     = useState(null);
+  const [loadingElig, setLoadingElig]     = useState(true);
+  const [eligError,   setEligError]       = useState(null);
+  const [suspendReason, setSuspendReason] = useState('');
+  const [suspending,    setSuspending]    = useState(false);
+  const [suspendErr,    setSuspendErr]    = useState(null);
+  const [confirmation,  setConfirmation]  = useState('');
+  const [deleteReason,  setDeleteReason]  = useState('');
+  const [deleting,      setDeleting]      = useState(false);
+  const [deleteErr,     setDeleteErr]     = useState(null);
+
+  const fetchElig = useCallback(async () => {
+    setLoadingElig(true);
+    try {
+      const res  = await fetch(`/api/crm/quotations/${quoteId}/eligibility`);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Failed to load eligibility');
+      setEligibility(json.data ?? json);
+    } catch (e) {
+      setEligError(e.message);
+    } finally {
+      setLoadingElig(false);
+    }
+  }, [quoteId]);
+
+  useEffect(() => { fetchElig(); }, [fetchElig]);
+
+  async function handleSuspend() {
+    if (!suspendReason.trim()) { setSuspendErr('Reason required.'); return; }
+    setSuspending(true); setSuspendErr(null);
+    const res  = await fetch(`/api/crm/quotations/${quoteId}/suspend`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: suspendReason.trim() }),
+    });
+    const json = await res.json();
+    if (!res.ok) { setSuspendErr(json.error || 'Failed'); setSuspending(false); return; }
+    setSuspendReason('');
+    await fetchElig();
+    onSuspended?.();
+    setSuspending(false);
+  }
+
+  async function handleUnsuspend() {
+    setSuspending(true); setSuspendErr(null);
+    const res  = await fetch(`/api/crm/quotations/${quoteId}/suspend`, { method: 'DELETE' });
+    const json = await res.json();
+    if (!res.ok) { setSuspendErr(json.error || 'Failed'); setSuspending(false); return; }
+    await fetchElig();
+    onSuspended?.();
+    setSuspending(false);
+  }
+
+  async function handleDelete() {
+    if (confirmation !== quoteNum) { setDeleteErr(`Type "${quoteNum}" to confirm.`); return; }
+    if (!deleteReason.trim())      { setDeleteErr('Reason required.'); return; }
+    setDeleting(true); setDeleteErr(null);
+    const res  = await fetch(`/api/crm/quotations/${quoteId}/hard-delete`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmation, reason: deleteReason.trim() }),
+    });
+    const json = await res.json();
+    if (!res.ok) { setDeleteErr(json.error || 'Deletion failed'); setDeleting(false); return; }
+    onDeleted?.();
+  }
+
+  if (loadingElig) return <div style={{ fontSize: 11, color: '#6b7280', padding: '10px 0' }}>Loading…</div>;
+  if (eligError)   return <div style={{ fontSize: 11, color: '#dc2626' }}>⚠ {eligError}</div>;
+
+  const isSuspended = !!eligibility?.suspended;
+  const canDelete   = !!eligibility?.canDelete;
+  const blockers    = eligibility?.blockers || [];
+
+  const fieldStyle = { width: '100%', padding: '7px 10px', borderRadius: 6, border: '1.5px solid #d1d5db', fontSize: 12, boxSizing: 'border-box' };
+  const actBtn     = (bg, color, disabled) => ({
+    padding: '7px 14px', borderRadius: 6, border: 'none', background: disabled ? '#e5e7eb' : bg,
+    color: disabled ? '#9ca3af' : color, fontWeight: 700, fontSize: 12, cursor: disabled ? 'default' : 'pointer',
+    minHeight: 36, display: 'inline-flex', alignItems: 'center', gap: 5,
+  });
+
+  return (
+    <div style={{ marginTop: 16, borderTop: '1.5px dashed #fca5a5', paddingTop: 14 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#dc2626', marginBottom: 12 }}>
+        ⚠ Admin — Danger Zone
+      </div>
+
+      {/* Suspension */}
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
+          {isSuspended ? '⏸ Quotation is suspended' : 'Suspend quotation'}
+        </div>
+        {isSuspended && eligibility?.suspensionReason && (
+          <div style={{ fontSize: 11, color: '#b45309', marginBottom: 8 }}>Reason: {eligibility.suspensionReason}</div>
+        )}
+        {suspendErr && <div style={{ fontSize: 11, color: '#dc2626', marginBottom: 6 }}>⚠ {suspendErr}</div>}
+        {isSuspended ? (
+          <button onClick={handleUnsuspend} disabled={suspending} style={actBtn('#16a34a', '#fff', suspending)}>
+            {suspending ? 'Lifting…' : '▶ Lift suspension'}
+          </button>
+        ) : (
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input type="text" value={suspendReason} onChange={e => setSuspendReason(e.target.value)}
+              placeholder="Suspension reason…" style={{ ...fieldStyle, flex: '1 1 200px', maxWidth: 300 }} />
+            <button onClick={handleSuspend} disabled={suspending || !suspendReason.trim()}
+              style={actBtn('#d97706', '#fff', suspending || !suspendReason.trim())}>
+              {suspending ? '…' : '⏸ Suspend'}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Hard delete */}
+      <div style={{ background: '#fff5f5', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 12px' }}>
+        <div style={{ fontSize: 11, fontWeight: 600, color: '#dc2626', marginBottom: 6 }}>Hard delete quotation</div>
+        {canDelete ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ fontSize: 11, color: '#6b7280' }}>
+              Type <code style={{ background: '#f3f4f6', padding: '1px 4px', borderRadius: 3, fontFamily: 'monospace' }}>{quoteNum}</code> to confirm permanent deletion.
+            </div>
+            {deleteErr && <div style={{ fontSize: 11, color: '#dc2626' }}>⚠ {deleteErr}</div>}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <input type="text" value={confirmation} onChange={e => setConfirmation(e.target.value)}
+                placeholder={quoteNum} style={{ ...fieldStyle, flex: '0 0 130px', fontFamily: 'monospace' }} />
+              <input type="text" value={deleteReason} onChange={e => setDeleteReason(e.target.value)}
+                placeholder="Reason for deletion…" style={{ ...fieldStyle, flex: '1 1 180px' }} />
+              <button onClick={handleDelete} disabled={deleting || confirmation !== quoteNum || !deleteReason.trim()}
+                style={actBtn('#dc2626', '#fff', deleting || confirmation !== quoteNum || !deleteReason.trim())}>
+                {deleting ? '…' : '🗑 Delete'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6 }}>Deletion blocked:</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+              {blockers.length > 0
+                ? blockers.map((b, i) => (
+                  <span key={i} style={{ fontSize: 10.5, background: '#fef2f2', border: '1px solid #fca5a5', color: '#dc2626', borderRadius: 4, padding: '2px 6px', fontWeight: 600 }}>
+                    ✗ {b.detail || b.code?.replace(/_/g, ' ')}
+                  </span>
+                ))
+                : <span style={{ fontSize: 11, color: '#6b7280' }}>Not in a deletable stage</span>}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Quotations tab ───────────────────────────────────────────────────────────
 // Statuses still shown in the filter dropdown (superseded quotes from old revisions can still be viewed)
 const QUOTE_STATUSES = ['draft', 'sent', 'accepted', 'rejected', 'expired', 'superseded'];
 
 function QuotationsTab({ onRefresh, refreshKey = 0 }) {
   const { ref: portalRef, isActive } = React.useContext(CrmPortalContext);
-  const [quotes, setQuotes]             = useState([]);
-  const [loading, setLoading]           = useState(true);
-  const [status, setStatus]             = useState('');
-  const [q, setQ]                       = useState('');
-  const [converting, setConv]           = useState(null);
-  const [actioning, setActioning]       = useState(null);
-  const [convErr, setConvErr]           = useState('');
-  const [showForm, setShowForm]         = useState(false);
-  const [editQuote, setEditQuote]       = useState(null);
-  const [expanded, setExpanded]         = useState(null);
-  const [enquiries, setEnquiries]       = useState([]);
+  const { userRole } = useAuth();
+  const [quotes, setQuotes]               = useState([]);
+  const [loading, setLoading]             = useState(true);
+  const [status, setStatus]               = useState('');
+  const [q, setQ]                         = useState('');
+  const [showSuspended, setShowSuspended] = useState(false);
+  const [converting, setConv]             = useState(null);
+  const [actioning, setActioning]         = useState(null);
+  const [convErr, setConvErr]             = useState('');
+  const [showForm, setShowForm]           = useState(false);
+  const [editQuote, setEditQuote]         = useState(null);
+  const [expanded, setExpanded]           = useState(null);
+  const [enquiries, setEnquiries]         = useState([]);
   // changelog entries keyed by quotation id, loaded lazily on expand
-  const [changelog, setChangelog]       = useState({});
+  const [changelog, setChangelog]         = useState({});
   // { type: 'accept'|'reject'|'revise'|'convert', qt }
   const [confirmAction, setConfirmAction] = useState(null);
   useQuickActionsLock(!!confirmAction && isActive);
@@ -1004,13 +1161,14 @@ function QuotationsTab({ onRefresh, refreshKey = 0 }) {
   const load = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams();
-    if (status) params.set('status', status);
-    if (q)      params.set('q', q);
+    if (status)        params.set('status', status);
+    if (q)             params.set('q', q);
+    if (showSuspended) params.set('include_suspended', 'true');
     const res = await fetch(`/api/crm/quotations?${params}`);
     const json = await res.json();
     setQuotes(json.data || []);
     setLoading(false);
-  }, [status, q, refreshKey]);
+  }, [status, q, showSuspended, refreshKey]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { fetch('/api/crm/enquiries?limit=100').then(r => r.json()).then(j => setEnquiries(j.data || [])).catch(() => {}); }, []);
@@ -1077,6 +1235,17 @@ function QuotationsTab({ onRefresh, refreshKey = 0 }) {
             <option value="">All statuses</option>
             {QUOTE_STATUSES.map(s => <option key={s} value={s} style={{ textTransform: 'capitalize' }}>{s}</option>)}
           </TSelect>
+          <button
+            onClick={() => setShowSuspended(s => !s)}
+            title={showSuspended ? 'Hide suspended quotations' : 'Show suspended quotations'}
+            style={{
+              padding: '6px 10px', borderRadius: 6, cursor: 'pointer', border: '1.5px solid',
+              borderColor: showSuspended ? '#d97706' : C.line,
+              background: showSuspended ? '#fffbeb' : C.card,
+              color: showSuspended ? '#d97706' : C.muted,
+              fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap',
+            }}
+          >⏸</button>
         </Toolbar>
 
         {convErr && <Notice color="red" style={{ margin: '10px 16px' }}>{convErr}</Notice>}
@@ -1106,7 +1275,12 @@ function QuotationsTab({ onRefresh, refreshKey = 0 }) {
                           <button onClick={() => toggleExpand(qt.id)} style={{ border: 0, background: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: C.ink, padding: 0 }}>
                             {qt.quote_num || '—'}
                           </button>
-                          <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>Rev {qt.revision || 1}</div>
+                          <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>
+                            Rev {qt.revision || 1}
+                            {qt.suspended_at && (
+                              <span style={{ marginLeft: 5, color: '#d97706', fontWeight: 700 }}>⏸ Suspended</span>
+                            )}
+                          </div>
                         </Td>
                         <Td>{qt.customers?.name || qt.prospect_name || '—'}
                           <div style={{ fontSize: 10.5, color: C.muted }}>{qt.customers ? 'Customer' : 'Prospect'}</div>
@@ -1325,6 +1499,14 @@ function QuotationsTab({ onRefresh, refreshKey = 0 }) {
                                   {charges.length > 0  && <>{sectionLbl('Additional Charges')}{ChargesTable}</>}
                                   {TotalsBlock}
                                   {ChangeLog}
+                                  {userRole === 'admin' && (
+                                    <QuotationDangerZone
+                                      quoteId={qt.id}
+                                      quoteNum={qt.quote_num}
+                                      onSuspended={() => load()}
+                                      onDeleted={() => { load(); onRefresh(); }}
+                                    />
+                                  )}
                                 </>
                               );
                             })()}

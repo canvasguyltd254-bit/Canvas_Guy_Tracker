@@ -5,6 +5,7 @@
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 
 const STORAGE_BUCKET = 'order-documents';
 const DOC_DELETE_ROLES = ['admin', 'production_manager', 'head_of_sales'];
@@ -72,6 +73,10 @@ export async function DELETE(request, { params }) {
     const { user, role, displayName } = await getAuthContext();
     const authError = requireRole(user, role, DOC_DELETE_ROLES);
     if (authError) return authError;
+
+    // 1a. Suspension guard — suspended orders are read-only
+    const suspendedErr = await checkOrderSuspended(orderId);
+    if (suspendedErr) return suspendedErr;
 
     // 2. Require a reason
     let reason = '';

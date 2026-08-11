@@ -13,49 +13,70 @@ const ALL_STATUSES = [...new Set([...STATUSES, ...REPAIR_STATUSES])];
 //   of just below the app header (56px).
 // refreshKey — bumped by WorkspaceShell when the tab's data should be re-fetched.
 export default function OrdersModule({ workspaceActive = false, refreshKey = 0 } = {}) {
-  const [orders, setOrders]             = useState([]);
-  const [payTotals, setPayTotals]       = useState({});
-  const [loading, setLoading]           = useState(true);
-  const [searchTerm, setSearchTerm]     = useState('');
-  const [filterStatus, setFilterStatus] = useState('All');
-  const [filterType, setFilterType]     = useState('All');
+  const [orders, setOrders]                   = useState([]);
+  const [payTotals, setPayTotals]             = useState({});
+  const [loading, setLoading]                 = useState(true);
+  const [fetchError, setFetchError]           = useState(null);
+  const [retryCount, setRetryCount]           = useState(0);
+  const [searchTerm, setSearchTerm]           = useState('');
+  const [filterStatus, setFilterStatus]       = useState('All');
+  const [filterType, setFilterType]           = useState('All');
 
-  // Re-fetch when refreshKey bumps (staleness refresh) or on first mount.
+  // Re-fetch when refreshKey changes. Fetches through the API with include_suspended=true
+  // so the server-side default filter (which strips suspended records) is bypassed.
+  // The client then partitions records into active / suspended / archived entirely locally.
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const [{ data: ord }, { data: pays }] = await Promise.all([
-        supabase
-          .from('orders')
-          .select('id, order_num, client, due_date, status, total_value, order_type, created_at')
-          .order('created_at', { ascending: false }),
-        supabase.from('order_payments').select('order_id, amount').is('reversed_at', null),
-      ]);
-      setOrders(ord || []);
-      if (pays) {
-        const t = {};
-        pays.forEach(p => { t[p.order_id] = (t[p.order_id] || 0) + parseFloat(p.amount || 0); });
-        setPayTotals(t);
+      try {
+        setFetchError(null);
+        const [response, { data: pays }] = await Promise.all([
+          fetch('/api/orders?include_suspended=true&limit=500'),
+          supabase.from('order_payments').select('order_id, amount').is('reversed_at', null),
+        ]);
+        const json = await response.json();
+        if (!response.ok) {
+          throw new Error(json.error || `Failed to load orders (${response.status})`);
+        }
+        setOrders(json.data || []);
+        if (pays) {
+          const t = {};
+          pays.forEach(p => { t[p.order_id] = (t[p.order_id] || 0) + parseFloat(p.amount || 0); });
+          setPayTotals(t);
+        }
+      } catch (err) {
+        console.error('OrdersModule fetch:', err);
+        setFetchError(err.message);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     })();
-  }, [refreshKey]);
+  }, [refreshKey, retryCount]);
 
-  const statusCounts = useMemo(() =>
-    ALL_STATUSES.reduce((acc, s) => {
-      acc[s] = orders.filter(o => o.status === s).length;
+  const statusCounts = useMemo(() => {
+    const counts = ALL_STATUSES.reduce((acc, s) => {
+      acc[s] = orders.filter(o => o.status === s && !o.suspended_at).length;
       return acc;
-    }, {}),
-  [orders]);
+    }, {});
+    counts['Suspended'] = orders.filter(o => !!o.suspended_at).length;
+    return counts;
+  }, [orders]);
 
   const filteredOrders = useMemo(() => orders.filter(o => {
-    if (filterStatus !== 'Closed' && o.status === 'Closed') return false;
-    if (filterStatus !== 'Cancelled / Refunded' && o.status === 'Cancelled / Refunded') return false;
-    if (filterStatus !== 'All' && o.status !== filterStatus) return false;
-    if (filterType === 'standard' && (o.order_type === 'repair' || o.order_type === 'return')) return false;
-    if (filterType === 'repairs' && o.order_type !== 'repair' && o.order_type !== 'return') return false;
-    if (searchTerm) {
-      const q = searchTerm.toLowerCase();
+    if (filterStatus === 'Suspended') {
+      if (!o.suspended_at) return false;
+    } else {
+      if (o.suspended_at) return false;
+      if (filterStatus !== 'Closed' && o.status === 'Closed') return false;
+      if (filterStatus !== 'Cancelled / Refunded' && o.status === 'Cancelled / Refunded') return false;
+      if (filterStatus !== 'All' && o.status !== filterStatus) return false;
+    }
+
+    if (filterType === 'standard' && ['repair', 'return'].includes(o.order_type)) return false;
+    if (filterType === 'repairs' && !['repair', 'return'].includes(o.order_type)) return false;
+
+    const q = searchTerm.trim().toLowerCase();
+    if (q) {
       return [o.order_num, o.client].filter(Boolean).join(' ').toLowerCase().includes(q);
     }
     return true;
@@ -136,7 +157,7 @@ export default function OrdersModule({ workspaceActive = false, refreshKey = 0 }
               fontSize: '11px', whiteSpace: 'nowrap', fontWeight: 700,
               color: filterStatus === 'All' ? '#fff' : '#888',
             }}>
-              <span style={{ fontFamily: 'monospace' }}>{orders.filter(o => o.status !== 'Closed' && o.status !== 'Cancelled / Refunded').length}</span>
+              <span style={{ fontFamily: 'monospace' }}>{orders.filter(o => !o.suspended_at && o.status !== 'Closed' && o.status !== 'Cancelled / Refunded').length}</span>
               <span style={{ marginLeft: '4px' }}>All Active</span>
             </button>
             {ALL_STATUSES.map(s => {
@@ -155,6 +176,22 @@ export default function OrdersModule({ workspaceActive = false, refreshKey = 0 }
                 </button>
               );
             })}
+            {/* Suspended pill — grouped with Cancelled/Refunded as archived/inactive */}
+            {(() => {
+              const count  = statusCounts['Suspended'] || 0;
+              const active = filterStatus === 'Suspended';
+              return (
+                <button onClick={() => setFilterStatus(prev => prev === 'Suspended' ? 'All' : 'Suspended')} style={{
+                  flexShrink: 0, padding: '5px 10px', borderRadius: '6px', cursor: 'pointer', border: '1.5px solid', minHeight: '30px',
+                  background: active ? '#fffbeb' : '#fff',
+                  borderColor: active ? '#d97706' : '#e0e0e0',
+                  fontSize: '11px', whiteSpace: 'nowrap',
+                }}>
+                  <span style={{ fontWeight: 700, fontFamily: 'monospace', color: active ? '#d97706' : '#555' }}>{count}</span>
+                  <span style={{ color: active ? '#d97706' : '#888', marginLeft: '4px' }}>⏸ Suspended</span>
+                </button>
+              );
+            })()}
           </div>
 
           {/* Active filter chip — shown on mobile when a filter is active */}
@@ -179,6 +216,31 @@ export default function OrdersModule({ workspaceActive = false, refreshKey = 0 }
           .orders-active-filter button { min-height: 44px !important; min-width: 44px !important; }
         }
       `}</style>
+
+      {/* ── Error Banner ── */}
+      {fetchError && (
+        <div style={{
+          margin: '16px 20px 0',
+          padding: '12px 16px',
+          background: '#fef2f2',
+          border: '1px solid #fca5a5',
+          borderRadius: '8px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '12px',
+        }}>
+          <span style={{ fontSize: '13px', color: '#b91c1c', fontWeight: 600 }}>
+            ⚠ Could not load orders — {fetchError}
+          </span>
+          <button
+            onClick={() => setRetryCount(c => c + 1)}
+            style={{ fontSize: '12px', fontWeight: 700, color: '#b91c1c', background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* ── Orders Grid ── */}
       <div style={{ padding: '20px' }}>
@@ -244,6 +306,9 @@ export default function OrdersModule({ workspaceActive = false, refreshKey = 0 }
                       <div style={{ minWidth: 0 }}>
                         <div style={{ fontSize: '10px', color: '#9ca3af', fontFamily: 'monospace', letterSpacing: '.05em', marginBottom: '2px' }}>
                           {order.order_num}
+                          {order.suspended_at && (
+                            <span style={{ marginLeft: '6px', color: '#d97706', fontFamily: 'inherit', fontWeight: 700 }}>⏸ SUSPENDED</span>
+                          )}
                         </div>
                         <div style={{ fontSize: '14px', fontWeight: 700, color: '#111', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {order.client}

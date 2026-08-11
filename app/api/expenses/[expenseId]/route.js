@@ -11,6 +11,7 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { reverseDirectExpenseJournal } from '@/shared/lib/accountingService';
+import { checkExpenseOrdersSuspended } from '@/shared/lib/suspendGuard';
 
 const WRITE_ROLES  = ['admin', 'head_of_sales', 'production_manager'];
 const ADMIN_ONLY   = ['admin'];
@@ -66,6 +67,10 @@ export async function PATCH(request, { params }) {
     const authError = requireRole(user, role, WRITE_ROLES);
     if (authError) return authError;
 
+    // Suspension guard — block edits if any linked order is suspended
+    const suspendedErr = await checkExpenseOrdersSuspended(params.expenseId);
+    if (suspendedErr) return suspendedErr;
+
     const body = await request.json();
 
     // Only non-financial fields are patchable without reversal.
@@ -117,6 +122,10 @@ export async function DELETE(request, { params }) {
     const { user, role, displayName } = await getAuthContext();
     const authError = requireRole(user, role, ADMIN_ONLY);
     if (authError) return authError;
+
+    // Suspension guard — block reversal if any linked order is suspended
+    const suspendedErr = await checkExpenseOrdersSuspended(params.expenseId);
+    if (suspendedErr) return suspendedErr;
 
     const { searchParams } = new URL(request.url);
     const reversal_reason = searchParams.get('reason') ||

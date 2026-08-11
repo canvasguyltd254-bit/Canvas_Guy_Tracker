@@ -11,6 +11,7 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
+import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 
 export async function GET(request, { params }) {
   try {
@@ -43,10 +44,14 @@ export async function POST(request, { params }) {
   try {
     const orderId = params.id;
 
-    // 1. Auth
+    // 1. Auth first — never leak suspension state to unauthenticated callers
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role, ['admin', 'production_manager', 'head_of_sales', 'sales']);
     if (authError) return authError;
+
+    // 2. Suspension guard
+    const suspendedErr = await checkOrderSuspended(orderId);
+    if (suspendedErr) return suspendedErr;
 
     // 2. Parse body
     let body;
@@ -127,6 +132,10 @@ export async function DELETE(request, { params }) {
     const { user, role, displayName } = await getAuthContext();
     const authError = requireRole(user, role, ['admin', 'head_of_sales']);
     if (authError) return authError;
+
+    // 1a. Suspension guard — suspended orders are read-only
+    const suspendedErr = await checkOrderSuspended(orderId);
+    if (suspendedErr) return suspendedErr;
 
     // 2. Require a deletion reason
     let reason = '';

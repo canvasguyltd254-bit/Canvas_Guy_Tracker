@@ -13,6 +13,7 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
+import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 
 // status is a workflow-only field — excluded from the general update route
 const ORDER_UPDATE_FIELDS = ALLOWED_FIELDS.orders.update.filter(f => f !== 'status');
@@ -45,7 +46,11 @@ export async function PATCH(request, { params }) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 });
     }
 
-    // 4. Update order metadata (status excluded)
+    // 4. Suspension guard — suspended orders are read-only
+    const suspendErr = await checkOrderSuspended(orderId);
+    if (suspendErr) return suspendErr;
+
+    // 5. Update order metadata (status excluded)
     const safeUpdate = pick(body, ORDER_UPDATE_FIELDS);
 
     if (Object.keys(safeUpdate).length > 0) {

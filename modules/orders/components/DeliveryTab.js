@@ -69,13 +69,13 @@ function QtyBar({ ordered, batched, delivered }) {
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
-export default function DeliveryTab({ orderId, order, userRole, onUpdate }) {
+export default function DeliveryTab({ orderId, order, userRole, onUpdate, readOnly = false }) {
   // Batch orders are accessible from Production onwards; simple orders need Ready for Delivery+
   const isBatch   = !!order?.batch_delivery;
   const isActive  = ACTIVE_STATUSES.has(order?.status) || (isBatch && order?.status === 'Production');
-  const canAct    = ROLES_CAN_CREATE_BATCH.includes(userRole);
+  const canAct    = !readOnly && ROLES_CAN_CREATE_BATCH.includes(userRole);
   // Sales can edit delivery details + mark delivered in simple flow, but cannot create/manage batches
-  const canDeliveryAct = canAct || userRole === 'sales';
+  const canDeliveryAct = !readOnly && (canAct || userRole === 'sales');
   const isAlreadyDelivered = ['Delivered', 'Closed'].includes(order?.status);
 
   // ── Batch data (only needed for batch flow) ──────────────────────────────────

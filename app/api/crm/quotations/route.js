@@ -16,9 +16,10 @@ export async function GET(request) {
     if (authErr) return authErr;
 
     const { searchParams } = new URL(request.url);
-    const status      = searchParams.get('status');
-    const customerId  = searchParams.get('customer_id');
-    const q           = searchParams.get('q');
+    const status           = searchParams.get('status');
+    const customerId       = searchParams.get('customer_id');
+    const q                = searchParams.get('q');
+    const includeSuspended = searchParams.get('include_suspended') === 'true';
 
     let query = serviceClient
       .from('quotations')
@@ -31,6 +32,10 @@ export async function GET(request) {
       `)
       .order('created_at', { ascending: false })
       .limit(200);
+
+    if (!includeSuspended) {
+      query = query.is('suspended_at', null);
+    }
 
     if (status)     query = query.eq('status', status);
     if (customerId) query = query.eq('customer_id', customerId);

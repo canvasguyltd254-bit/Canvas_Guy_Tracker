@@ -15,6 +15,7 @@ export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { checkExpenseOrdersSuspended } from '@/shared/lib/suspendGuard';
 
 const WRITE_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 
@@ -49,7 +50,34 @@ export async function PUT(request, { params }) {
     const authError = requireRole(user, role, WRITE_ROLES);
     if (authError) return authError;
 
+    // Suspension guard — block link changes if any currently-linked order is suspended
+    const suspendedErr = await checkExpenseOrdersSuspended(params.expenseId);
+    if (suspendedErr) return suspendedErr;
+
     const { links } = await request.json();
+
+    // Also check incoming order IDs — prevent linking TO a suspended order
+    if (Array.isArray(links) && links.length > 0) {
+      const incomingIds = links.map(l => l.order_id).filter(Boolean);
+      if (incomingIds.length > 0) {
+        const { data: suspendedIncoming, error: incomingErr } = await serviceClient
+          .from('orders')
+          .select('id, order_num, suspension_reason')
+          .in('id', incomingIds)
+          .not('suspended_at', 'is', null);
+        if (incomingErr) {
+          console.error('PUT /api/expenses/[id]/links — incoming suspension check error:', incomingErr.message);
+          return NextResponse.json({ error: 'Failed to verify order suspension status' }, { status: 500 });
+        }
+        if (suspendedIncoming && suspendedIncoming.length > 0) {
+          const nums = suspendedIncoming.map(o => o.order_num).join(', ');
+          return NextResponse.json(
+            { error: `Cannot link to suspended order(s): ${nums}`, code: 'ORDER_SUSPENDED' },
+            { status: 409 }
+          );
+        }
+      }
+    }
 
     if (!Array.isArray(links)) {
       return NextResponse.json({ error: 'links must be an array' }, { status: 400 });

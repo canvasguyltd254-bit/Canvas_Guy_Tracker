@@ -23,6 +23,7 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
+import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 
 const ROLES_CAN_REPAIR = ['admin', 'production_manager'];
 const VALID_REPAIR_TYPES = ['repair', 'return'];
@@ -74,6 +75,10 @@ export async function POST(request, { params }) {
     if (fetchErr || !parentOrder) {
       return NextResponse.json({ error: 'Parent order not found' }, { status: 404 });
     }
+
+    // Suspension guard — cannot create repair/return on a suspended parent order
+    const suspendErr = await checkOrderSuspended(parentOrderId);
+    if (suspendErr) return suspendErr;
 
     // 5. Build new order — server-side fields injected; pick() strips extras
     const label = repair_type === 'repair' ? 'Repair' : 'Return';

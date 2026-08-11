@@ -13,6 +13,7 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
+import { checkQuotationSuspended } from '@/shared/lib/suspendGuard';
 
 const ROLES_CRM = ['admin', 'head_of_sales', 'sales'];
 
@@ -31,6 +32,10 @@ export async function POST(request, { params }) {
       .single();
 
     if (fetchErr || !parent) return NextResponse.json({ error: 'Quotation not found' }, { status: 404 });
+
+    // Suspension guard — cannot revise a suspended quotation
+    const suspendErr = await checkQuotationSuspended(params.id);
+    if (suspendErr) return suspendErr;
 
     // Cannot revise a superseded quotation (use the latest revision instead)
     if (parent.status === 'superseded') {

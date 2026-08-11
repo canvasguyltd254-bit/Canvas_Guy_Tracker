@@ -12,6 +12,7 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
+import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 
 export async function GET(request, { params }) {
   try {
@@ -51,7 +52,11 @@ export async function POST(request, { params }) {
     ]);
     if (authError) return authError;
 
-    // 2. Parse body
+    // 2. Suspension guard
+    const suspendedErr = await checkOrderSuspended(orderId);
+    if (suspendedErr) return suspendedErr;
+
+    // 3. Parse body
     let body;
     try {
       body = await request.json();
@@ -63,7 +68,7 @@ export async function POST(request, { params }) {
       return NextResponse.json({ error: 'content is required' }, { status: 400 });
     }
 
-    // 3. Build note — author_name is from session, NOT from body
+    // 4. Build note — author_name is from session, NOT from body
     const noteRaw = {
       order_id: orderId,          // injected server-side
       content: body.content.trim(),
@@ -72,7 +77,7 @@ export async function POST(request, { params }) {
 
     const safeNote = pick(noteRaw, ALLOWED_FIELDS.order_notes.insert);
 
-    // 4. Insert
+    // 5. Insert
     const { data, error } = await serviceClient
       .from('order_notes')
       .insert(safeNote)

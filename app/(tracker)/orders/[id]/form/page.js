@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { createClient } from '@/shared/supabase/client';
 import { DrawingsUpload } from '@/modules/orders/components/DrawingsUpload';
 import DeliveryTab from '@/modules/orders/components/DeliveryTab';
+import DangerZoneTab from '@/modules/orders/components/DangerZoneTab';
 import {
   STATUSES, REPAIR_STATUSES, ALL_STATUS_COLORS,
   ROLES_CAN_ADVANCE, ROLES_CAN_REWORK, ROLES_CAN_REFUND,
@@ -118,7 +119,7 @@ function NotesThread({ orderId }) {
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+      <div className="notes-input-row" style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
         <input
           ref={inputRef} type="text" value={text}
           onChange={e => setText(e.target.value)}
@@ -126,11 +127,12 @@ function NotesThread({ orderId }) {
           placeholder="Add a note... (Enter to post)"
           style={{ flex: 1, padding: '9px 12px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', outline: 'none', background: '#fafafa' }}
         />
-        <button onClick={addNote} disabled={!text.trim() || posting} style={{
+        <button onClick={addNote} disabled={!text.trim() || posting} className="notes-post-btn" style={{
           padding: '9px 18px', borderRadius: '7px', border: 'none',
           background: text.trim() && !posting ? '#1a1a1a' : '#e0e0e0',
           color: text.trim() && !posting ? '#fff' : '#aaa',
           fontWeight: 700, fontSize: '13px', cursor: text.trim() ? 'pointer' : 'default', whiteSpace: 'nowrap',
+          minHeight: 44,
         }}>
           {posting ? '...' : 'Post'}
         </button>
@@ -166,7 +168,7 @@ function fmtFileSize(b) {
   return (b / 1048576).toFixed(1) + ' MB';
 }
 
-function AttachmentsPanel({ orderId, userRole }) {
+function AttachmentsPanel({ orderId, userRole, readOnly = false }) {
   const [tab, setTab]           = useState('documents');
   const [documents, setDocuments] = useState([]);
   const [drawings, setDrawings] = useState([]);
@@ -179,8 +181,8 @@ function AttachmentsPanel({ orderId, userRole }) {
   const [docDeleteReason, setDocDeleteReason]   = useState('');
   const [docDeleteLoading, setDocDeleteLoading] = useState(false);
 
-  const canUpload = UPLOAD_ROLES.includes(userRole);
-  const canDelete = DELETE_ROLES.includes(userRole);
+  const canUpload = !readOnly && UPLOAD_ROLES.includes(userRole);
+  const canDelete = !readOnly && DELETE_ROLES.includes(userRole);
 
   const loadDocuments = useCallback(async () => {
     const { data } = await supabase.from('order_documents').select('*').eq('order_id', orderId).order('uploaded_at', { ascending: false });
@@ -369,7 +371,7 @@ const CAN_DELETE_PAYMENT = ['admin', 'head_of_sales'];
 // /api/order-payments/[id]/reverse (ROLES_REVERSE) — admin only.
 const CAN_REVERSE_PAYMENT = ['admin'];
 
-function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, userRole, orderStatus, payments, setPayments }) {
+function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, userRole, orderStatus, payments, setPayments, readOnly = false }) {
   const [loading, setLoading]         = useState(true);
   const [amt, setAmt]                 = useState('');
   const [desc, setDesc]               = useState('');
@@ -397,9 +399,9 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
   const balance        = Math.max(rawBalance, 0);
   const isOverpaid     = rawBalance < -0.01;
   const pct            = contractTotal > 0 ? Math.min(Math.round((totalPaid / contractTotal) * 100), 100) : 0;
-  const canAdd         = CAN_ADD_PAYMENT.includes(userRole) && orderStatus !== 'Closed';
-  const canDelete      = CAN_DELETE_PAYMENT.includes(userRole);
-  const canReverse     = CAN_REVERSE_PAYMENT.includes(userRole);
+  const canAdd         = !readOnly && CAN_ADD_PAYMENT.includes(userRole) && orderStatus !== 'Closed';
+  const canDelete      = !readOnly && CAN_DELETE_PAYMENT.includes(userRole);
+  const canReverse     = !readOnly && CAN_REVERSE_PAYMENT.includes(userRole);
   const chargesSubtotal = (chargeItems || []).reduce((s, i) => s + (parseFloat(i.unit_price) || 0), 0);
   const barColor       = pct >= 100 ? '#16a34a' : pct >= 50 ? '#2563eb' : '#E8512A';
 
@@ -511,18 +513,18 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
 
       {/* Summary card */}
       <div style={{ background: '#fff7ed', border: '2px solid #E8512A', borderRadius: '10px', padding: '20px 24px', marginBottom: '16px' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', textAlign: 'center', marginBottom: '16px' }}>
-          <div>
+        <div className="payment-summary-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', textAlign: 'center', marginBottom: '16px' }}>
+          <div className="payment-contract-total">
             <div style={{ fontSize: '10px', color: '#6b7280', fontWeight: 700, textTransform: 'uppercase', marginBottom: '6px' }}>Contract Total</div>
-            <div style={{ fontSize: '20px', fontWeight: 800, fontFamily: 'monospace', color: '#111' }}>{fmtKES(contractTotal)}</div>
+            <div className="payment-summary-value" style={{ fontSize: '20px', fontWeight: 800, fontFamily: 'monospace', color: '#111' }}>{fmtKES(contractTotal)}</div>
           </div>
           <div>
             <div style={{ fontSize: '10px', color: '#6b7280', fontWeight: 700, textTransform: 'uppercase', marginBottom: '6px' }}>Paid</div>
-            <div style={{ fontSize: '20px', fontWeight: 800, fontFamily: 'monospace', color: '#16a34a' }}>{fmtKES(totalPaid)}</div>
+            <div className="payment-summary-value" style={{ fontSize: '20px', fontWeight: 800, fontFamily: 'monospace', color: '#16a34a' }}>{fmtKES(totalPaid)}</div>
           </div>
           <div>
             <div style={{ fontSize: '10px', color: '#E8512A', fontWeight: 700, textTransform: 'uppercase', marginBottom: '6px' }}>Balance Due</div>
-            <div style={{ fontSize: '22px', fontWeight: 800, fontFamily: 'monospace', color: balance > 0 ? '#E8512A' : '#16a34a' }}>
+            <div className="payment-summary-value" style={{ fontSize: '22px', fontWeight: 800, fontFamily: 'monospace', color: balance > 0 ? '#E8512A' : '#16a34a' }}>
               {fmtKES(balance)}
             </div>
           </div>
@@ -586,34 +588,44 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
             // ever applies to payments that were never posted to GL.
             const showControl = !isReversed && (isPosted ? canReverse : canDelete);
             return (
-              <div key={p.id} style={{
-                display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 14px',
+              <div key={p.id} className="payment-history-card" style={{
+                padding: '10px 14px',
                 background: isReversed ? '#fef2f2' : '#fff',
                 border: `1px solid ${isReversed ? '#fecaca' : '#e8e8e5'}`,
-                borderRadius: '8px', flexWrap: 'wrap',
+                borderRadius: '8px',
               }}>
-                <span style={{
-                  fontWeight: 700, fontFamily: 'monospace', minWidth: '100px',
-                  color: isReversed ? '#9ca3af' : '#16a34a',
-                  textDecoration: isReversed ? 'line-through' : 'none',
-                }}>
-                  KES {parseFloat(p.amount).toLocaleString('en-KE')}
-                </span>
-                <span style={{ flex: 1, fontSize: '13px', color: isReversed ? '#9ca3af' : '#374151', minWidth: '80px' }}>{p.description}</span>
-                <span style={{ fontSize: '11px', color: '#9ca3af' }}>{fmtDate(p.payment_date)}</span>
-                {isReversed && (
-                  <span style={{ fontSize: '9px', fontWeight: 700, color: '#9F1239', background: '#FFF1F2', border: '1px solid #fecaca', padding: '3px 7px', borderRadius: '4px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
-                    Reversed
+                {/* Row 1: amount + date */}
+                <div className="phc-top" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                  <span className="phc-amount" style={{
+                    fontWeight: 700, fontFamily: 'monospace',
+                    color: isReversed ? '#9ca3af' : '#16a34a',
+                    textDecoration: isReversed ? 'line-through' : 'none',
+                    fontSize: '15px',
+                  }}>
+                    KES {parseFloat(p.amount).toLocaleString('en-KE')}
                   </span>
-                )}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span className="phc-date" style={{ fontSize: '11px', color: '#9ca3af' }}>{fmtDate(p.payment_date)}</span>
+                    {isReversed && (
+                      <span style={{ fontSize: '9px', fontWeight: 700, color: '#9F1239', background: '#FFF1F2', border: '1px solid #fecaca', padding: '3px 7px', borderRadius: '4px', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                        Reversed
+                      </span>
+                    )}
+                  </div>
+                </div>
+                {/* Row 2: description */}
+                <div className="phc-desc" style={{ fontSize: '13px', color: isReversed ? '#9ca3af' : '#374151', marginTop: '4px' }}>{p.description}</div>
+                {/* Row 3: action */}
                 {showControl && (
-                  <button
-                    onClick={() => deletePayment(p)}
-                    style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: isPosted ? '11px' : '13px', fontWeight: 700, padding: '0 4px' }}
-                    title={isPosted ? 'Reverse payment' : 'Delete'}
-                  >
-                    {isPosted ? 'Reverse' : '×'}
-                  </button>
+                  <div className="phc-actions" style={{ marginTop: '6px' }}>
+                    <button
+                      onClick={() => deletePayment(p)}
+                      style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: isPosted ? '11px' : '13px', fontWeight: 700, padding: '4px 0', minHeight: 44 }}
+                      title={isPosted ? 'Reverse payment' : 'Delete'}
+                    >
+                      {isPosted ? 'Reverse' : '× Remove'}
+                    </button>
+                  </div>
                 )}
               </div>
             );
@@ -629,7 +641,7 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
               ⚠ {addError}
             </div>
           )}
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <div className="payment-add-form" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <div style={{ flex: '0 0 110px' }}>
               <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '4px' }}>Amount (KES)</div>
               <input type="number" placeholder="0" value={amt}
@@ -648,14 +660,14 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
               <input type="date" value={payDate} onChange={e => setPayDate(e.target.value)}
                 style={{ width: '100%', padding: '8px 10px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }} />
             </div>
-            <button onClick={addPayment} disabled={!amt || !desc.trim() || adding} style={{
+            <button onClick={addPayment} disabled={!amt || !desc.trim() || adding} className="payment-add-btn" style={{
               padding: '9px 18px', borderRadius: '7px', border: 'none',
               background: amt && desc.trim() && !adding ? '#16a34a' : '#e0e0e0',
               color: amt && desc.trim() && !adding ? '#fff' : '#aaa',
               fontWeight: 700, fontSize: '13px', cursor: amt && desc.trim() ? 'pointer' : 'default',
-              whiteSpace: 'nowrap', flex: '0 0 auto',
+              whiteSpace: 'nowrap', flex: '0 0 auto', minHeight: 44,
             }}>
-              {adding ? '...' : '+ Add'}
+              {adding ? '...' : '+ Add Payment'}
             </button>
           </div>
         </div>
@@ -1163,9 +1175,9 @@ function PnLTab({ orderId, orderNum, contractTotal, itemsSubtotal, chargeItems, 
   const profitColor = orderProfit >= 0 ? '#16a34a' : '#dc2626';
 
   const kpiCard = (label, value, color = '#111', sub = null) => (
-    <div style={{ background: '#fff', border: '1px solid #e8e8e5', borderRadius: '10px', padding: '14px 16px', textAlign: 'center', flex: '1 1 0', minWidth: 0 }}>
+    <div className="pnl-kpi-card" style={{ background: '#fff', border: '1px solid #e8e8e5', borderRadius: '10px', padding: '14px 16px', textAlign: 'center', flex: '1 1 0', minWidth: 0 }}>
       <div style={{ fontSize: '10px', color: '#6b7280', fontWeight: 700, textTransform: 'uppercase', marginBottom: '5px', letterSpacing: '0.05em' }}>{label}</div>
-      <div style={{ fontSize: '18px', fontWeight: 800, fontFamily: 'monospace', color }}>{value}</div>
+      <div className="pnl-kpi-value" style={{ fontSize: '18px', fontWeight: 800, fontFamily: 'monospace', color }}>{value}</div>
       {sub && <div style={{ fontSize: '10px', color: '#9ca3af', marginTop: '3px' }}>{sub}</div>}
     </div>
   );
@@ -1201,22 +1213,22 @@ function PnLTab({ orderId, orderNum, contractTotal, itemsSubtotal, chargeItems, 
       )}
 
       {/* Sub-tab bar + PDF button */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-        <div style={{ display: 'flex', gap: 6 }}>
+      <div className="pnl-controls" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+        <div className="pnl-tabs-row" style={{ display: 'flex', gap: 6 }}>
           {tabBtn('supplier', 'Supplier Costs', purchases.length + labourAllocations.length)}
           {tabBtn('expenses', 'Direct Expenses', directExpenses.length)}
           {tabBtn('summary',  'Profit Summary')}
         </div>
         {PDF_ALLOWED_ROLES.includes(userRole) && (
-          <button onClick={exportPdf} disabled={pdfLoading}
-            style={{ padding: '7px 16px', borderRadius: 7, border: '1.5px solid #E8512A', background: '#fff', color: pdfLoading ? '#aaa' : '#E8512A', fontWeight: 700, fontSize: 12, cursor: pdfLoading ? 'default' : 'pointer' }}>
+          <button onClick={exportPdf} disabled={pdfLoading} className="pnl-export-btn"
+            style={{ padding: '7px 16px', borderRadius: 7, border: '1.5px solid #E8512A', background: '#fff', color: pdfLoading ? '#aaa' : '#E8512A', fontWeight: 700, fontSize: 12, cursor: pdfLoading ? 'default' : 'pointer', minHeight: 44 }}>
             {pdfLoading ? 'Generating…' : '↓ Export PDF'}
           </button>
         )}
       </div>
 
       {/* KPI bar */}
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+      <div className="pnl-kpi-grid" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         {kpiCard('Contract', fmtKES(contractTotal))}
         {kpiCard('Supplier + Labour', fmtKES((totals.totalPurchaseCost || 0) + (totals.totalLabourCost || 0)), '#E8512A')}
         {kpiCard('Direct Expenses', fmtKES(totals.totalDirectExpenses || 0), '#9333ea')}
@@ -1461,6 +1473,7 @@ export default function OrderFormPage() {
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState(null);
   const [editMode, setEditMode]       = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [editedItems, setEditedItems] = useState([]);
   const [editedNotes, setEditedNotes] = useState('');
   const [editedDueDate, setEditedDueDate] = useState('');
@@ -1613,9 +1626,13 @@ export default function OrderFormPage() {
   }
 
   // ── Derived values ───────────────────────────────────────────────────────────
+
+  // Suspension — all mutations are blocked; only read/view/unsuspend is allowed
+  const isSuspended = !!order?.suspended_at;
+
   const PRE_PRODUCTION_STATUSES = ['Inquiry', 'Quote Approved', 'Deposit Paid', 'Material Check'];
-  const canEditItems = ['admin', 'head_of_sales'].includes(userRole) ||
-    (userRole === 'sales' && PRE_PRODUCTION_STATUSES.includes(order?.status));
+  const canEditItems = !isSuspended && (['admin', 'head_of_sales'].includes(userRole) ||
+    (userRole === 'sales' && PRE_PRODUCTION_STATUSES.includes(order?.status)));
   const displayItems    = editMode ? editedItems : items;
   const itemsSubtotal   = displayItems.filter(i => !isChargeItem(i)).reduce((s, i) => s + (parseFloat(i.unit_price) || 0) * (parseInt(i.quantity) || 1), 0);
   const chargesSubtotal = displayItems.filter(i => isChargeItem(i)).reduce((s, i) => s + (parseFloat(i.unit_price) || 0), 0);
@@ -1649,17 +1666,17 @@ export default function OrderFormPage() {
   // Send-back: only specific REWORK_TARGETS, not any prev step
   const reworkTarget = REWORK_TARGETS[order.status] || null;
   const canRework    = ROLES_CAN_REWORK.includes(userRole);
-  const canSendBack  = !!reworkTarget && canRework;
+  const canSendBack  = !isSuspended && !!reworkTarget && canRework;
 
   // Full Refund: Quote Approved only, ROLES_CAN_REFUND
-  const canFullRefund = order.status === 'Quote Approved' && ROLES_CAN_REFUND.includes(userRole);
+  const canFullRefund = !isSuspended && order.status === 'Quote Approved' && ROLES_CAN_REFUND.includes(userRole);
 
   // Repair/Return: Closed only, admin only
-  const canRepair = order.status === 'Closed' && userRole === 'admin';
+  const canRepair = !isSuspended && order.status === 'Closed' && userRole === 'admin';
 
   // Next stage availability
   const isTerminal = order.status === 'Closed' || order.status === 'Redelivered' || order.status === 'Cancelled / Refunded';
-  const canAdvance = ROLES_CAN_ADVANCE.includes(userRole) && !isTerminal && !!nextSt;
+  const canAdvance = !isSuspended && ROLES_CAN_ADVANCE.includes(userRole) && !isTerminal && !!nextSt;
   const salesBlocked = userRole === 'sales' && nextSt && sList.indexOf(nextSt) > sList.indexOf(SALES_MAX_ADVANCE_TO);
 
   // ── Edit save ────────────────────────────────────────────────────────────────
@@ -2007,45 +2024,68 @@ export default function OrderFormPage() {
   const sc = ALL_STATUS_COLORS[order.status] || { bg: '#FED7AA', text: '#92400E', border: '#FDB97A' };
 
   return (
-    <div style={{ background: '#f9fafb', minHeight: '100vh' }}>
+    <div className="order-page" style={{ background: '#f9fafb', minHeight: '100vh' }}>
 
       {/* ── HEADER ─────────────────────────────────────────────────────────── */}
-      <div style={{ position: 'sticky', top: 0, zIndex: 10 }} className="print-hidden-header">
+      <div className="order-workflow-header print-hidden-header" style={{ position: 'sticky', top: 0, zIndex: 10 }}>
         <div style={{ background: '#111827', color: '#fff' }}>
 
-        {/* Row 1: Back | Order num · Client · Status | Edit/Save */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 20px', borderBottom: '1px solid #374151' }} className="print-hidden">
+        {/* Row 1: Back | Order num · Client | Edit/Save */}
+        <div className="order-header-row1 print-hidden" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 20px', borderBottom: '1px solid #374151' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flex: 1, overflow: 'hidden' }}>
             <Link href="/orders" style={{ color: '#9ca3af', fontSize: '12px', fontWeight: 600, textDecoration: 'none', flexShrink: 0 }}>← Orders</Link>
-            <div style={{ width: '1px', height: '14px', background: '#374151', flexShrink: 0 }} />
-            <span style={{ fontSize: '13px', fontWeight: 700, color: '#fff', fontFamily: 'monospace', letterSpacing: '-0.3px', flexShrink: 0 }}>{order.order_num}</span>
-            <span style={{ fontSize: '12px', color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{order.client}</span>
+            <div className="order-header-divider" style={{ width: '1px', height: '14px', background: '#374151', flexShrink: 0 }} />
+            <div className="order-header-identity" style={{ minWidth: 0, overflow: 'hidden' }}>
+              <span style={{ fontSize: '13px', fontWeight: 700, color: '#fff', fontFamily: 'monospace', letterSpacing: '-0.3px', display: 'block' }}>{order.order_num}</span>
+              <span className="order-header-client" style={{ fontSize: '12px', color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>{order.client}</span>
+            </div>
           </div>
-          <div style={{ display: 'flex', gap: '8px', flexShrink: 0, marginLeft: '12px' }}>
-            {editMode ? (
+          <div className="order-header-actions" style={{ display: 'flex', gap: '8px', flexShrink: 0, marginLeft: '12px' }}>
+            {isSuspended ? (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '5px 12px', borderRadius: '6px', background: 'rgba(245,158,11,0.15)', border: '1px solid #f59e0b', color: '#f59e0b', fontWeight: 700, fontSize: '11px' }}>
+                ⏸ SUSPENDED
+              </span>
+            ) : editMode ? (
               <>
-                <button onClick={handleSave} disabled={saving} style={{ padding: '6px 16px', borderRadius: '6px', border: 'none', background: '#E8512A', color: '#fff', fontWeight: 700, fontSize: '12px', cursor: 'pointer' }}>
+                <button onClick={handleSave} disabled={saving} className="order-header-btn" style={{ padding: '6px 16px', borderRadius: '6px', border: 'none', background: '#E8512A', color: '#fff', fontWeight: 700, fontSize: '12px', cursor: 'pointer', minHeight: 44 }}>
                   {saving ? 'Saving...' : '✓ Save'}
                 </button>
-                <button onClick={handleCancel} style={{ padding: '6px 14px', borderRadius: '6px', border: '1px solid #4b5563', background: 'transparent', color: '#d1d5db', fontWeight: 700, fontSize: '12px', cursor: 'pointer' }}>
+                <button onClick={handleCancel} className="order-header-btn" style={{ padding: '6px 14px', borderRadius: '6px', border: '1px solid #4b5563', background: 'transparent', color: '#d1d5db', fontWeight: 700, fontSize: '12px', cursor: 'pointer', minHeight: 44 }}>
                   Cancel
                 </button>
               </>
             ) : (
               <>
-                <button onClick={() => setEditMode(true)} style={{ padding: '6px 16px', borderRadius: '6px', border: 'none', background: '#E8512A', color: '#fff', fontWeight: 700, fontSize: '12px', cursor: 'pointer' }}>
+                <button onClick={() => setEditMode(true)} className="order-header-btn" style={{ padding: '6px 16px', borderRadius: '6px', border: 'none', background: '#E8512A', color: '#fff', fontWeight: 700, fontSize: '12px', cursor: 'pointer', minHeight: 44 }}>
                   ✎ Edit
                 </button>
-                <button onClick={() => window.print()} style={{ padding: '6px 14px', borderRadius: '6px', border: '1.5px solid #E8512A', background: 'transparent', color: '#E8512A', fontWeight: 700, fontSize: '12px', cursor: 'pointer' }}>
+                <button onClick={() => window.print()} className="order-print-btn order-header-btn" style={{ padding: '6px 14px', borderRadius: '6px', border: '1.5px solid #E8512A', background: 'transparent', color: '#E8512A', fontWeight: 700, fontSize: '12px', cursor: 'pointer', minHeight: 44 }}>
                   Print
                 </button>
+                <div style={{ position: 'relative' }} className="order-more-btn">
+                  <button onClick={() => setMobileMenuOpen(o => !o)} style={{ display: 'flex', padding: '6px 12px', borderRadius: '6px', border: '1.5px solid #4b5563', background: 'transparent', color: '#d1d5db', fontWeight: 700, fontSize: '14px', cursor: 'pointer', minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center' }}>
+                    ⋯
+                  </button>
+                  {mobileMenuOpen && (
+                    <>
+                      <div style={{ position: 'fixed', inset: 0, zIndex: 199 }} onClick={() => setMobileMenuOpen(false)} />
+                      <div style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 200, background: '#1f2937', border: '1px solid #374151', borderRadius: '8px', padding: '4px', minWidth: '140px', boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}>
+                        <button onClick={() => { window.print(); setMobileMenuOpen(false); }} style={{ display: 'flex', width: '100%', padding: '9px 12px', border: 'none', background: 'transparent', color: '#d1d5db', fontSize: '13px', fontWeight: 500, cursor: 'pointer', borderRadius: '5px', textAlign: 'left', minHeight: 44, alignItems: 'center', gap: '8px' }}
+                          onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.08)'}
+                          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                          🖨 Print
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
               </>
             )}
           </div>
         </div>
 
         {/* Row 2: Progress bar */}
-        <div style={{ padding: '7px 20px 0' }} className="print-hidden">
+        <div style={{ padding: '7px 20px 0' }} className="print-hidden order-progress-row">
           <div style={{ display: 'flex', gap: '2px' }}>
             {sList.map((s, i) => {
               const c = ALL_STATUS_COLORS[s] || { text: '#555' };
@@ -2055,19 +2095,19 @@ export default function OrderFormPage() {
         </div>
 
         {/* Row 3: Previous Stage | Current · Step X/N | Next Stage */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 20px 10px' }} className="print-hidden">
+        <div className="order-workflow-row print-hidden" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 20px 10px' }}>
 
           {/* Left: Send Back */}
-          <div style={{ flex: 1 }}>
+          <div className="order-workflow-back" style={{ flex: 1 }}>
             {canSendBack && !isTerminal && (
-              <button onClick={handleSendBackClick} style={{ padding: '5px 12px', borderRadius: '5px', border: '1.5px solid #f59e0b', background: 'transparent', color: '#f59e0b', fontWeight: 700, fontSize: '11px', cursor: 'pointer' }}>
+              <button onClick={handleSendBackClick} style={{ padding: '5px 12px', borderRadius: '5px', border: '1.5px solid #f59e0b', background: 'transparent', color: '#f59e0b', fontWeight: 700, fontSize: '11px', cursor: 'pointer', minHeight: 44 }}>
                 ↩ {reworkTarget}
               </button>
             )}
           </div>
 
           {/* Centre: current status + step counter */}
-          <div style={{ textAlign: 'center', flex: 1 }}>
+          <div className="order-workflow-status" style={{ textAlign: 'center', flex: 1 }}>
             <span style={{ fontSize: '11px', color: '#9ca3af', fontWeight: 600 }}>
               {isTerminal ? order.status : `${order.status} · ${Math.max(cIdx + 1, 1)} of ${sList.length}`}
             </span>
@@ -2077,9 +2117,9 @@ export default function OrderFormPage() {
           </div>
 
           {/* Right: Next Stage / special actions */}
-          <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end', gap: '6px', alignItems: 'center' }}>
+          <div className="order-workflow-next" style={{ flex: 1, display: 'flex', justifyContent: 'flex-end', gap: '6px', alignItems: 'center' }}>
             {canAdvance && !salesBlocked && (
-              <button onClick={handleNextStage} disabled={advancing} style={{ padding: '5px 14px', borderRadius: '5px', border: 'none', background: advancing ? '#374151' : '#16a34a', color: '#fff', fontWeight: 700, fontSize: '11px', cursor: advancing ? 'default' : 'pointer' }}>
+              <button onClick={handleNextStage} disabled={advancing} style={{ padding: '5px 14px', borderRadius: '5px', border: 'none', background: advancing ? '#374151' : '#16a34a', color: '#fff', fontWeight: 700, fontSize: '11px', cursor: advancing ? 'default' : 'pointer', minHeight: 44 }}>
                 {advancing ? '...' : `→ ${nextSt}`}
               </button>
             )}
@@ -2087,12 +2127,12 @@ export default function OrderFormPage() {
               <span style={{ fontSize: '10px', color: '#6b7280', fontStyle: 'italic' }}>Max: {SALES_MAX_ADVANCE_TO}</span>
             )}
             {canFullRefund && (
-              <button onClick={handleRefundClick} style={{ padding: '5px 12px', borderRadius: '5px', border: '1.5px solid #f43f5e', background: 'transparent', color: '#f43f5e', fontWeight: 700, fontSize: '11px', cursor: 'pointer' }}>
+              <button onClick={handleRefundClick} style={{ padding: '5px 12px', borderRadius: '5px', border: '1.5px solid #f43f5e', background: 'transparent', color: '#f43f5e', fontWeight: 700, fontSize: '11px', cursor: 'pointer', minHeight: 44 }}>
                 💸 Refund
               </button>
             )}
             {canRepair && (
-              <button onClick={handleRepairClick} style={{ padding: '5px 12px', borderRadius: '5px', border: '1.5px solid #8b5cf6', background: 'transparent', color: '#8b5cf6', fontWeight: 700, fontSize: '11px', cursor: 'pointer' }}>
+              <button onClick={handleRepairClick} style={{ padding: '5px 12px', borderRadius: '5px', border: '1.5px solid #8b5cf6', background: 'transparent', color: '#8b5cf6', fontWeight: 700, fontSize: '11px', cursor: 'pointer', minHeight: 44 }}>
                 🔧 Repair
               </button>
             )}
@@ -2100,9 +2140,20 @@ export default function OrderFormPage() {
         </div>
         </div>{/* end dark header inner */}
 
+        {/* ── Suspended banner ── */}
+        {isSuspended && (
+          <div style={{ background: 'rgba(245,158,11,0.12)', borderBottom: '1px solid #f59e0b', padding: '8px 20px', display: 'flex', alignItems: 'center', gap: '8px' }} className="print-hidden">
+            <span style={{ fontSize: '16px' }}>⏸</span>
+            <span style={{ color: '#92400e', fontWeight: 700, fontSize: '13px' }}>Order Suspended</span>
+            {order.suspension_reason && (
+              <span style={{ color: '#78350f', fontSize: '12px' }}>— {order.suspension_reason}</span>
+            )}
+          </div>
+        )}
+
         {/* ── Tab bar ── */}
-        <div style={{ position: 'relative', background: '#fff', borderBottom: '1px solid #e5e7eb' }} className="print-hidden order-tab-bar">
-          <div style={{ display: 'flex', overflowX: 'auto', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+        <div style={{ position: 'relative', background: '#fff', borderBottom: '1px solid #e5e7eb' }} className="print-hidden order-tab-bar order-tabs-sticky">
+          <div className="order-tab-scroll" style={{ display: 'flex', overflowX: 'auto', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
             {[
               { id: 'info',     label: 'Info',     icon: '📋' },
               { id: 'payments', label: 'Payments', icon: '💰' },
@@ -2110,10 +2161,11 @@ export default function OrderFormPage() {
               { id: 'delivery', label: 'Delivery', icon: '🚚' },
               { id: 'drawings', label: 'Files',    icon: '📐' },
               { id: 'activity', label: 'Activity', icon: '🕐' },
+              ...(userRole === 'admin' ? [{ id: 'danger', label: 'Danger Zone', icon: '⚠' }] : []),
             ].map(t => (
-              <button key={t.id} data-order-tab={t.id} onClick={() => {
+              <button key={t.id} data-order-tab={t.id} onClick={(e) => {
                 setActiveTab(t.id);
-                document.querySelector(`[data-order-tab="${t.id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+                e.currentTarget.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
               }} style={{
                 padding: '10px 16px', border: 'none', background: 'transparent',
                 borderBottom: activeTab === t.id ? '2.5px solid #E8512A' : '2.5px solid transparent',
@@ -2128,14 +2180,15 @@ export default function OrderFormPage() {
               </button>
             ))}
           </div>
-          {/* Right-edge fade */}
+          {/* Fade edges */}
+          <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 20, pointerEvents: 'none', background: 'linear-gradient(to left, transparent, #fff)' }} />
           <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 32, pointerEvents: 'none', background: 'linear-gradient(to right, transparent, #fff)' }} />
         </div>
-        <style>{`.order-tab-bar div::-webkit-scrollbar { display: none; }`}</style>
-      </div>{/* end sticky wrapper */}
+        <style>{`.order-tab-scroll::-webkit-scrollbar { display: none; }`}</style>
+      </div>{/* end workflow header */}
 
       {/* ── MAIN ───────────────────────────────────────────────────────────── */}
-      <main style={{ maxWidth: '860px', margin: '0 auto', padding: '20px 16px' }}>
+      <main className="order-main" style={{ maxWidth: '860px', margin: '0 auto', padding: '20px 16px', width: '100%', boxSizing: 'border-box' }}>
 
         {/* ═══════════════════════════════════════════════════
             TAB: INFO
@@ -2163,8 +2216,8 @@ export default function OrderFormPage() {
           )}
 
           {/* Order + Client cards */}
-          <div className="order-cards-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
-            <div style={card}>
+          <div className="order-info-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
+            <div className="order-card" style={card}>
               <div style={{ fontSize: '11px', fontWeight: 700, color: '#111', textTransform: 'uppercase', marginBottom: '16px' }}>General info</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
                 <div><div style={fieldLabel}>Order date</div><div style={fieldValue}>{fmtDate(order.created_at)}</div></div>
@@ -2221,7 +2274,7 @@ export default function OrderFormPage() {
               </div>
             </div>
 
-            <div style={card}>
+            <div className="order-card" style={card}>
               <div style={{ fontSize: '11px', fontWeight: 700, color: '#111', textTransform: 'uppercase', marginBottom: '16px' }}>Client</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                 <div><div style={fieldLabel}>Company</div><div style={fieldValue}>{order.client}</div></div>
@@ -2233,12 +2286,12 @@ export default function OrderFormPage() {
                 <div>
                   <div style={fieldLabel}>Customer profile</div>
                   {order.customer_id ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <Link href={`/customers/${order.customer_id}`} style={{ fontSize: '13px', color: '#E8512A', fontWeight: 600, textDecoration: 'none' }}>
+                    <div className="customer-profile-row" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', minWidth: 0 }}>
+                      <Link href={`/customers/${order.customer_id}`} className="customer-profile-link" style={{ fontSize: '13px', color: '#E8512A', fontWeight: 600, textDecoration: 'none', minWidth: 0, overflowWrap: 'anywhere' }}>
                         {order._customer?.name || order.client} ↗
                       </Link>
                       {['admin', 'head_of_sales', 'production_manager', 'sales'].includes(userRole) && (
-                        <button onClick={() => { setCustomerSearch(''); setShowLinkCustomer(true); }} style={{ fontSize: '11px', color: '#6b7280', background: 'none', border: '1px solid #e5e7eb', borderRadius: '4px', padding: '2px 8px', cursor: 'pointer' }}>
+                        <button onClick={() => { setCustomerSearch(''); setShowLinkCustomer(true); }} style={{ fontSize: '11px', color: '#6b7280', background: 'none', border: '1px solid #e5e7eb', borderRadius: '4px', padding: '2px 8px', cursor: 'pointer', minHeight: 44, flexShrink: 0 }}>
                           Change
                         </button>
                       )}
@@ -2294,7 +2347,7 @@ export default function OrderFormPage() {
           {/* Line Items */}
           <div style={{ marginBottom: '24px' }}>
             <div style={sectionLabel}>📦 Line items</div>
-            <div style={{ ...card, padding: '0', overflow: 'hidden' }}>
+            <div className={`order-items-desktop${editMode ? ' order-items-edit-active' : ''}`} style={{ ...card, padding: '0', overflow: 'hidden' }}>
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                   <thead>
@@ -2422,13 +2475,69 @@ export default function OrderFormPage() {
                 </table>
               </div>
             </div>
+
+            {/* Mobile item cards — hidden on desktop, hidden in edit mode */}
+            {!editMode && (
+              <div className="order-items-mobile">
+                {displayItems.length === 0 ? (
+                  <div style={{ padding: '24px', textAlign: 'center', color: '#9ca3af', background: '#fff', borderRadius: '10px', border: '1px solid #e5e7eb' }}>No items</div>
+                ) : displayItems.map(item => {
+                  const key = item.id || item._id;
+                  const isCharge = isChargeItem(item);
+                  const rowTotal = isCharge
+                    ? (parseFloat(item.unit_price) || 0)
+                    : (parseFloat(item.unit_price) || 0) * (parseInt(item.quantity) || 1);
+                  return (
+                    <div key={key} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '14px 16px' }}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '6px' }}>
+                        <span style={{ fontSize: '14px', fontWeight: 700, color: isCharge ? '#6b7280' : '#111' }}>{item.category}</span>
+                        {isCharge && <span style={{ fontSize: '9px', background: '#EDE9FE', color: '#7C3AED', padding: '2px 6px', borderRadius: '3px', fontWeight: 700 }}>charge</span>}
+                      </div>
+                      {!isCharge && itemSpec(item) && (
+                        <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '10px', lineHeight: 1.5 }}>{itemSpec(item)}</div>
+                      )}
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '12px' }}>
+                        {!isCharge && (
+                          <>
+                            <div><div style={{ fontSize: '9px', color: '#9ca3af', fontWeight: 700, textTransform: 'uppercase', marginBottom: '2px' }}>Quantity</div><div style={{ fontFamily: 'monospace', fontWeight: 600 }}>{item.quantity}</div></div>
+                            <div><div style={{ fontSize: '9px', color: '#9ca3af', fontWeight: 700, textTransform: 'uppercase', marginBottom: '2px' }}>Unit price</div><div style={{ fontFamily: 'monospace', fontWeight: 600 }}>{fmtKES(item.unit_price)}</div></div>
+                          </>
+                        )}
+                        <div style={{ gridColumn: isCharge ? '1 / -1' : undefined }}>
+                          <div style={{ fontSize: '9px', color: '#9ca3af', fontWeight: 700, textTransform: 'uppercase', marginBottom: '2px' }}>Total</div>
+                          <div style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '15px', color: '#111' }}>{fmtKES(rowTotal)}</div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                {/* Totals card */}
+                {displayItems.length > 0 && (
+                  <div style={{ background: '#f0fdf4', border: '1.5px solid #86efac', borderRadius: '10px', padding: '14px 16px' }}>
+                    {itemsSubtotal > 0 && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', marginBottom: '4px', color: '#374151' }}>
+                        <span>Items subtotal</span><span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{fmtKES(itemsSubtotal)}</span>
+                      </div>
+                    )}
+                    {chargesSubtotal > 0 && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', marginBottom: '4px', color: '#374151' }}>
+                        <span>Charges</span><span style={{ fontFamily: 'monospace', fontWeight: 700 }}>{fmtKES(chargesSubtotal)}</span>
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', fontWeight: 800, color: '#15803d', borderTop: contractTotal > 0 && (itemsSubtotal > 0 || chargesSubtotal > 0) ? '1px solid #86efac' : undefined, paddingTop: contractTotal > 0 ? '8px' : undefined, marginTop: contractTotal > 0 ? '4px' : undefined }}>
+                      <span>Contract total</span><span style={{ fontFamily: 'monospace' }}>{fmtKES(contractTotal)}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Order Notes */}
           {(order.notes || editMode) && (
             <div style={{ marginBottom: '24px' }}>
               <div style={sectionLabel}>📋 Order notes</div>
-              <div style={card}>
+              <div className="order-card" style={card}>
                 {editMode ? (
                   <textarea value={editedNotes} onChange={e => setEditedNotes(e.target.value)} rows={3}
                     placeholder="Internal order notes..."
@@ -2448,7 +2557,7 @@ export default function OrderFormPage() {
             ═══════════════════════════════════════════════════ */}
         {activeTab === 'payments' && (<>
           <div style={sectionLabel}>💰 Financial summary</div>
-          <div style={{ ...card, marginBottom: '24px' }}>
+          <div className="order-card" style={{ ...card, marginBottom: '24px' }}>
             <PaymentPanel
               orderId={id}
               contractTotal={contractTotal}
@@ -2458,10 +2567,11 @@ export default function OrderFormPage() {
               orderStatus={order.status}
               payments={payments}
               setPayments={setPayments}
+              readOnly={isSuspended}
             />
           </div>
           <div style={sectionLabel}>💬 Notes</div>
-          <div style={card}><NotesThread orderId={id} /></div>
+          <div className="order-card" style={card}><NotesThread orderId={id} /></div>
         </>)}
 
         {/* ═══════════════════════════════════════════════════
@@ -2469,7 +2579,7 @@ export default function OrderFormPage() {
             ═══════════════════════════════════════════════════ */}
         {activeTab === 'pnl' && (<>
           <div style={sectionLabel}>📊 Project P&amp;L</div>
-          <div style={card}>
+          <div className="order-card" style={card}>
             <PnLTab
               orderId={id}
               orderNum={order?.order_num || id}
@@ -2491,6 +2601,7 @@ export default function OrderFormPage() {
             order={order}
             userRole={userRole}
             onUpdate={refreshOrder}
+            readOnly={isSuspended}
           />
         )}
 
@@ -2499,7 +2610,7 @@ export default function OrderFormPage() {
             ═══════════════════════════════════════════════════ */}
         {activeTab === 'drawings' && (<>
           <div style={sectionLabel}>📐 Files & drawings</div>
-          <div style={card}><AttachmentsPanel orderId={id} userRole={userRole} /></div>
+          <div className="order-card" style={card}><AttachmentsPanel orderId={id} userRole={userRole} readOnly={isSuspended} /></div>
         </>)}
 
         {/* ═══════════════════════════════════════════════════
@@ -2507,7 +2618,30 @@ export default function OrderFormPage() {
             ═══════════════════════════════════════════════════ */}
         {activeTab === 'activity' && (<>
           <div style={sectionLabel}>🕐 Activity log</div>
-          <div style={card}><ActivityLog orderId={id} /></div>
+          <div className="order-card" style={card}><ActivityLog orderId={id} /></div>
+        </>)}
+
+        {/* ═══════════════════════════════════════════════════
+            TAB: DANGER ZONE (admin only)
+            ═══════════════════════════════════════════════════ */}
+        {activeTab === 'danger' && userRole === 'admin' && (<>
+          <div style={sectionLabel}>⚠ Danger Zone</div>
+          <DangerZoneTab
+            orderId={id}
+            orderNum={order?.order_num}
+            onSuspended={async () => {
+              // Refresh suspension fields in header without full page reload
+              const { data } = await supabase
+                .from('orders')
+                .select('suspended_at, suspension_reason')
+                .eq('id', id)
+                .single();
+              if (data) setOrder(o => ({ ...o, ...data }));
+            }}
+            onDeleted={() => {
+              window.location.href = '/orders';
+            }}
+          />
         </>)}
 
       </main>
@@ -2690,15 +2824,95 @@ export default function OrderFormPage() {
           main { padding: 0.5in; max-width: 100%; }
           button { display: none !important; }
         }
-        /* ── Mobile responsive ── */
-        @media (max-width: 640px) {
-          .order-cards-grid {
-            grid-template-columns: 1fr !important;
+
+        /* ── Order page containment ─────────────────── */
+        .order-page { width: 100%; max-width: 100%; min-width: 0; overflow-x: hidden; box-sizing: border-box; }
+
+        /* ── Desktop: full header sticky ───────────── */
+        .order-workflow-header { position: sticky; top: 0; z-index: 10; }
+
+        /* ── Desktop: hide mobile items ────────────── */
+        .order-items-mobile { display: none; }
+
+        /* ── Desktop: hide mobile-only controls ───── */
+        .order-more-btn { display: none; }
+
+        /* ── Tab scroll: hide scrollbar ────────────── */
+        .order-tab-scroll::-webkit-scrollbar { display: none; }
+        .order-tab-scroll { scrollbar-width: none; -ms-overflow-style: none; }
+
+        /* ═══════ MOBILE (max-width: 700px) ═══════ */
+        @media (max-width: 700px) {
+          .order-main { padding: 14px 12px 32px !important; }
+
+          /* Un-sticky workflow header; tab bar becomes sticky */
+          .order-workflow-header { position: static !important; }
+          .order-tabs-sticky {
+            position: sticky !important; top: 0 !important; z-index: 20 !important;
+            background: #fff; border-bottom: 1px solid #e5e7eb;
           }
-          main {
-            padding: 12px !important;
+
+          /* Header row 1: print button hidden, ⋯ shown */
+          .order-print-btn { display: none !important; }
+          .order-more-btn { display: flex !important; align-items: center; justify-content: center; }
+          .order-header-btn { min-height: 44px !important; }
+
+          /* Workflow row: grid layout with status spanning full width */
+          .order-workflow-row {
+            display: grid !important;
+            grid-template-areas: "status status" "back next" !important;
+            grid-template-columns: 1fr 1fr !important;
+            gap: 8px !important;
+            padding: 8px 14px 12px !important;
           }
+          .order-workflow-back { grid-area: back; }
+          .order-workflow-status { grid-area: status; text-align: center !important; }
+          .order-workflow-next { grid-area: next; }
+          .order-workflow-back button, .order-workflow-next button {
+            width: 100%; min-height: 44px !important;
+          }
+
+          /* Info grid: single column */
+          .order-info-grid { grid-template-columns: 1fr !important; }
+
+          /* Line items: hide table, show cards */
+          .order-items-desktop { display: none !important; }
+          .order-items-desktop.order-items-edit-active { display: block !important; }
+          .order-items-mobile { display: flex; flex-direction: column; gap: 10px; }
+
+          /* Payment summary */
+          .payment-summary-grid { grid-template-columns: 1fr 1fr !important; }
+          .payment-contract-total { grid-column: 1 / -1 !important; text-align: center; }
+          .payment-summary-value { font-size: clamp(18px, 5vw, 24px) !important; overflow-wrap: anywhere; }
+
+          /* P&L KPI grid */
+          .pnl-kpi-grid { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; flex-wrap: unset !important; }
+          .pnl-kpi-card { flex: unset !important; }
+          .pnl-kpi-value { font-size: clamp(16px, 5vw, 22px) !important; overflow-wrap: anywhere; }
+
+          /* P&L controls */
+          .pnl-controls { flex-direction: column !important; align-items: stretch !important; }
+          .pnl-tabs-row { display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+          .pnl-tabs-row button { min-height: 44px !important; white-space: normal !important; text-align: center; }
+          .pnl-export-btn { width: 100% !important; min-height: 44px !important; margin-top: 4px; }
+
+          /* Add payment form */
+          .payment-add-form { flex-direction: column !important; }
+          .payment-add-form > div { flex: 1 1 auto !important; width: 100% !important; max-width: 100% !important; }
+          .payment-add-btn { width: 100% !important; min-height: 44px !important; }
+
+          /* Notes */
+          .notes-input-row { flex-direction: column !important; }
+          .notes-post-btn { width: 100% !important; min-height: 44px !important; padding: 12px !important; }
+
+          /* Customer profile */
+          .customer-profile-row { flex-wrap: wrap !important; }
+          .customer-profile-link { min-width: 0; overflow-wrap: anywhere; }
+
+          /* Card padding */
+          .order-card { padding: 14px 16px !important; }
         }
+
         /* Hide text labels on very narrow screens — icons stay */
         @media (max-width: 380px) {
           .tab-label { display: none !important; }

@@ -34,6 +34,7 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
+import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 import {
   BATCH_STATUS_TRANSITIONS,
   ROLES_CAN_CREATE_BATCH,
@@ -52,6 +53,10 @@ export async function DELETE(request, { params }) {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role, ['admin']);
     if (authError) return authError;
+
+    // Suspension guard — suspended orders are read-only
+    const suspendedErr = await checkOrderSuspended(orderId);
+    if (suspendedErr) return suspendedErr;
 
     const { data: batch } = await serviceClient
       .from('delivery_batches')
@@ -98,6 +103,10 @@ export async function PATCH(request, { params }) {
 
     const { user, role } = await getAuthContext();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+    // Suspension guard — suspended orders are read-only (all batch mutations blocked)
+    const suspendedErr = await checkOrderSuspended(orderId);
+    if (suspendedErr) return suspendedErr;
 
     let body;
     try { body = await request.json(); }

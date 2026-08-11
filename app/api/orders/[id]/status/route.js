@@ -27,6 +27,7 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
+import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 import {
   STATUSES,
   REPAIR_STATUSES,
@@ -42,11 +43,15 @@ export async function POST(request, { params }) {
   try {
     const orderId = params.id;
 
-    // 1. Auth — determine roles after we know direction
+    // 0. Auth — must happen before any DB reads to avoid leaking data to unauthenticated callers
     const { user, role } = await getAuthContext();
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized: no active session' }, { status: 401 });
     }
+
+    // 1. Suspension gate — block all status changes on suspended orders
+    const suspendedErr = await checkOrderSuspended(orderId);
+    if (suspendedErr) return suspendedErr;
 
     // 2. Parse body
     let body;

@@ -32,6 +32,7 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { postDirectExpenseJournal } from '@/shared/lib/accountingService';
+import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 
 const WRITE_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 
@@ -97,6 +98,9 @@ export async function POST(request, { params }) {
       .eq('id', orderId)
       .single();
     if (!order) return NextResponse.json({ error: 'Order not found' }, { status: 404 });
+
+    const suspendErr = await checkOrderSuspended(orderId);
+    if (suspendErr) return suspendErr;
 
     const body = await request.json();
     const {

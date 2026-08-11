@@ -3,6 +3,7 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
+import { checkQuotationSuspended } from '@/shared/lib/suspendGuard';
 
 const ROLES_CRM = ['admin', 'head_of_sales', 'sales'];
 
@@ -169,6 +170,9 @@ function diffQuote(existing, body, oldItems, newItems) {
 // When items are provided, diffs old vs new and logs changes to quote_activities.
 export async function PATCH(request, { params }) {
   try {
+    const suspendedErr = await checkQuotationSuspended(params.id);
+    if (suspendedErr) return suspendedErr;
+
     const { user, role } = await getAuthContext();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const authErr = requireRole(user, role, ROLES_CRM);

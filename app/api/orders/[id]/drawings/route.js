@@ -4,6 +4,7 @@
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
+import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 
 const ALLOWED_EXTENSIONS = ['.pdf', '.dxf', '.png', '.jpg', '.jpeg'];
 const MAX_FILE_SIZE = 70 * 1024 * 1024; // 70MB
@@ -114,6 +115,10 @@ export async function POST(request, { params }) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 });
     }
 
+    // Suspension guard
+    const suspendErr = await checkOrderSuspended(orderId);
+    if (suspendErr) return suspendErr;
+
     // 4. Parse file from FormData
     const formData = await request.formData();
     const file = formData.get('file');
@@ -214,6 +219,10 @@ export async function DELETE(request, { params }) {
     const deleteRoles = ['admin', 'production_manager', 'head_of_sales'];
     const authError = requireRole(user, role, deleteRoles);
     if (authError) return authError;
+
+    // 1a. Suspension guard — suspended orders are read-only
+    const suspendedErr = await checkOrderSuspended(orderId);
+    if (suspendedErr) return suspendedErr;
 
     // 2. Require a deletion reason
     let reason = '';
