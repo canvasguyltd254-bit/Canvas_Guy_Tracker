@@ -847,7 +847,11 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
   const [q, setQ]                 = useState('');
   const [showForm, setShowForm]   = useState(false);
   const [expanded, setExpanded]   = useState(null); // enquiry id
-  const [advancing, setAdvancing] = useState(null); // enquiry id being updated
+  const [advancing, setAdvancing]     = useState(null); // enquiry id being updated
+  const [lostModal, setLostModal]     = useState(null); // enquiry id awaiting lost reason
+  const [lostReason, setLostReason]   = useState('');
+  const [lostError, setLostError]     = useState('');
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -876,11 +880,61 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
     }
   };
 
+  const openLostModal = (enqId) => {
+    setLostModal(enqId);
+    setLostReason('');
+    setLostError('');
+  };
+
+  const submitLost = async () => {
+    const reason = lostReason.trim();
+    if (!reason) { setLostError('Please enter a reason before marking as lost.'); return; }
+    setAdvancing(lostModal);
+    try {
+      const res = await fetch(`/api/crm/enquiries/${lostModal}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stage: 'lost', lost_reason: reason }),
+      });
+      const json = await res.json();
+      if (!res.ok) { setLostError(json.error || 'Failed to mark as lost.'); return; }
+      setLostModal(null);
+      load(); onRefresh();
+    } finally {
+      setAdvancing(null);
+    }
+  };
+
+  const exportReport = async () => {
+    setExportingPdf(true);
+    try {
+      const params = new URLSearchParams();
+      if (stage) params.set('stage', stage);
+      if (q)     params.set('q', q);
+      const res = await fetch(`/api/crm/enquiries/report?${params}`);
+      if (!res.ok) { const j = await res.json(); alert(j.error || 'Export failed'); return; }
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url; a.download = 'enquiry-report.pdf'; a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
   return (
     <div>
       <Panel>
         <PanelHead title="Enquiries" sub="New, Contacted, Quoted, Won or Lost. Quoted and Won update automatically."
-          actions={<Btn primary small onClick={() => setShowForm(true)}>+ New Enquiry</Btn>} />
+          actions={
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Btn small onClick={exportReport} disabled={exportingPdf}>
+                {exportingPdf ? 'Exporting…' : '↓ Export PDF'}
+              </Btn>
+              <Btn primary small onClick={() => setShowForm(true)}>+ New Enquiry</Btn>
+            </div>
+          } />
         <Toolbar>
           <TInput value={q} onChange={e => setQ(e.target.value)} placeholder="Search name, enquiry or description" />
           <TSelect value={stage} onChange={e => setStage(e.target.value)}>
@@ -942,6 +996,12 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
                                 <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 3 }}>Stage</div>
                                 <Badge color={stageColor[e.stage] || 'gray'}>{e.stage}</Badge>
                               </div>
+                              {e.stage === 'lost' && e.lost_reason && (
+                                <div style={{ gridColumn: '1 / -1' }}>
+                                  <div style={{ fontSize: 10, fontWeight: 700, color: C.red, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 3 }}>Lost Reason</div>
+                                  <div style={{ color: C.ink }}>{e.lost_reason}</div>
+                                </div>
+                              )}
                             </div>
                             {/* Stage actions — only show relevant forward moves */}
                             {(e.stage === 'new' || e.stage === 'contacted') && (
@@ -957,7 +1017,7 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
                                   <Btn small
                                     style={{ color: C.red, border: `1px solid ${C.red}` }}
                                     disabled={advancing === e.id}
-                                    onClick={() => advanceStage(e.id, 'lost')}>
+                                    onClick={() => openLostModal(e.id)}>
                                     Mark as Lost
                                   </Btn>
                                 )}
@@ -975,6 +1035,41 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
         )}
       </Panel>
       {showForm && <EnquiryFormModal onSave={() => { setShowForm(false); load(); onRefresh(); }} onClose={() => setShowForm(false)} />}
+
+      {/* Mark as Lost modal */}
+      {lostModal && (
+        <Modal title="Mark as Lost" onClose={() => setLostModal(null)}>
+          <div style={{ marginBottom: 16, fontSize: 13, color: C.ink, lineHeight: 1.5 }}>
+            Why was this enquiry lost? This reason will be saved and included in reports.
+          </div>
+          <Field label="Lost reason *" full>
+            <textarea
+              value={lostReason}
+              onChange={e => { setLostReason(e.target.value); setLostError(''); }}
+              placeholder="e.g. Budget, Went to competitor, No response…"
+              rows={3}
+              style={{
+                width: '100%', boxSizing: 'border-box',
+                padding: '8px 10px', border: `1.5px solid ${lostError ? C.red : C.line}`,
+                borderRadius: 7, fontSize: 13, resize: 'vertical', fontFamily: 'inherit',
+                outline: 'none',
+              }}
+            />
+          </Field>
+          {lostError && (
+            <div style={{ color: C.red, fontSize: 12, marginBottom: 10 }}>{lostError}</div>
+          )}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
+            <Btn small onClick={() => setLostModal(null)}>Cancel</Btn>
+            <Btn small
+              disabled={advancing === lostModal}
+              onClick={submitLost}
+              style={{ background: C.red, color: '#fff', border: 'none' }}>
+              {advancing === lostModal ? 'Saving…' : 'Confirm Lost'}
+            </Btn>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

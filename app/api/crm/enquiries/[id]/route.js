@@ -24,6 +24,12 @@ export async function PATCH(request, { params }) {
       return NextResponse.json({ error: 'No updatable fields provided' }, { status: 422 });
     }
 
+    // A lost stage requires a non-empty reason (mirrors the DB CHECK constraint)
+    if (safe.stage === 'lost' && !safe.lost_reason?.trim()) {
+      return NextResponse.json({ error: 'A reason is required when marking an enquiry as lost.' }, { status: 422 });
+    }
+    if (safe.lost_reason) safe.lost_reason = safe.lost_reason.trim();
+
     const { data, error } = await serviceClient
       .from('enquiries')
       .update({ ...safe, updated_at: new Date().toISOString() })
@@ -38,12 +44,15 @@ export async function PATCH(request, { params }) {
 
     // Activity log
     if (safe.stage) {
+      const desc = safe.stage === 'lost' && safe.lost_reason
+        ? `Marked as lost — ${safe.lost_reason}`
+        : `Stage changed to "${safe.stage}"`;
       await serviceClient.from('quote_activities').insert({
-        entity_type: 'enquiry',
-        entity_id:   params.id,
+        entity_type:   'enquiry',
+        entity_id:     params.id,
         activity_type: 'stage_change',
-        description: `Stage changed to "${safe.stage}"`,
-        created_by: user.id,
+        description:   desc,
+        created_by:    user.id,
       });
     }
 

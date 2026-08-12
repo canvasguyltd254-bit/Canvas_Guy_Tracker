@@ -640,6 +640,232 @@ def build(data):
         c.save()
         return buf.getvalue()
 
+    # ── Enquiry report branch ──────────────────────────────────────────────────
+    if data.get("reportType") == "enquiryReport":
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+
+        enq_rows      = data.get("rows", [])
+        monthly_summ  = data.get("monthlySummary", [])
+        report_label  = data.get("reportLabel", "All Enquiries")
+        user_name     = data.get("userName", "")
+
+        buf  = io.BytesIO()
+        P_PW, P_PH = A4
+        P_M  = 14 * mm
+        P_CW = P_PW - 2 * P_M
+        BOTTOM_M = 16 * mm
+
+        c = rl_canvas.Canvas(buf, pagesize=A4)
+
+        STAGE_COLORS = {
+            "won":       colors.HexColor("#16a34a"),
+            "lost":      colors.HexColor("#dc2626"),
+            "contacted": colors.HexColor("#d97706"),
+            "quoted":    colors.HexColor("#2563eb"),
+            "new":       colors.HexColor("#6b7280"),
+        }
+
+        def enq_header(page_num):
+            # Coral top band
+            c.setFillColor(CORAL)
+            c.rect(0, P_PH - 20*mm, P_PW, 20*mm, fill=1, stroke=0)
+            c.setFillColor(WHITE)
+            c.setFont("Helvetica-Bold", 14)
+            c.drawString(P_M, P_PH - 13*mm, "Canvas Guy Limited — Enquiry Report")
+            c.setFont("Helvetica", 8)
+            c.drawRightString(P_PW - P_M, P_PH - 13*mm, report_label)
+            # Subtitle bar
+            c.setFillColor(DKROW)
+            c.rect(0, P_PH - 27*mm, P_PW, 7*mm, fill=1, stroke=0)
+            c.setFillColor(WHITE)
+            c.setFont("Helvetica", 7)
+            now_str = datetime.now().strftime("%-d %b %Y")
+            c.drawString(P_M, P_PH - 23.5*mm, f"Generated: {now_str}  |  By: {user_name}")
+            c.drawRightString(P_PW - P_M, P_PH - 23.5*mm, f"Page {page_num}")
+            # Footer
+            c.setFillColor(CORAL)
+            c.rect(0, 0, P_PW, BOTTOM_M, fill=1, stroke=0)
+            c.setFillColor(WHITE)
+            c.setFont("Helvetica", 6.5)
+            c.drawCentredString(P_PW / 2, BOTTOM_M / 2 - 1*mm, "Canvas Guy Limited  |  Confidential")
+            return P_PH - 30*mm  # y below header
+
+        # ── Page 1: monthly summary ───────────────────────────────────────────
+        page_num = 1
+        y = enq_header(page_num)
+        y -= 6*mm
+
+        # Section bar
+        c.setFillColor(BLACK)
+        c.rect(P_M, y - 8*mm, P_CW, 8*mm, fill=1, stroke=0)
+        c.setFillColor(WHITE)
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(P_M + 3*mm, y - 5.2*mm, "MONTHLY SUMMARY — WON vs LOST")
+        y -= 8*mm
+
+        # Summary table columns
+        SUMM_COLS = [
+            {"header": "MONTH",     "key": "month",     "w": 35*mm},
+            {"header": "TOTAL",     "key": "total",     "w": 20*mm, "right": True},
+            {"header": "WON",       "key": "won",       "w": 20*mm, "right": True},
+            {"header": "LOST",      "key": "lost",      "w": 20*mm, "right": True},
+            {"header": "CONTACTED", "key": "contacted", "w": 25*mm, "right": True},
+            {"header": "QUOTED",    "key": "quoted",    "w": 20*mm, "right": True},
+            {"header": "NEW",       "key": "new",       "w": 20*mm, "right": True},
+        ]
+        SUMM_W = sum(col["w"] for col in SUMM_COLS)
+
+        # Col headers
+        c.setFillColor(DKROW)
+        c.rect(P_M, y - COL_HDR_H, SUMM_W, COL_HDR_H, fill=1, stroke=0)
+        c.setFillColor(WHITE)
+        c.setFont("Helvetica-Bold", 6.5)
+        cx = P_M
+        for col in SUMM_COLS:
+            if col.get("right"):
+                c.drawRightString(cx + col["w"] - 1.5*mm, y - 4.8*mm, col["header"])
+            else:
+                c.drawString(cx + 1.5*mm, y - 4.8*mm, col["header"])
+            cx += col["w"]
+        y -= COL_HDR_H
+
+        for idx, s in enumerate(monthly_summ):
+            if y - ROW_H < BOTTOM_M + 5*mm:
+                c.showPage(); page_num += 1; y = enq_header(page_num); y -= 6*mm
+            c.setFillColor(LGRAY if idx % 2 == 0 else WHITE)
+            c.rect(P_M, y - ROW_H, SUMM_W, ROW_H, fill=1, stroke=0)
+            c.setStrokeColor(MGRAY); c.setLineWidth(0.2)
+            c.line(P_M, y - ROW_H, P_M + SUMM_W, y - ROW_H)
+            cx = P_M
+            for col in SUMM_COLS:
+                val  = s.get(col["key"], 0)
+                text = str(val) if val else "—"
+                fn   = "Helvetica-Bold" if col["key"] == "month" else "Helvetica"
+                c.setFillColor(DGRAY); c.setFont(fn, 6.5)
+                if col.get("right"):
+                    c.drawRightString(cx + col["w"] - 1.5*mm, y - 4.5*mm, text)
+                else:
+                    c.drawString(cx + 1.5*mm, y - 4.5*mm, text)
+                cx += col["w"]
+            y -= ROW_H
+
+        # ── Enquiry detail table ───────────────────────────────────────────────
+        y -= 10*mm
+        if y - 8*mm < BOTTOM_M:
+            c.showPage(); page_num += 1; y = enq_header(page_num); y -= 6*mm
+
+        c.setFillColor(BLACK)
+        c.rect(P_M, y - 8*mm, P_CW, 8*mm, fill=1, stroke=0)
+        c.setFillColor(WHITE)
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(P_M + 3*mm, y - 5.2*mm, f"ENQUIRY DETAIL  ({len(enq_rows)} records)")
+        y -= 8*mm
+
+        ENQ_COLS = [
+            {"header": "ENQUIRY",     "key": "enq_num",         "w": 28*mm},
+            {"header": "CUSTOMER",    "key": "customer",        "w": 40*mm},
+            {"header": "DESCRIPTION", "key": "description",     "w": 55*mm},
+            {"header": "CATEGORY",    "key": "category",        "w": 25*mm},
+            {"header": "SOURCE",      "key": "source",          "w": 22*mm},
+            {"header": "STAGE",       "key": "stage",           "w": 20*mm},
+            {"header": "VALUE (KES)", "key": "estimated_value", "w": 25*mm, "right": True},
+            {"header": "DATE",        "key": "created_at",      "w": 22*mm},
+        ]
+        LOST_REASON_W = P_CW
+        ENQ_W = sum(col["w"] for col in ENQ_COLS)
+
+        # Col headers
+        c.setFillColor(DKROW)
+        c.rect(P_M, y - COL_HDR_H, ENQ_W, COL_HDR_H, fill=1, stroke=0)
+        c.setFillColor(WHITE)
+        c.setFont("Helvetica-Bold", 6.5)
+        cx = P_M
+        for col in ENQ_COLS:
+            if col.get("right"):
+                c.drawRightString(cx + col["w"] - 1.5*mm, y - 4.8*mm, col["header"])
+            else:
+                c.drawString(cx + 1.5*mm, y - 4.8*mm, col["header"])
+            cx += col["w"]
+        y -= COL_HDR_H
+
+        for idx, row in enumerate(enq_rows):
+            row_extra = 4*mm if row.get("lost_reason") else 0
+            total_h   = ROW_H + row_extra
+            if y - total_h < BOTTOM_M + 5*mm:
+                c.showPage(); page_num += 1; y = enq_header(page_num); y -= 6*mm
+                # Reprint col headers on new page
+                c.setFillColor(DKROW)
+                c.rect(P_M, y - COL_HDR_H, ENQ_W, COL_HDR_H, fill=1, stroke=0)
+                c.setFillColor(WHITE); c.setFont("Helvetica-Bold", 6.5)
+                cx = P_M
+                for col in ENQ_COLS:
+                    if col.get("right"):
+                        c.drawRightString(cx + col["w"] - 1.5*mm, y - 4.8*mm, col["header"])
+                    else:
+                        c.drawString(cx + 1.5*mm, y - 4.8*mm, col["header"])
+                    cx += col["w"]
+                y -= COL_HDR_H
+
+            stage = row.get("stage", "")
+            bg = colors.HexColor("#fff5f5") if stage == "lost" else \
+                 colors.HexColor("#f0fdf4") if stage == "won"  else \
+                 (LGRAY if idx % 2 == 0 else WHITE)
+            c.setFillColor(bg)
+            c.rect(P_M, y - total_h, ENQ_W, total_h, fill=1, stroke=0)
+            c.setStrokeColor(MGRAY); c.setLineWidth(0.2)
+            c.line(P_M, y - total_h, P_M + ENQ_W, y - total_h)
+
+            cx = P_M
+            for col in ENQ_COLS:
+                raw  = row.get(col["key"], "")
+                if col["key"] == "created_at":
+                    text = fmt_date(raw)
+                elif col["key"] == "estimated_value":
+                    text = fmt_kes(raw) if raw and raw != "0" else "—"
+                elif col["key"] == "stage":
+                    text = str(raw).upper()
+                else:
+                    text = str(raw) if raw else "—"
+                limit = col["w"] - 3*mm
+                fn    = "Helvetica"
+                while c.stringWidth(text, fn, 6.5) > limit and len(text) > 1:
+                    text = text[:-2] + "…"
+                if col["key"] == "stage":
+                    c.setFillColor(STAGE_COLORS.get(stage, DGRAY))
+                else:
+                    c.setFillColor(DGRAY)
+                c.setFont(fn, 6.5)
+                if col.get("right"):
+                    c.drawRightString(cx + col["w"] - 1.5*mm, y - 4.5*mm, text)
+                else:
+                    c.drawString(cx + 1.5*mm, y - 4.5*mm, text)
+                cx += col["w"]
+
+            # Lost reason sub-row
+            if row.get("lost_reason"):
+                c.setFillColor(colors.HexColor("#dc2626"))
+                c.setFont("Helvetica-Bold", 5.5)
+                c.drawString(P_M + 1.5*mm, y - ROW_H - 3*mm,
+                             f"Lost reason: {row['lost_reason']}"[:120])
+
+            y -= total_h
+
+        # Totals bar
+        if y - 8*mm < BOTTOM_M:
+            c.showPage(); page_num += 1; y = enq_header(page_num); y -= 6*mm
+        total_won  = sum(1 for r in enq_rows if r.get("stage") == "won")
+        total_lost = sum(1 for r in enq_rows if r.get("stage") == "lost")
+        c.setFillColor(CORAL)
+        c.rect(P_M, y - 8*mm, P_CW, 8*mm, fill=1, stroke=0)
+        c.setFillColor(WHITE)
+        c.setFont("Helvetica-Bold", 7.5)
+        c.drawString(P_M + 3*mm, y - 5.5*mm,
+                     f"TOTAL  {len(enq_rows)} enquiries  |  Won: {total_won}  |  Lost: {total_lost}")
+        c.save()
+        return buf.getvalue()
+
     # ── Orders branch (production / financial reports) ─────────────────────────
     orders    = data.get("orders", [])
     all_items = data.get("allItems", {})

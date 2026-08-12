@@ -3256,6 +3256,211 @@ function buildReportPDF(data) {
         return;
       }
 
+      // ── Enquiry report (portrait A4) ─────────────────────────────────────────
+      const enquiryReport = data.enquiryReport;
+      if (enquiryReport != null) {
+        doc = new PDFDocument({ size: [PW, PH], autoFirstPage: false, margin: 0 });
+        doc.on('data', c => chunks.push(c));
+        doc.on('end',  () => resolve(Buffer.concat(chunks)));
+        doc.on('error', reject);
+
+        const enquiries    = enquiryReport.enquiries    || [];
+        const monthlySummary = enquiryReport.monthlySummary || [];
+        const filters      = enquiryReport.filters      || {};
+
+        // ── Column definitions ──────────────────────────────────────────────
+        const ENQ_COLS = mmCols([
+          { key: 'enq_num',   header: 'Ref #',       x:   0, w: 22, size: 6 },
+          { key: 'date',      header: 'Date',         x:  22, w: 22 },
+          { key: 'client',    header: 'Client',       x:  44, w: 45, bold: true },
+          { key: 'stage',     header: 'Stage',        x:  89, w: 22 },
+          { key: 'source',    header: 'Source',       x: 111, w: 22 },
+          { key: 'lost_reason', header: 'Lost Reason', x: 133, w: 57 },
+        ]);
+
+        const SUMMARY_COLS = mmCols([
+          { key: 'month',     header: 'Month',        x:   0, w: 38, bold: true },
+          { key: 'total',     header: 'Total',        x:  38, w: 20, centre: true },
+          { key: 'won',       header: 'Won',          x:  58, w: 20, centre: true },
+          { key: 'lost',      header: 'Lost',         x:  78, w: 20, centre: true },
+          { key: 'contacted', header: 'Contacted',    x:  98, w: 22, centre: true },
+          { key: 'quoted',    header: 'Quoted',       x: 120, w: 22, centre: true },
+          { key: 'new',       header: 'New',          x: 142, w: 20, centre: true },
+          { key: 'win_rate',  header: 'Win Rate',     x: 162, w: 28, right: true },
+        ]);
+
+        // ── Portrait header helper ──────────────────────────────────────────
+        function drawEnqHeader(pageNum, isFirstPage) {
+          doc.addPage();
+          let y = 0;
+
+          // Coral header bar
+          fillRect(doc, 0, 0, PW, 24 * MM, CORAL);
+          if (HAS_LOGO) {
+            try { doc.image(LOGO_PATH, PM, 3 * MM, { height: 18 * MM, fit: [60 * MM, 18 * MM] }); } catch (_) {}
+          }
+          const filterDesc = filters.stage ? `Stage: ${filters.stage}` : 'All Stages';
+          doc.font('Helvetica-Bold').fontSize(14).fillColor(WHITE)
+             .text('Enquiry Report', PW / 2 - 60, 5 * MM, { lineBreak: false });
+          doc.font('Helvetica').fontSize(8).fillColor(WHITE)
+             .text(filterDesc, PW / 2 - 60, 13 * MM, { lineBreak: false });
+
+          // Meta right
+          doc.font('Helvetica').fontSize(7).fillColor(WHITE)
+             .text(`Page ${pageNum}`, PW - PM - 30, 5 * MM, { lineBreak: false });
+          doc.text(nowStr, PW - PM - 60, 10 * MM, { lineBreak: false });
+
+          y = 24 * MM + 3 * MM;
+          return y;
+        }
+
+        let pageNum = 1;
+        let y = drawEnqHeader(pageNum, true);
+
+        // ── Monthly summary section ─────────────────────────────────────────
+        if (monthlySummary.length > 0) {
+          // Section header
+          fillRect(doc, PM, y, PCW, 7 * MM, '#000000');
+          drawLeft(doc, 'MONTHLY SUMMARY', PM, y + 1.5 * MM,
+            { font: 'Helvetica-Bold', size: 7.5, color: WHITE });
+          y += 7 * MM;
+
+          // Column headers
+          fillRect(doc, PM, y, PCW, HDR_H, DKROW);
+          SUMMARY_COLS.forEach(col => {
+            const x = PM + col.x;
+            const opts = { font: 'Helvetica-Bold', size: 6.5, color: WHITE, maxW: col.w };
+            if (col.right)  drawRight(doc, col.header, x + col.w, y + 1.5 * MM, opts);
+            else if (col.centre) drawCenter(doc, col.header, x + col.w / 2, y + 1.5 * MM, { ...opts });
+            else            drawLeft(doc, col.header, x, y + 1.5 * MM, opts);
+          });
+          y += HDR_H;
+
+          monthlySummary.forEach((row, idx) => {
+            if (y + ROW_H > PH - PBOTTOM) {
+              pageNum++; y = drawEnqHeader(pageNum, false);
+            }
+            fillRect(doc, PM, y, PCW, ROW_H, idx % 2 === 0 ? LGRAY : WHITE);
+            doc.save().moveTo(PM, y + ROW_H).lineTo(PM + PCW, y + ROW_H).lineWidth(0.2).stroke(MGRAY).restore();
+
+            const won   = parseInt(row.won   || 0);
+            const total = parseInt(row.total || 0);
+            const winRate = total > 0 ? Math.round((won / total) * 100) + '%' : '—';
+
+            const cells = {
+              month:     row.month     || '—',
+              total:     String(total),
+              won:       String(won),
+              lost:      String(row.lost      || 0),
+              contacted: String(row.contacted || 0),
+              quoted:    String(row.quoted    || 0),
+              new:       String(row.new       || 0),
+              win_rate:  winRate,
+            };
+
+            SUMMARY_COLS.forEach(col => {
+              const x    = PM + col.x;
+              const text = cells[col.key] || '—';
+              const font = col.bold ? 'Helvetica-Bold' : 'Helvetica';
+              const opts = { font, size: 6.5, color: DGRAY, maxW: col.w };
+              if (col.right)       drawRight(doc, text, x + col.w, y + 1.5 * MM, opts);
+              else if (col.centre) drawCenter(doc, text, x + col.w / 2, y + 1.5 * MM, { ...opts });
+              else                 drawLeft(doc, text, x, y + 1.5 * MM, opts);
+            });
+            y += ROW_H;
+          });
+
+          y += 6 * MM; // spacer before detail section
+        }
+
+        // ── Enquiry detail section ──────────────────────────────────────────
+        if (enquiries.length > 0) {
+          if (y + 20 * MM > PH - PBOTTOM) {
+            pageNum++; y = drawEnqHeader(pageNum, false);
+          }
+
+          fillRect(doc, PM, y, PCW, 7 * MM, '#000000');
+          drawLeft(doc, `ENQUIRY DETAIL  (${enquiries.length} records)`, PM, y + 1.5 * MM,
+            { font: 'Helvetica-Bold', size: 7.5, color: WHITE });
+          y += 7 * MM;
+
+          // Column headers
+          fillRect(doc, PM, y, PCW, HDR_H, DKROW);
+          ENQ_COLS.forEach(col => {
+            const x = PM + col.x;
+            drawLeft(doc, col.header, x, y + 1.5 * MM,
+              { font: 'Helvetica-Bold', size: 6.5, color: WHITE, maxW: col.w });
+          });
+          y += HDR_H;
+
+          enquiries.forEach((enq, idx) => {
+            // Estimate row height — lost_reason may wrap
+            const reasonText = enq.lost_reason || '';
+            const reasonMaxW = ENQ_COLS.find(c => c.key === 'lost_reason').w;
+            let reasonLines  = 1;
+            if (reasonText.length > 0) {
+              // rough estimate: ~6 chars per mm at size 6.5
+              reasonLines = Math.max(1, Math.ceil(reasonText.length / (reasonMaxW / MM * 6)));
+            }
+            const rowH = Math.max(ROW_H, reasonLines * 4 * MM + 2 * MM);
+
+            if (y + rowH > PH - PBOTTOM) {
+              pageNum++; y = drawEnqHeader(pageNum, false);
+              fillRect(doc, PM, y, PCW, HDR_H, DKROW);
+              ENQ_COLS.forEach(col => {
+                const x = PM + col.x;
+                drawLeft(doc, col.header, x, y + 1.5 * MM,
+                  { font: 'Helvetica-Bold', size: 6.5, color: WHITE, maxW: col.w });
+              });
+              y += HDR_H;
+            }
+
+            fillRect(doc, PM, y, PCW, rowH, idx % 2 === 0 ? LGRAY : WHITE);
+            doc.save().moveTo(PM, y + rowH).lineTo(PM + PCW, y + rowH).lineWidth(0.2).stroke(MGRAY).restore();
+
+            const cells = {
+              enq_num:     enq.enq_num     || '—',
+              date:        fmtDate(enq.created_at),
+              client:      enq.client_name || enq.prospect_name || '—',
+              stage:       enq.stage       || '—',
+              source:      enq.source      || '—',
+              lost_reason: enq.lost_reason || '',
+            };
+
+            ENQ_COLS.forEach(col => {
+              const x    = PM + col.x;
+              const font = col.bold ? 'Helvetica-Bold' : 'Helvetica';
+              if (col.key === 'lost_reason' && cells.lost_reason) {
+                // Use pdfkit wrapping for the reason column
+                doc.font(font).fontSize(6.5).fillColor(DGRAY)
+                   .text(cells.lost_reason, x + 1.5 * MM, y + 1.5 * MM,
+                     { width: col.w - 3 * MM, lineBreak: true });
+              } else {
+                drawLeft(doc, cells[col.key], x, y + 1.5 * MM,
+                  { font, size: 6.5, color: DGRAY, maxW: col.w });
+              }
+            });
+            y += rowH;
+          });
+        }
+
+        // ── Totals footer bar ───────────────────────────────────────────────
+        if (y + 12 * MM > PH - PBOTTOM) {
+          pageNum++; y = drawEnqHeader(pageNum, false);
+        }
+        const totalEnq = enquiries.length;
+        const wonCount  = enquiries.filter(e => e.stage === 'won').length;
+        const lostCount = enquiries.filter(e => e.stage === 'lost').length;
+        const winRateTot = totalEnq > 0 ? Math.round((wonCount / totalEnq) * 100) + '%' : '—';
+
+        fillRect(doc, PM, y + 3 * MM, PCW, 9 * MM, CORAL);
+        drawLeft(doc, `TOTAL: ${totalEnq} enquiries  |  Won: ${wonCount}  |  Lost: ${lostCount}  |  Win Rate: ${winRateTot}`,
+          PM, y + 5.5 * MM, { font: 'Helvetica-Bold', size: 7.5, color: WHITE });
+
+        doc.end();
+        return;
+      }
+
       // ── Fallback ──────────────────────────────────────────────────────────────
       doc.text('Unknown report type').end();
     } catch (err) {

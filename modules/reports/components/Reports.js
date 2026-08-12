@@ -93,6 +93,13 @@ export default function Reports({ refreshKey = 0 } = {}) {
   const [supplierPurchases, setSupplierPurchases] = useState([]);
   const [pnlCosts, setPnlCosts] = useState({});
   const [pnlPurchases, setPnlPurchases] = useState({});
+  // Batch-delivered value per order_id — only set for orders with batch delivery.
+  // deliveredValues[id] = sum(qty_delivered × unit_price) across Delivered/Signed batches.
+  // deliveredValues[order_id] = prorated gross value of items in Delivered/Signed batches.
+  // batchOrderIds = set of order IDs that actually use batch delivery.
+  const [deliveredValues, setDeliveredValues] = useState({});
+  const [batchOrderIds, setBatchOrderIds]     = useState(new Set());
+  const [batchLoadError, setBatchLoadError]   = useState(null);
 
   // Sorting
   const [sortField, setSortField] = useState(null);
@@ -167,6 +174,110 @@ export default function Reports({ refreshKey = 0 } = {}) {
         setPnlPurchases(purchases);
       }
 
+      // Batch delivery data — computes prorated gross delivered value per order.
+      // Uses gross_amount (snapshotted VAT+discount-inclusive line value) ÷ ordered qty
+      // so the per-unit rate already reflects any header/line discounts and tax.
+      // Fulfilled statuses: Delivered, Signed (matches BATCH_FULFILLED_STATUSES).
+      //
+      // Charge-line policy (Phase 1):
+      //   Transport, installation, and other charge lines do not appear in delivery_batch_items.
+      //   They are absent from deliveredValues[order.id], so they fall into getUndeliveredValue()
+      //   (total_value − delivered) for any Partially Delivered batch order. This means charge
+      //   lines are only recognized as earned revenue when the order reaches Delivered or Closed —
+      //   which is the correct Phase 1 rule. No additional code is required.
+
+      // Clear stale state before every fetch cycle (handles retries via refreshKey).
+      setBatchLoadError(null);
+      setBatchOrderIds(new Set());
+      setDeliveredValues({});
+
+      // Step A: Identify ALL orders that have a batch (including those with no fulfilled items yet).
+      // Must be a separate query — cannot derive from batch_items because an order with a batch
+      // but no assigned/fulfilled items would be invisible in the items query.
+      const { data: allBatchData, error: allBatchError } = await sb
+        .from('delivery_batches')
+        .select('order_id, deleted_at');
+
+      // Step B: Compute prorated delivered value per order from fulfilled batch items.
+      const { data: batchItemData, error: batchItemsError } = await sb
+        .from('delivery_batch_items')
+        .select(`
+          order_item_id,
+          quantity_delivered,
+          order_items(quantity, unit_price, gross_amount),
+          delivery_batches(order_id, status)
+        `);
+
+      if (allBatchError || batchItemsError) {
+        // Either query failing makes delivered-value calculation unreliable.
+        // Set the error; leave batchOrderIds and deliveredValues empty (cleared above).
+        // Partial batch orders will show "Delivered value unavailable" and be excluded from totals.
+        const msg = (allBatchError || batchItemsError).message || 'Batch data unavailable';
+        console.error('Reports — batch delivery fetch failed:', allBatchError || batchItemsError);
+        setBatchLoadError(`Delivery values could not be loaded — ${msg}.`);
+      } else {
+        // Both queries succeeded. Build batchOrderIds from all non-deleted batches.
+        const batchIds = new Set(
+          (allBatchData || [])
+            .filter(b => !b.deleted_at)
+            .map(b => b.order_id)
+        );
+        setBatchOrderIds(batchIds);
+
+        // batchOrderIds already set from the delivery_batches query above.
+        // This block only computes delivered (earned) values from fulfilled batch items.
+
+        // 2. Aggregate delivered qty per order_item_id, then compute prorated gross value
+        //    Cap aggregated qty at ordered qty to guard against data anomalies.
+        const itemDelivered = {}; // order_item_id → total qty_delivered across all batches
+        batchItemData.forEach(bi => {
+          const batch = bi.delivery_batches;
+          if (!batch || !['Delivered', 'Signed'].includes(batch.status)) return;
+          const id  = bi.order_item_id;
+          const qty = Number(bi.quantity_delivered || 0);
+          if (qty > 0) itemDelivered[id] = (itemDelivered[id] || 0) + qty;
+        });
+
+        // 3. Map order_item_id → order_items row (deduplicated — same item appears in many rows)
+        const itemMeta = {};
+        batchItemData.forEach(bi => {
+          if (bi.order_item_id && bi.order_items && !itemMeta[bi.order_item_id]) {
+            itemMeta[bi.order_item_id] = bi.order_items;
+          }
+        });
+
+        // 4. Map order_item_id → order_id (for grouping by order)
+        const itemToOrder = {};
+        batchItemData.forEach(bi => {
+          if (bi.order_item_id && bi.delivery_batches?.order_id) {
+            itemToOrder[bi.order_item_id] = bi.delivery_batches.order_id;
+          }
+        });
+
+        // 5. Sum prorated gross value per order
+        const dv = {};
+        Object.entries(itemDelivered).forEach(([itemId, rawQtyDel]) => {
+          const meta       = itemMeta[itemId];
+          const orderId    = itemToOrder[itemId];
+          if (!meta || !orderId) return;
+
+          const orderedQty = Number(meta.quantity || 0);
+          // Cap: you cannot deliver more than was ordered
+          const qtyDel     = orderedQty > 0 ? Math.min(rawQtyDel, orderedQty) : rawQtyDel;
+
+          // Prefer snapshotted gross_amount (VAT + discount inclusive) ÷ ordered qty.
+          // Fall back to unit_price if gross_amount is absent (e.g. legacy rows).
+          const grossUnit =
+            meta.gross_amount != null && orderedQty > 0
+              ? Number(meta.gross_amount) / orderedQty
+              : Number(meta.unit_price || 0);
+
+          dv[orderId] = (dv[orderId] || 0) + qtyDel * grossUnit;
+        });
+
+        setDeliveredValues(dv);
+      }
+
       setLoaded(true);
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -182,7 +293,39 @@ export default function Reports({ refreshKey = 0 } = {}) {
 
   // ── Date helpers ──
   const now = new Date();
-  const getBalance = (o) => Math.max((parseFloat(o.total_value) || 0) - (payTotals[o.id] || 0), 0);
+  // isPartialBatch: true only when the order is Partially Delivered AND has real batch records.
+  // Prevents missing batch data from silently zeroing billable value.
+  const isPartialBatch = (o) =>
+    o.status === 'Partially Delivered' && batchOrderIds.has(o.id);
+
+  // Delivered (earned/collectable) value:
+  //   • Partial batch orders, data OK  → prorated gross value of Delivered/Signed batch items
+  //   • Partial batch orders, load ERR → null (unknown — excluded from KPI totals)
+  //   • All others                     → full total_value (already earned on delivery)
+  const getBillableValue = (o) => {
+    if (isPartialBatch(o)) {
+      if (batchLoadError) return null; // delivery amount unknown — do not overstate
+      return deliveredValues[o.id] ?? 0;
+    }
+    return Number(o.total_value || 0);
+  };
+
+  // Undelivered value — production still owed to the client.
+  // Returns null when billable value is unknown (batchLoadError).
+  const getUndeliveredValue = (o) => {
+    if (!isPartialBatch(o)) return 0;
+    const bv = getBillableValue(o);
+    if (bv === null) return null;
+    return Math.max(Number(o.total_value || 0) - bv, 0);
+  };
+
+  // Collectable balance = delivered/billable value minus payments.
+  // Returns null when delivered value is unknown.
+  const getBalance = (o) => {
+    const bv = getBillableValue(o);
+    if (bv === null) return null;
+    return Math.max(bv - (payTotals[o.id] || 0), 0);
+  };
   const isOverdue  = (o) => o.due_date && !["Delivered", "Closed"].includes(o.status) && new Date(o.due_date + "T12:00:00") < now;
 
   const inRange = useCallback((dateStr) => {
@@ -302,12 +445,17 @@ export default function Reports({ refreshKey = 0 } = {}) {
       return { totalValue, totalPaid, totalBalance };
     }
     if (!SUMMARY_KPI_REPORTS.includes(reportType) || filtered.length === 0) return null;
-    const totalValue   = filtered.reduce((s, o) => s + (parseFloat(o.total_value) || 0), 0);
-    const totalPaid    = filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0);
-    const totalBalance = filtered.reduce((s, o) => s + getBalance(o), 0);
-    return { totalValue, totalPaid, totalBalance };
+    // Each metric is computed over its own population to avoid mixing incompatible sets.
+    // totalBillable and totalCollectableBalance exclude orders with unknown delivered value.
+    // totalPaid covers all orders — payments are factual regardless of delivery status.
+    // unknownCount lets the UI flag how many orders are missing from the value totals.
+    const totalBillable          = filtered.reduce((s, o) => { const bv = getBillableValue(o); return bv !== null ? s + bv : s; }, 0);
+    const totalPaid              = filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0);
+    const totalCollectableBalance= filtered.reduce((s, o) => { const bal = getBalance(o); return bal !== null ? s + bal : s; }, 0);
+    const unknownCount           = filtered.filter(o => getBillableValue(o) === null).length;
+    return { totalBillable, totalPaid, totalCollectableBalance, unknownCount };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, payTotals, reportType]);
+  }, [filtered, payTotals, reportType, deliveredValues, batchOrderIds, batchLoadError]);
 
   // ── P&L KPI summary ──
   const pnlKpis = useMemo(() => {
@@ -326,9 +474,9 @@ export default function Reports({ refreshKey = 0 } = {}) {
     filtered.forEach((order) => {
       const items   = allItems[order.id] || [];
       const paid    = payTotals[order.id] || 0;
-      const tv      = parseFloat(order.total_value) || 0;
-      const balance = Math.max(tv - paid, 0);
-      const payBadge = balance <= 0 ? "paid" : paid > 0 ? "partial" : "outstanding";
+      const tv      = getBillableValue(order);
+      const balance = getBalance(order);
+      const payBadge = balance === null ? "unknown" : balance <= 0 ? "paid" : paid > 0 ? "partial" : "outstanding";
       if (items.length === 0) {
         rows.push({ order, item: null, paid, tv, balance, payBadge });
       } else {
@@ -429,6 +577,13 @@ export default function Reports({ refreshKey = 0 } = {}) {
 
   if (!loaded) return <Loading />;
 
+  // ── Batch load error banner (non-blocking — page renders but financial data is stale) ──
+  const BatchErrorBanner = batchLoadError ? (
+    <div style={{ margin: "0 0 16px", padding: "10px 14px", background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: "8px", fontSize: "12px", color: "#b91c1c", fontWeight: 600 }}>
+      ⚠ {batchLoadError} Partially delivered batch orders show "Delivered value unavailable" and are excluded from KPI totals.
+    </div>
+  ) : null;
+
   // ── Formatters ──
   const fmtDate    = (d) => d ? new Date(d + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "—";
   const fmtKES     = (n) => n ? `KES ${Math.round(n).toLocaleString("en-KE")}` : "—";
@@ -507,16 +662,17 @@ export default function Reports({ refreshKey = 0 } = {}) {
 
   // KPI stat grid
   const KpiGrid = () => summaryKpis ? (
-    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: "8px", marginBottom: "14px" }}>
+    <div style={{ marginBottom: "14px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: "8px" }}>
       {[
-        { label: "Orders",           val: filtered.length,              color: "#1a1a1a", mono: false },
-        { label: "Total Value (KES)", val: fmtK(summaryKpis.totalValue), color: "#1565C0", mono: true },
-        { label: "Collected (KES)",   val: fmtK(summaryKpis.totalPaid),  color: "#2E7D32", mono: true },
+        { label: "Orders",                    val: filtered.length,                                color: "#1a1a1a", mono: false },
+        { label: "Delivered / Billable (KES)", val: fmtK(summaryKpis.totalBillable),               color: "#1565C0", mono: true },
+        { label: "Total Payments Recorded",   val: fmtK(summaryKpis.totalPaid),                   color: "#2E7D32", mono: true },
         {
-          label: "Outstanding (KES)",
-          val: summaryKpis.totalBalance > 0 ? fmtK(summaryKpis.totalBalance) : "✓ Cleared",
-          color: summaryKpis.totalBalance > 0 ? "#C62828" : "#2E7D32",
-          mono: summaryKpis.totalBalance > 0,
+          label: "Collectable Balance (KES)",
+          val: summaryKpis.totalCollectableBalance > 0 ? fmtK(summaryKpis.totalCollectableBalance) : "✓ Cleared",
+          color: summaryKpis.totalCollectableBalance > 0 ? "#C62828" : "#2E7D32",
+          mono: summaryKpis.totalCollectableBalance > 0,
         },
       ].map((k) => (
         <div key={k.label} style={{ background: "#fff", border: "1.5px solid #e0e0e0", borderRadius: isMobile ? "12px" : "8px", padding: isMobile ? "16px 12px" : "12px 14px", textAlign: isMobile ? "center" : "left" }}>
@@ -524,6 +680,12 @@ export default function Reports({ refreshKey = 0 } = {}) {
           <div style={{ fontSize: "10px", color: "#888", marginTop: "5px" }}>{k.label}</div>
         </div>
       ))}
+      </div>
+      {summaryKpis.unknownCount > 0 && (
+        <div style={{ marginTop: "6px", fontSize: "11px", color: "#b91c1c", fontWeight: 600 }}>
+          ⚠ Delivery value unavailable for {summaryKpis.unknownCount} {summaryKpis.unknownCount === 1 ? "order" : "orders"}. These orders are excluded from Billable Value and Collectable Balance; recorded payments remain included.
+        </div>
+      )}
     </div>
   ) : null;
 
@@ -579,9 +741,9 @@ export default function Reports({ refreshKey = 0 } = {}) {
           <div><span style={{ color: "#888" }}>Orders:</span> <strong>{filtered.length}</strong></div>
           <div><span style={{ color: "#888" }}>Units:</span> <strong>{totalUnits}</strong></div>
           {(isFinancial || reportType === "sales-week" || reportType === "completed") && (() => {
-            const tv  = filtered.reduce((s, o) => s + (parseFloat(o.total_value) || 0), 0);
+            const tv  = filtered.reduce((s, o) => { const bv = getBillableValue(o); return bv !== null ? s + bv : s; }, 0);
             const col = filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0);
-            const bal = filtered.reduce((s, o) => s + getBalance(o), 0);
+            const bal = filtered.reduce((s, o) => { const b = getBalance(o); return b !== null ? s + b : s; }, 0);
             return (
               <>
                 <div><span style={{ color: "#888" }}>Total Value:</span> <strong style={{ fontFamily: "'DM Mono',monospace" }}>{fmtKES(tv)}</strong></div>
@@ -608,6 +770,9 @@ export default function Reports({ refreshKey = 0 } = {}) {
           {showDateRange && <> · {fmtDisplay(dateFrom)} – {fmtDisplay(dateTo)}</>}
         </p>
       </div>
+
+      {/* Batch load error */}
+      {BatchErrorBanner && <div style={{ padding: "0 16px" }}>{BatchErrorBanner}</div>}
 
       {/* PDF button — full width */}
       <div style={{ padding: "0 16px 16px" }}>
@@ -909,6 +1074,7 @@ export default function Reports({ refreshKey = 0 } = {}) {
         </select>
       </div>
 
+      {BatchErrorBanner}
       <KpiGrid />
       <PnlKpiGrid />
 
@@ -1042,7 +1208,7 @@ export default function Reports({ refreshKey = 0 } = {}) {
                 <th style={th}>Size</th>
                 <th style={th}>Finish</th>
                 {!isFinancial && <th style={th}>Wood</th>}
-                {isFinancial && <th style={{ ...th, textAlign: "right", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("total_value")}>Value{sortIcon("total_value")}</th>}
+                {isFinancial && <th style={{ ...th, textAlign: "right", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("total_value")}>Delivered Value{sortIcon("total_value")}</th>}
                 {isFinancial && <th style={{ ...th, textAlign: "right" }}>Paid</th>}
                 {isFinancial && <th style={{ ...th, textAlign: "right", cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("balance")}>Balance{sortIcon("balance")}</th>}
                 {!isFinancial && <th style={th}>Notes</th>}
@@ -1050,11 +1216,12 @@ export default function Reports({ refreshKey = 0 } = {}) {
             </thead>
             <tbody>
               {filtered.map((order) => {
-                const items   = allItems[order.id] || [];
-                const paid    = payTotals[order.id] || 0;
-                const tv      = parseFloat(order.total_value) || 0;
-                const balance = Math.max(tv - paid, 0);
-                const sc      = ALL_STATUS_COLORS[order.status] || {};
+                const items        = allItems[order.id] || [];
+                const paid         = payTotals[order.id] || 0;
+                const tv           = getBillableValue(order);
+                const undelivered  = getUndeliveredValue(order); // 0 for non-batch orders
+                const balance      = getBalance(order);
+                const sc           = ALL_STATUS_COLORS[order.status] || {};
 
                 if (items.length === 0) {
                   return (
@@ -1069,9 +1236,23 @@ export default function Reports({ refreshKey = 0 } = {}) {
                       <td style={td}>—</td>
                       <td style={td}>—</td>
                       {!isFinancial && <td style={td}>—</td>}
-                      {isFinancial && <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }}>{fmtKES(tv)}</td>}
+                      {isFinancial && (
+                        <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }}>
+                          {tv === null
+                            ? <span style={{ fontSize: "10px", color: "#b91c1c", fontStyle: "italic" }}>Delivered value unavailable</span>
+                            : <>
+                                {fmtKES(tv)}
+                                {undelivered > 0 && (
+                                  <div style={{ fontSize: "10px", color: "#888", marginTop: "2px" }}>
+                                    +{fmtKES(undelivered)} undelivered
+                                  </div>
+                                )}
+                              </>
+                          }
+                        </td>
+                      )}
                       {isFinancial && <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }}>{fmtKES(paid)}</td>}
-                      {isFinancial && <td style={{ ...td, textAlign: "right", fontWeight: 700, color: balance > 0 ? "#C62828" : "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(balance)}</td>}
+                      {isFinancial && <td style={{ ...td, textAlign: "right", fontWeight: 700, color: balance === null ? "#888" : balance > 0 ? "#C62828" : "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{balance === null ? "—" : fmtKES(balance)}</td>}
                       {!isFinancial && <td style={{ ...td, fontSize: "11px", color: "#888" }}>{order.notes || ""}</td>}
                     </tr>
                   );
@@ -1096,9 +1277,23 @@ export default function Reports({ refreshKey = 0 } = {}) {
                     <td style={td}>{item.size || "—"}</td>
                     <td style={{ ...td, fontSize: "11px" }}>{[item.finish_type, item.finish_color].filter(Boolean).join(" / ") || "—"}</td>
                     {!isFinancial && <td style={td}>{item.wood_type || "—"}</td>}
-                    {isFinancial && idx === 0 && <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }} rowSpan={items.length}>{fmtKES(tv)}</td>}
-                    {isFinancial && idx === 0 && <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }} rowSpan={items.length}>{fmtKES(paid)}</td>}
-                    {isFinancial && idx === 0 && <td style={{ ...td, textAlign: "right", fontWeight: 700, color: balance > 0 ? "#C62828" : "#2E7D32", fontFamily: "'DM Mono',monospace" }} rowSpan={items.length}>{fmtKES(balance)}</td>}
+                    {isFinancial && idx === 0 && (
+                      <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }} rowSpan={items.length}>
+                        {tv === null
+                          ? <span style={{ fontSize: "10px", color: "#b91c1c", fontStyle: "italic" }}>Delivered value unavailable</span>
+                          : <>
+                              {fmtKES(tv)}
+                              {undelivered > 0 && (
+                                <div style={{ fontSize: "10px", color: "#888", marginTop: "2px" }}>
+                                  +{fmtKES(undelivered)} undelivered
+                                </div>
+                              )}
+                            </>
+                        }
+                      </td>
+                    )}
+                    {isFinancial && idx === 0 && <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }} rowSpan={items.length}>{tv === null ? "—" : fmtKES(paid)}</td>}
+                    {isFinancial && idx === 0 && <td style={{ ...td, textAlign: "right", fontWeight: 700, color: balance === null ? "#888" : balance > 0 ? "#C62828" : "#2E7D32", fontFamily: "'DM Mono',monospace" }} rowSpan={items.length}>{balance === null ? "—" : fmtKES(balance)}</td>}
                     {!isFinancial && <td style={{ ...td, fontSize: "11px", color: "#888" }}>{item.notes || ""}</td>}
                   </tr>
                 ));
