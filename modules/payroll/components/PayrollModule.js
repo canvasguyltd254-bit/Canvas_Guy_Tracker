@@ -1516,7 +1516,7 @@ function RunDetail({ run: initialRun, userRole, onBack }) {
                       {casualEntries.map(entry => {
                         const empGrid   = gridData[entry.employee_id] || {};
                         const daysOn    = Object.values(empGrid).filter(c => c.present).length;
-                        const totalOT   = Object.values(empGrid).reduce((s, c) => s + Number(c.overtime_hours || 0), 0);
+                        const totalOT   = Object.values(empGrid).filter(c => c.present).reduce((s, c) => s + Number(c.overtime_hours || 0), 0);
                         const liveGross = daysOn * Number(entry.snapshot_day_rate || 0) + totalOT;
                         const liveNet   = Math.max(0, liveGross - Number(entry.snapshot_sha || 0));
                         const isExpanded = expandedEmp === entry.id;

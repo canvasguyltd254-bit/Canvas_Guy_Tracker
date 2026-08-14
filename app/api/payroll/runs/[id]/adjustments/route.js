@@ -6,9 +6,9 @@
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { resolveShaDeduction } from '@/shared/lib/resolveShaDeduction';
 
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
-const OVERTIME_RATE = 200;
 
 export async function GET(request, { params }) {
   try {
@@ -147,21 +147,48 @@ async function recomputeEntry(runId, employeeId) {
       .eq('run_id', runId).eq('employee_id', employeeId).single();
     if (!entry) return;
 
-    let gross_pay        = entry.snapshot_salary || 0;
-    let days_worked      = entry.days_worked;
-    let overtime_hours   = entry.overtime_hours;
-    let overtime_amount  = entry.overtime_amount;
-
-    if (entry.snapshot_type !== 'permanent') {
-      const { data: att } = await serviceClient
-        .from('payroll_attendance').select('present, overtime_hours')
+    // Permanent employees: gross = monthly salary; attendance does not change it.
+    if (entry.snapshot_type === 'permanent') {
+      // Still need to recompute adjustments on top of the fixed salary.
+      const gross_pay = entry.snapshot_salary || 0;
+      const { data: adjs } = await serviceClient
+        .from('payroll_adjustments').select('adj_type, amount, is_deduction')
         .eq('run_id', runId).eq('employee_id', employeeId);
 
-      days_worked     = (att || []).filter(a => a.present).length;
-      overtime_hours  = (att || []).reduce((s, a) => s + Number(a.overtime_hours || 0), 0);
-      overtime_amount = overtime_hours * OVERTIME_RATE;
-      gross_pay       = days_worked * (entry.snapshot_day_rate || 0) + overtime_amount;
+      let advance_deduction = 0, damage_deduction = 0, other_deductions = 0, bonus_addition = 0;
+      for (const a of (adjs || [])) {
+        if (!a.is_deduction) bonus_addition += Number(a.amount);
+        else if (a.adj_type === 'advance') advance_deduction += Number(a.amount);
+        else if (a.adj_type === 'damage')  damage_deduction  += Number(a.amount);
+        else                               other_deductions  += Number(a.amount);
+      }
+
+      const gross_with_bonus = gross_pay + bonus_addition;
+      const sha_deduction    = gross_with_bonus > 0
+        ? await resolveShaDeduction(entry.snapshot_sha || 0, employeeId, runId)
+        : 0;
+      const total_deductions = sha_deduction + advance_deduction + damage_deduction + other_deductions;
+      const net_pay          = Math.max(0, gross_with_bonus - total_deductions);
+
+      await serviceClient.from('payroll_entries').update({
+        gross_pay: gross_with_bonus,
+        sha_deduction, advance_deduction, damage_deduction, other_deductions,
+        total_deductions, net_pay,
+      }).eq('run_id', runId).eq('employee_id', employeeId);
+      return;
     }
+
+    // Casual / skilled_casual: derive gross from attendance.
+    const { data: att } = await serviceClient
+      .from('payroll_attendance').select('present, overtime_hours')
+      .eq('run_id', runId).eq('employee_id', employeeId);
+
+    const days_worked    = (att || []).filter(a => a.present).length;
+    // overtime_hours field stores a direct KES amount per day — sum present days only.
+    const overtime_amount = (att || []).filter(a => a.present)
+      .reduce((s, a) => s + Number(a.overtime_hours || 0), 0);
+    const overtime_hours  = 0; // hours no longer tracked; field is repurposed to KES amount
+    const gross_pay       = days_worked * (entry.snapshot_day_rate || 0) + overtime_amount;
 
     const { data: adjs } = await serviceClient
       .from('payroll_adjustments').select('adj_type, amount, is_deduction')
@@ -169,19 +196,17 @@ async function recomputeEntry(runId, employeeId) {
 
     let advance_deduction = 0, damage_deduction = 0, other_deductions = 0, bonus_addition = 0;
     for (const a of (adjs || [])) {
-      if (!a.is_deduction) {
-        bonus_addition += Number(a.amount);
-      } else if (a.adj_type === 'advance') {
-        advance_deduction += Number(a.amount);
-      } else if (a.adj_type === 'damage') {
-        damage_deduction += Number(a.amount);
-      } else {
-        other_deductions += Number(a.amount);
-      }
+      if (!a.is_deduction) bonus_addition += Number(a.amount);
+      else if (a.adj_type === 'advance') advance_deduction += Number(a.amount);
+      else if (a.adj_type === 'damage')  damage_deduction  += Number(a.amount);
+      else                               other_deductions  += Number(a.amount);
     }
 
     const gross_with_bonus = gross_pay + bonus_addition;
-    const sha_deduction    = entry.snapshot_sha || 0;
+    // SHA deducts once per calendar month — only when the employee has gross pay.
+    const sha_deduction    = gross_with_bonus > 0
+      ? await resolveShaDeduction(entry.snapshot_sha || 0, employeeId, runId)
+      : 0;
     const total_deductions = sha_deduction + advance_deduction + damage_deduction + other_deductions;
     const net_pay          = Math.max(0, gross_with_bonus - total_deductions);
 
