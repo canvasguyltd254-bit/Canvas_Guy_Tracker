@@ -178,12 +178,45 @@ async function recomputeEntry(runId, employeeId) {
       return;
     }
 
-    // Casual / skilled_casual: derive gross from attendance.
+    // skilled_casual: gross comes from order allocations (stored in overtime_amount).
+    // Do NOT recompute from attendance — that would zero out the allocation total.
+    // Just recalculate adjustments and SHA on top of the existing allocation amount.
+    if (entry.snapshot_type === 'skilled_casual') {
+      const gross_pay = entry.overtime_amount || 0; // set by allocations route
+
+      const { data: adjs } = await serviceClient
+        .from('payroll_adjustments').select('adj_type, amount, is_deduction')
+        .eq('run_id', runId).eq('employee_id', employeeId);
+
+      let advance_deduction = 0, damage_deduction = 0, other_deductions = 0, bonus_addition = 0;
+      for (const a of (adjs || [])) {
+        if (!a.is_deduction) bonus_addition += Number(a.amount);
+        else if (a.adj_type === 'advance') advance_deduction += Number(a.amount);
+        else if (a.adj_type === 'damage')  damage_deduction  += Number(a.amount);
+        else                               other_deductions  += Number(a.amount);
+      }
+
+      const gross_with_bonus = gross_pay + bonus_addition;
+      const sha_deduction    = gross_with_bonus > 0
+        ? await resolveShaDeduction(entry.snapshot_sha || 0, employeeId, runId)
+        : 0;
+      const total_deductions = sha_deduction + advance_deduction + damage_deduction + other_deductions;
+      const net_pay          = Math.max(0, gross_with_bonus - total_deductions);
+
+      await serviceClient.from('payroll_entries').update({
+        gross_pay: gross_with_bonus,
+        sha_deduction, advance_deduction, damage_deduction, other_deductions,
+        total_deductions, net_pay,
+      }).eq('run_id', runId).eq('employee_id', employeeId);
+      return;
+    }
+
+    // casual: derive gross from attendance (days × day_rate + per-day OT KES amounts).
     const { data: att } = await serviceClient
       .from('payroll_attendance').select('present, overtime_hours')
       .eq('run_id', runId).eq('employee_id', employeeId);
 
-    const days_worked    = (att || []).filter(a => a.present).length;
+    const days_worked     = (att || []).filter(a => a.present).length;
     // overtime_hours field stores a direct KES amount per day — sum present days only.
     const overtime_amount = (att || []).filter(a => a.present)
       .reduce((s, a) => s + Number(a.overtime_hours || 0), 0);
