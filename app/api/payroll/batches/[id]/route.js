@@ -71,8 +71,18 @@ export async function PATCH(request, { params }) {
       });
 
       if (rpcErr) {
-        console.error('PATCH /api/payroll/batches/[id] reconcile RPC error:', rpcErr.message);
-        return NextResponse.json({ error: rpcErr.message || 'Reconciliation failed' }, { status: 500 });
+        // Supabase sometimes returns a parse error on the RPC return value even though
+        // the PostgreSQL transaction committed successfully. Verify the actual DB state
+        // before deciding whether this is a real failure.
+        const { data: checkBatch } = await serviceClient
+          .from('payroll_payment_batches').select('status').eq('id', params.id).single();
+        if (checkBatch?.status !== 'reconciled') {
+          console.error('PATCH /api/payroll/batches/[id] reconcile RPC error:', rpcErr.message);
+          return NextResponse.json({ error: rpcErr.message || 'Reconciliation failed' }, { status: 500 });
+        }
+        // Batch IS reconciled — Supabase had a parse error on the return type only.
+        // Log a warning and continue so the route returns success.
+        console.warn('PATCH /api/payroll/batches/[id] reconcile RPC return-parse warning (batch reconciled OK):', rpcErr.message);
       }
 
       if (notes) {
