@@ -44,7 +44,7 @@ export async function GET(request) {
     const dateTo      = searchParams.get('date_to') || '';
     const customerId  = searchParams.get('customer_id') || '';
 
-    // All orders that came from a quotation (quote_id is set)
+    // All orders — both CRM-originated (quote_id set) and directly created.
     // Note: delivery_batch_items is fetched separately — PostgREST double-nested
     // embeds (batches → batch_items) cause a 500 when combined with other joins.
     let q = serviceClient
@@ -58,7 +58,6 @@ export async function GET(request) {
         order_items ( id, quantity ),
         delivery_batches ( id, batch_number, status, deleted_at, actual_delivery_date )
       `)
-      .not('quote_id', 'is', null)
       .order('invoice_issued_at', { ascending: false, nullsFirst: false })
       .order('created_at', { ascending: false });
 
