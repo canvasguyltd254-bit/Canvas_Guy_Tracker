@@ -73,30 +73,32 @@ export async function GET(request, { params }) {
     if (orderErr || !order) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 });
     }
-    if (!order.quote_id) {
-      return NextResponse.json({ error: 'This order has no associated invoice' }, { status: 400 });
-    }
     if (!order.invoice_number) {
       return NextResponse.json({ error: 'Invoice has not yet been issued for this order' }, { status: 400 });
     }
 
     // ── 2. Quotation + items (VAT breakdown) ──────────────────────────────────
-    const { data: quote, error: quoteErr } = await serviceClient
-      .from('quotations')
-      .select(`
-        id, quote_num, revision, quote_group_id, status, pricing_mode,
-        tax_status, subtotal, vat_amount, total, payment_terms,
-        quote_items (
-          id, description, category, quantity, unit_price, net_amount,
-          vat_amount, gross_amount, finish_type, finish_color, wood_type, sort_order
-        )
-      `)
-      .eq('id', order.quote_id)
-      .single();
+    // Direct orders (no quote_id) skip this; vatBreakdown is built from order_items instead.
+    let quote = null;
+    if (order.quote_id) {
+      const { data: quoteData, error: quoteErr } = await serviceClient
+        .from('quotations')
+        .select(`
+          id, quote_num, revision, quote_group_id, status, pricing_mode,
+          tax_status, subtotal, vat_amount, total, payment_terms,
+          quote_items (
+            id, description, category, quantity, unit_price, net_amount,
+            vat_amount, gross_amount, finish_type, finish_color, wood_type, sort_order
+          )
+        `)
+        .eq('id', order.quote_id)
+        .single();
 
-    if (quoteErr) {
-      console.error('pdf/route.js quote fetch:', quoteErr.message);
-      return NextResponse.json({ error: 'Failed to fetch quotation data' }, { status: 500 });
+      if (quoteErr) {
+        console.error('pdf/route.js quote fetch:', quoteErr.message);
+        return NextResponse.json({ error: 'Failed to fetch quotation data' }, { status: 500 });
+      }
+      quote = quoteData;
     }
 
     // ── 3. Quote history ───────────────────────────────────────────────────────
@@ -242,27 +244,61 @@ export async function GET(request, { params }) {
     });
     const totalPaid = (pmtRows || []).filter(p => !p.reversed_at).reduce((s, p) => s + Number(p.amount), 0);
 
-    const vatBreakdown = quote ? {
-      pricing_mode: quote.pricing_mode,
-      tax_status:   quote.tax_status,
-      subtotal:     Number(quote.subtotal || 0),
-      vat_amount:   Number(quote.vat_amount || 0),
-      total:        Number(quote.total || 0),
-      items:        (quote.quote_items || [])
-        .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
-        .map(i => ({
-          description:  i.description,
-          category:     i.category,
-          quantity:     i.quantity,
-          unit_price:   Number(i.unit_price || 0),
-          net_amount:   Number(i.net_amount || 0),
-          vat_amount:   Number(i.vat_amount || 0),
-          gross_amount: Number(i.gross_amount || 0),
-          finish_type:  i.finish_type,
-          finish_color: i.finish_color,
-          wood_type:    i.wood_type,
-        })),
-    } : null;
+    let vatBreakdown = null;
+    if (quote) {
+      // CRM-originated order: use snapshotted quote amounts
+      vatBreakdown = {
+        pricing_mode: quote.pricing_mode,
+        tax_status:   quote.tax_status,
+        subtotal:     Number(quote.subtotal || 0),
+        vat_amount:   Number(quote.vat_amount || 0),
+        total:        Number(quote.total || 0),
+        items:        (quote.quote_items || [])
+          .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+          .map(i => ({
+            description:  i.description,
+            category:     i.category,
+            quantity:     i.quantity,
+            unit_price:   Number(i.unit_price || 0),
+            net_amount:   Number(i.net_amount || 0),
+            vat_amount:   Number(i.vat_amount || 0),
+            gross_amount: Number(i.gross_amount || 0),
+            finish_type:  i.finish_type,
+            finish_color: i.finish_color,
+            wood_type:    i.wood_type,
+          })),
+      };
+    } else {
+      // Direct order: build line-item breakdown from order_items
+      const { data: orderItems } = await serviceClient
+        .from('order_items')
+        .select('id, description, category, quantity, unit_price, net_amount, vat_amount, gross_amount, finish_type, finish_color, wood_type, sort_order')
+        .eq('order_id', orderId)
+        .order('sort_order', { ascending: true });
+
+      const items = (orderItems || []).map(i => ({
+        description:  i.description,
+        category:     i.category,
+        quantity:     i.quantity,
+        unit_price:   Number(i.unit_price || 0),
+        net_amount:   Number(i.net_amount || 0),
+        vat_amount:   Number(i.vat_amount || 0),
+        gross_amount: Number(i.gross_amount || 0),
+        finish_type:  i.finish_type,
+        finish_color: i.finish_color,
+        wood_type:    i.wood_type,
+      }));
+      const subtotal  = items.reduce((s, i) => s + i.net_amount, 0);
+      const vatAmount = items.reduce((s, i) => s + i.vat_amount, 0);
+      vatBreakdown = {
+        pricing_mode: order.pricing_mode,
+        tax_status:   order.customer_type === 'vat_registered' ? 'vat_registered' : 'standard',
+        subtotal,
+        vat_amount:   vatAmount,
+        total:        Number(order.total_value),
+        items,
+      };
+    }
 
     const invoice = {
       order_id:          order.id,

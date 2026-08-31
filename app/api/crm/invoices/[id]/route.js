@@ -64,29 +64,29 @@ export async function GET(request, { params }) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 });
     }
 
-    if (!order.quote_id) {
-      return NextResponse.json({ error: 'This order was not converted from a quotation' }, { status: 400 });
-    }
-
     // ── 2. Quotation (for VAT breakdown + quote info) ─────────────────────────
-    // Fix 8: surface quotation fetch error
-    const { data: quote, error: quoteErr } = await serviceClient
-      .from('quotations')
-      .select(`
-        id, quote_num, revision, quote_group_id, status, pricing_mode,
-        tax_status, subtotal, vat_amount, total, payment_terms,
-        customer_id,
-        quote_items (
-          id, description, category, quantity, unit_price, net_amount,
-          vat_amount, gross_amount, finish_type, finish_color, wood_type, sort_order
-        )
-      `)
-      .eq('id', order.quote_id)
-      .single();
+    // Direct orders (no quote_id) skip this — vatBreakdown and quoteHistory will be null/[].
+    let quote = null;
+    if (order.quote_id) {
+      const { data: quoteData, error: quoteErr } = await serviceClient
+        .from('quotations')
+        .select(`
+          id, quote_num, revision, quote_group_id, status, pricing_mode,
+          tax_status, subtotal, vat_amount, total, payment_terms,
+          customer_id,
+          quote_items (
+            id, description, category, quantity, unit_price, net_amount,
+            vat_amount, gross_amount, finish_type, finish_color, wood_type, sort_order
+          )
+        `)
+        .eq('id', order.quote_id)
+        .single();
 
-    if (quoteErr) {
-      console.error('GET /api/crm/invoices/[id] quote fetch error:', quoteErr.message);
-      return NextResponse.json({ error: `Failed to fetch quotation: ${quoteErr.message}` }, { status: 500 });
+      if (quoteErr) {
+        console.error('GET /api/crm/invoices/[id] quote fetch error:', quoteErr.message);
+        return NextResponse.json({ error: `Failed to fetch quotation: ${quoteErr.message}` }, { status: 500 });
+      }
+      quote = quoteData;
     }
 
     // ── 3. Quote history — all revisions in the same quote_group_id ───────────
