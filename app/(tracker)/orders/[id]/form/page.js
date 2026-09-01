@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/shared/supabase/client';
@@ -905,8 +906,8 @@ function DirectExpenseModal({ orderId, orderNum, onSaved, onClose }) {
   const inpS = { width: '100%', padding: '8px 10px', border: '1.5px solid #e0e0e0', borderRadius: '6px', fontSize: '13px', background: '#fafafa', boxSizing: 'border-box' };
   const lblS = { display: 'block', fontSize: '10px', fontWeight: 700, color: '#888', marginBottom: '4px', textTransform: 'uppercase' };
 
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+  return createPortal(
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
       <div style={{ background: '#fff', borderRadius: 12, padding: 24, width: '100%', maxWidth: 520, maxHeight: '90vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
           <h3 style={{ fontSize: 15, fontWeight: 700, margin: 0 }}>Add Direct Expense</h3>
@@ -1069,7 +1070,8 @@ function DirectExpenseModal({ orderId, orderNum, onSaved, onClose }) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -1091,8 +1093,8 @@ function ReverseExpenseModal({ expenseId, description, onReversed, onClose }) {
     setSaving(false);
   };
 
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+  return createPortal(
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
       <div style={{ background: '#fff', borderRadius: 12, padding: 24, width: '100%', maxWidth: 400 }}>
         <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 6 }}>Reverse Expense</h3>
         <p style={{ fontSize: 12, color: '#6b7280', marginBottom: 14 }}>
@@ -1110,7 +1112,8 @@ function ReverseExpenseModal({ expenseId, description, onReversed, onClose }) {
           <button onClick={onClose} style={{ flex: 1, padding: 10, background: '#f5f5f5', color: '#666', border: 'none', borderRadius: 7, fontSize: 13, cursor: 'pointer' }}>Cancel</button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
