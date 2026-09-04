@@ -2240,7 +2240,7 @@ export default function OrderFormPage() {
                   <div style={{ gridColumn: '1/-1' }}>
                     <div style={{ display: 'inline-block', background: '#dcfce7', color: '#166534', fontSize: '10px', fontWeight: 700, padding: '3px 8px', borderRadius: '4px' }}>✓ Batch delivery</div>
                   </div>
-                ) : canToggleBatch && batchEligible && (
+                ) : canToggleBatch && (
                   <div style={{ gridColumn: '1/-1' }}>
                     {!batchConfirm ? (
                       <button
