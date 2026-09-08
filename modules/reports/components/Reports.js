@@ -4,7 +4,7 @@ import { useSearchParams } from "next/navigation";
 import { createClient } from "@/shared/supabase/client";
 import { useAuth } from "@/shared/context/AuthContext";
 import { ALL_STATUS_COLORS, CATEGORIES } from "@/modules/orders/components/constants";
-import { C, Btn, Loading } from "@/shared/ui/ds";
+import { C, Btn, Loading, TabBar as SharedTabBar, Notice } from "@/shared/ui/ds";
 // PDF generation handled server-side via /api/reports/pdf (build_report.py)
 
 // ── Report type definitions ──
@@ -579,9 +579,9 @@ export default function Reports({ refreshKey = 0 } = {}) {
 
   // ── Batch load error banner (non-blocking — page renders but financial data is stale) ──
   const BatchErrorBanner = batchLoadError ? (
-    <div style={{ margin: "0 0 16px", padding: "10px 14px", background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: "8px", fontSize: "12px", color: "#b91c1c", fontWeight: 600 }}>
+    <Notice color="red" style={{ marginBottom: 16, fontSize: 12, fontWeight: 600 }}>
       ⚠ {batchLoadError} Partially delivered batch orders show "Delivered value unavailable" and are excluded from KPI totals.
-    </div>
+    </Notice>
   ) : null;
 
   // ── Formatters ──
@@ -602,87 +602,68 @@ export default function Reports({ refreshKey = 0 } = {}) {
 
   // ── Shared sub-sections ──────────────────────────────────────────────────────
 
-  // Scrollable tab bar (shared mobile + desktop)
-  const TabBar = () => (
-    <div style={{ position: "relative", marginBottom: "14px" }}>
-      <div style={{ display: "flex", gap: isMobile ? "8px" : "4px", overflowX: "auto", padding: isMobile ? "0 16px 4px" : "0 0 4px", scrollbarWidth: "none" }}>
-        {REPORT_TYPES.map((r) => (
-          <button key={r.id}
-            onClick={() => { setReportType(r.id); setClientFilter("All"); setSearch(""); setSortField(null); setMobileTableView(false); }}
-            style={{
-              padding: isMobile ? "10px 16px" : "7px 14px",
-              borderRadius: isMobile ? "12px" : "6px",
-              flexShrink: 0,
-              border: "1.5px solid " + (reportType === r.id ? "#1a1a1a" : "#e0e0e0"),
-              background: reportType === r.id ? "#1a1a1a" : "#fff",
-              color: reportType === r.id ? "#fff" : "#666",
-              fontSize: isMobile ? "13px" : "12px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
-            }}>
-            {r.icon} {r.label}
-          </button>
-        ))}
-      </div>
-      {/* Right fade + chevron on mobile */}
-      {isMobile && (
-        <div style={{ position: "absolute", right: 0, top: 0, bottom: 4, width: "36px", background: "linear-gradient(to left, #F8F7F5, transparent)", display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: "4px", pointerEvents: "none" }}>
-          <span style={{ fontSize: "12px", color: "#aaa" }}>›</span>
-        </div>
-      )}
-    </div>
-  );
+  // Report type tab bar — uses shared TabBar from ds.js
+  const reportTabs = REPORT_TYPES.map((r) => ({ key: r.id, label: `${r.icon} ${r.label}` }));
+  const handleTabSelect = (key) => {
+    setReportType(key);
+    setClientFilter("All");
+    setSearch("");
+    setSortField(null);
+    setMobileTableView(false);
+  };
 
   // Date range panel (full inline block)
   const DatePanel = () => showDateRange ? (
-    <div style={{ background: "#fff", border: "1.5px solid #e0e0e0", borderRadius: "8px", padding: "12px 14px", marginBottom: "12px" }}>
-      <div style={{ fontSize: "10px", fontWeight: 700, color: "#888", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: "8px" }}>
+    <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: C.radiusSm, padding: "12px 14px", marginBottom: 12 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 8 }}>
         Date range — {reportMeta.dateField === "due_date" ? "due date" : "order created"}
       </div>
-      <div style={{ display: "flex", gap: "5px", marginBottom: "10px", flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 5, marginBottom: 10, flexWrap: "wrap" }}>
         {DATE_PRESETS.map((p) => (
           <button key={p.id} onClick={() => applyPreset(p.id)} style={{
-            padding: "4px 11px", borderRadius: "5px", fontSize: "11px", cursor: "pointer", fontWeight: 500,
-            border: "1.5px solid " + (datePreset === p.id ? "#1a1a1a" : "#e0e0e0"),
-            background: datePreset === p.id ? "#1a1a1a" : "#f8f8f8",
-            color: datePreset === p.id ? "#fff" : "#555",
+            padding: "4px 11px", borderRadius: 5, fontSize: 11, cursor: "pointer", fontWeight: 500,
+            border: `1.5px solid ${datePreset === p.id ? C.ink : C.line}`,
+            background: datePreset === p.id ? C.ink : C.bg,
+            color: datePreset === p.id ? C.card : C.muted,
           }}>{p.label}</button>
         ))}
       </div>
-      <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <input type="date" value={toInputDate(dateFrom)}
           onChange={(e) => { setDatePreset("custom"); setDateFrom(new Date(e.target.value + "T00:00:00")); }}
-          style={{ padding: "6px 10px", borderRadius: "6px", border: "1.5px solid #e0e0e0", fontSize: "12px", background: "#f8f8f8" }} />
-        <span style={{ color: "#aaa", fontSize: "13px" }}>→</span>
+          style={{ padding: "6px 10px", borderRadius: C.radiusSm, border: `1px solid ${C.line}`, fontSize: 12, background: C.bg }} />
+        <span style={{ color: C.faint, fontSize: 13 }}>→</span>
         <input type="date" value={toInputDate(dateTo)}
           onChange={(e) => { setDatePreset("custom"); setDateTo(new Date(e.target.value + "T23:59:59")); }}
-          style={{ padding: "6px 10px", borderRadius: "6px", border: "1.5px solid #e0e0e0", fontSize: "12px", background: "#f8f8f8" }} />
-        <span style={{ fontSize: "11px", color: "#aaa" }}>{daySpan} day{daySpan !== 1 ? "s" : ""}</span>
+          style={{ padding: "6px 10px", borderRadius: C.radiusSm, border: `1px solid ${C.line}`, fontSize: 12, background: C.bg }} />
+        <span style={{ fontSize: 11, color: C.faint }}>{daySpan} day{daySpan !== 1 ? "s" : ""}</span>
       </div>
     </div>
   ) : null;
 
   // KPI stat grid
   const KpiGrid = () => summaryKpis ? (
-    <div style={{ marginBottom: "14px" }}>
-      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: "8px" }}>
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 8 }}>
       {[
-        { label: "Orders",                    val: filtered.length,                                color: "#1a1a1a", mono: false },
-        { label: "Delivered / Billable (KES)", val: fmtK(summaryKpis.totalBillable),               color: "#1565C0", mono: true },
-        { label: "Total Payments Recorded",   val: fmtK(summaryKpis.totalPaid),                   color: "#2E7D32", mono: true },
+        { label: "Orders",                    val: filtered.length,                                color: C.ink,   mono: false },
+        { label: "Delivered / Billable (KES)", val: fmtK(summaryKpis.totalBillable),               color: C.blue,  mono: true },
+        { label: "Total Payments Recorded",   val: fmtK(summaryKpis.totalPaid),                   color: C.green, mono: true },
         {
           label: "Collectable Balance (KES)",
           val: summaryKpis.totalCollectableBalance > 0 ? fmtK(summaryKpis.totalCollectableBalance) : "✓ Cleared",
-          color: summaryKpis.totalCollectableBalance > 0 ? "#C62828" : "#2E7D32",
+          color: summaryKpis.totalCollectableBalance > 0 ? C.red : C.green,
           mono: summaryKpis.totalCollectableBalance > 0,
         },
       ].map((k) => (
-        <div key={k.label} style={{ background: "#fff", border: "1.5px solid #e0e0e0", borderRadius: isMobile ? "12px" : "8px", padding: isMobile ? "16px 12px" : "12px 14px", textAlign: isMobile ? "center" : "left" }}>
-          <div style={{ fontSize: isMobile ? "22px" : "22px", fontWeight: 700, color: k.color, fontFamily: k.mono ? "'DM Mono',monospace" : undefined, letterSpacing: k.mono ? "-0.5px" : undefined, lineHeight: 1 }}>{k.val}</div>
-          <div style={{ fontSize: "10px", color: "#888", marginTop: "5px" }}>{k.label}</div>
+        <div key={k.label} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: C.radius, padding: isMobile ? "16px 12px" : "12px 14px", textAlign: isMobile ? "center" : "left" }}>
+          <div style={{ fontSize: 22, fontWeight: 700, color: k.color, fontFamily: k.mono ? C.mono : undefined, letterSpacing: k.mono ? "-0.5px" : undefined, lineHeight: 1 }}>{k.val}</div>
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 5 }}>{k.label}</div>
         </div>
       ))}
       </div>
       {summaryKpis.unknownCount > 0 && (
-        <div style={{ marginTop: "6px", fontSize: "11px", color: "#b91c1c", fontWeight: 600 }}>
+        <div style={{ marginTop: 6, fontSize: 11, color: C.red, fontWeight: 600 }}>
           ⚠ Delivery value unavailable for {summaryKpis.unknownCount} {summaryKpis.unknownCount === 1 ? "order" : "orders"}. These orders are excluded from Billable Value and Collectable Balance; recorded payments remain included.
         </div>
       )}
@@ -691,17 +672,17 @@ export default function Reports({ refreshKey = 0 } = {}) {
 
   // ── P&L KPI grid ─────────────────────────────────────────────────────────────
   const PnlKpiGrid = () => pnlKpis ? (
-    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: "8px", marginBottom: "14px" }}>
+    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 8, marginBottom: 14 }}>
       {[
-        { label: "Orders",         val: String(filtered.length),                                                      color: "#1a1a1a", mono: false },
-        { label: "Total Revenue",  val: fmtK(pnlKpis.totalRevenue),                                                   color: "#1565C0", mono: true },
-        { label: "Material Costs", val: fmtK(pnlKpis.totalCosts),                                                     color: "#C62828", mono: true },
+        { label: "Orders",         val: String(filtered.length),                                                      color: C.ink,   mono: false },
+        { label: "Total Revenue",  val: fmtK(pnlKpis.totalRevenue),                                                   color: C.blue,  mono: true },
+        { label: "Material Costs", val: fmtK(pnlKpis.totalCosts),                                                     color: C.red,   mono: true },
         { label: "Gross Profit",   val: pnlKpis.totalProfit >= 0 ? fmtK(pnlKpis.totalProfit) : `-${fmtK(Math.abs(pnlKpis.totalProfit))}`,
-          color: pnlKpis.totalProfit >= 0 ? "#2E7D32" : "#C62828", mono: true },
+          color: pnlKpis.totalProfit >= 0 ? C.green : C.red, mono: true },
       ].map((k) => (
-        <div key={k.label} style={{ background: "#fff", border: "1.5px solid #e0e0e0", borderRadius: isMobile ? "12px" : "8px", padding: isMobile ? "16px 12px" : "12px 14px", textAlign: isMobile ? "center" : "left" }}>
-          <div style={{ fontSize: "22px", fontWeight: 700, color: k.color, fontFamily: k.mono ? "'DM Mono',monospace" : undefined, letterSpacing: k.mono ? "-0.5px" : undefined, lineHeight: 1 }}>{k.val}</div>
-          <div style={{ fontSize: "10px", color: "#888", marginTop: "5px" }}>{k.label}</div>
+        <div key={k.label} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: C.radius, padding: isMobile ? "16px 12px" : "12px 14px", textAlign: isMobile ? "center" : "left" }}>
+          <div style={{ fontSize: 22, fontWeight: 700, color: k.color, fontFamily: k.mono ? C.mono : undefined, letterSpacing: k.mono ? "-0.5px" : undefined, lineHeight: 1 }}>{k.val}</div>
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 5 }}>{k.label}</div>
         </div>
       ))}
     </div>
@@ -709,7 +690,7 @@ export default function Reports({ refreshKey = 0 } = {}) {
 
   // ── Footer totals (shared) ────────────────────────────────────────────────────
   const FooterTotals = () => filtered.length > 0 ? (
-    <div style={{ display: "flex", gap: "20px", marginTop: "16px", padding: "14px 16px", background: "#fff", borderRadius: "8px", border: "1px solid #e8e8e5", flexWrap: "wrap", fontSize: "13px" }}>
+    <div style={{ display: "flex", gap: 20, marginTop: 16, padding: "14px 16px", background: C.card, borderRadius: C.radiusSm, border: `1px solid ${C.line}`, flexWrap: "wrap", fontSize: 13 }}>
       {isOrderPnl ? (() => {
         const totalRev    = filtered.reduce((s, o) => s + (parseFloat(o.total_value) || 0), 0);
         const totalCost   = filtered.reduce((s, o) => s + (pnlCosts[o.id]  || 0), 0);
@@ -717,11 +698,11 @@ export default function Reports({ refreshKey = 0 } = {}) {
         const avgMargin   = totalRev > 0 ? (totalProfit / totalRev * 100) : 0;
         return (
           <>
-            <div><span style={{ color: "#888" }}>Orders:</span> <strong>{filtered.length}</strong></div>
-            <div><span style={{ color: "#888" }}>Revenue:</span> <strong style={{ fontFamily: "'DM Mono',monospace" }}>{fmtKES(totalRev)}</strong></div>
-            <div><span style={{ color: "#888" }}>Material Costs:</span> <strong style={{ color: "#C62828", fontFamily: "'DM Mono',monospace" }}>{fmtKES(totalCost)}</strong></div>
-            <div><span style={{ color: "#888" }}>Gross Profit:</span> <strong style={{ color: totalProfit >= 0 ? "#2E7D32" : "#C62828", fontFamily: "'DM Mono',monospace" }}>{fmtKES(totalProfit)}</strong></div>
-            <div><span style={{ color: "#888" }}>Avg Margin:</span> <strong style={{ color: avgMargin >= 30 ? "#2E7D32" : avgMargin >= 10 ? "#ca8a04" : "#C62828" }}>{avgMargin.toFixed(1)}%</strong></div>
+            <div><span style={{ color: C.muted }}>Orders:</span> <strong>{filtered.length}</strong></div>
+            <div><span style={{ color: C.muted }}>Revenue:</span> <strong style={{ fontFamily: C.mono }}>{fmtKES(totalRev)}</strong></div>
+            <div><span style={{ color: C.muted }}>Material Costs:</span> <strong style={{ color: C.red, fontFamily: C.mono }}>{fmtKES(totalCost)}</strong></div>
+            <div><span style={{ color: C.muted }}>Gross Profit:</span> <strong style={{ color: totalProfit >= 0 ? C.green : C.red, fontFamily: C.mono }}>{fmtKES(totalProfit)}</strong></div>
+            <div><span style={{ color: C.muted }}>Avg Margin:</span> <strong style={{ color: avgMargin >= 30 ? C.green : avgMargin >= 10 ? C.amber : C.red }}>{avgMargin.toFixed(1)}%</strong></div>
           </>
         );
       })() : isSupplierReport ? (() => {
@@ -730,26 +711,26 @@ export default function Reports({ refreshKey = 0 } = {}) {
         const bal = Math.max(tv - col, 0);
         return (
           <>
-            <div><span style={{ color: "#888" }}>Purchases:</span> <strong>{filtered.length}</strong></div>
-            <div><span style={{ color: "#888" }}>Total:</span> <strong style={{ fontFamily: "'DM Mono',monospace" }}>{fmtKES(tv)}</strong></div>
-            <div><span style={{ color: "#888" }}>Paid:</span> <strong style={{ color: "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(col)}</strong></div>
-            <div><span style={{ color: "#888" }}>Outstanding:</span> <strong style={{ color: bal > 0 ? "#C62828" : "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(bal)}</strong></div>
+            <div><span style={{ color: C.muted }}>Purchases:</span> <strong>{filtered.length}</strong></div>
+            <div><span style={{ color: C.muted }}>Total:</span> <strong style={{ fontFamily: C.mono }}>{fmtKES(tv)}</strong></div>
+            <div><span style={{ color: C.muted }}>Paid:</span> <strong style={{ color: C.green, fontFamily: C.mono }}>{fmtKES(col)}</strong></div>
+            <div><span style={{ color: C.muted }}>Outstanding:</span> <strong style={{ color: bal > 0 ? C.red : C.green, fontFamily: C.mono }}>{fmtKES(bal)}</strong></div>
           </>
         );
       })() : (
         <>
-          <div><span style={{ color: "#888" }}>Orders:</span> <strong>{filtered.length}</strong></div>
-          <div><span style={{ color: "#888" }}>Units:</span> <strong>{totalUnits}</strong></div>
+          <div><span style={{ color: C.muted }}>Orders:</span> <strong>{filtered.length}</strong></div>
+          <div><span style={{ color: C.muted }}>Units:</span> <strong>{totalUnits}</strong></div>
           {(isFinancial || reportType === "sales-week" || reportType === "completed") && (() => {
             const tv  = filtered.reduce((s, o) => { const bv = getBillableValue(o); return bv !== null ? s + bv : s; }, 0);
             const col = filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0);
             const bal = filtered.reduce((s, o) => { const b = getBalance(o); return b !== null ? s + b : s; }, 0);
             return (
               <>
-                <div><span style={{ color: "#888" }}>Total Value:</span> <strong style={{ fontFamily: "'DM Mono',monospace" }}>{fmtKES(tv)}</strong></div>
+                <div><span style={{ color: C.muted }}>Total Value:</span> <strong style={{ fontFamily: C.mono }}>{fmtKES(tv)}</strong></div>
                 {isFinancial
-                  ? <div><span style={{ color: "#888" }}>Outstanding:</span> <strong style={{ color: "#C62828", fontFamily: "'DM Mono',monospace" }}>{fmtKES(bal)}</strong></div>
-                  : <div><span style={{ color: "#888" }}>Collected:</span> <strong style={{ color: "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(col)}</strong></div>
+                  ? <div><span style={{ color: C.muted }}>Outstanding:</span> <strong style={{ color: C.red, fontFamily: C.mono }}>{fmtKES(bal)}</strong></div>
+                  : <div><span style={{ color: C.muted }}>Collected:</span> <strong style={{ color: C.green, fontFamily: C.mono }}>{fmtKES(col)}</strong></div>
                 }
               </>
             );
@@ -765,7 +746,7 @@ export default function Reports({ refreshKey = 0 } = {}) {
       {/* Title */}
       <div style={{ padding: "20px 16px 12px" }}>
         <h1 style={{ fontSize: "22px", fontWeight: 900, marginBottom: "4px" }}>{reportMeta.icon} {reportMeta.label} Report</h1>
-        <p style={{ color: "#9a9a9a", fontSize: "13px" }}>
+        <p style={{ color: C.muted, fontSize: "13px" }}>
           {filtered.length} order{filtered.length !== 1 ? "s" : ""} · {totalUnits} units
           {showDateRange && <> · {fmtDisplay(dateFrom)} – {fmtDisplay(dateTo)}</>}
         </p>
@@ -778,9 +759,9 @@ export default function Reports({ refreshKey = 0 } = {}) {
       <div style={{ padding: "0 16px 16px" }}>
         <button onClick={handleExport} disabled={exporting || filtered.length === 0} style={{
           width: "100%", padding: "13px", borderRadius: "12px", border: "none",
-          background: filtered.length === 0 ? "#e0e0e0" : "#1a1a1a", color: "#fff",
-          fontSize: "14px", fontWeight: 600, cursor: filtered.length === 0 ? "not-allowed" : "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center", gap: "8px",
+          background: filtered.length === 0 ? C.line : C.ink, color: C.card,
+          fontSize: 14, fontWeight: 600, cursor: filtered.length === 0 ? "not-allowed" : "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
           opacity: exporting ? 0.6 : 1,
         }}>
           📄 {exporting ? "Generating..." : "Download PDF"}
@@ -788,27 +769,27 @@ export default function Reports({ refreshKey = 0 } = {}) {
       </div>
 
       {/* Tab bar */}
-      <TabBar />
+      <SharedTabBar tabs={reportTabs} active={reportType} onSelect={handleTabSelect} />
 
       {/* Date chip (collapsed → expands inline) */}
       {showDateRange && (
         <div style={{ margin: "0 16px 12px" }}>
           <button onClick={() => setDateChipOpen((v) => !v)} style={{
-            width: "100%", background: "#fff", border: "1px solid #e5e5e5", borderRadius: "12px",
+            width: "100%", background: C.card, border: `1px solid ${C.line}`, borderRadius: C.radius,
             padding: "12px 14px", display: "flex", alignItems: "center", justifyContent: "space-between",
             cursor: "pointer", textAlign: "left",
           }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <div style={{ width: "32px", height: "32px", borderRadius: "8px", background: "#f5f5f5", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "15px", flexShrink: 0 }}>📅</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ width: 32, height: 32, borderRadius: C.radiusSm, background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>📅</div>
               <div>
-                <div style={{ fontSize: "13px", fontWeight: 700 }}>{presetLabel}</div>
-                <div style={{ fontSize: "11px", color: "#9a9a9a", marginTop: "1px" }}>{fmtDisplay(dateFrom)} – {fmtDisplay(dateTo)} · {daySpan} days</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>{presetLabel}</div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 1 }}>{fmtDisplay(dateFrom)} – {fmtDisplay(dateTo)} · {daySpan} days</div>
               </div>
             </div>
-            <span style={{ fontSize: "16px", color: "#9a9a9a" }}>{dateChipOpen ? "▲" : "▼"}</span>
+            <span style={{ fontSize: 16, color: C.muted }}>{dateChipOpen ? "▲" : "▼"}</span>
           </button>
           {dateChipOpen && (
-            <div style={{ marginTop: "8px" }}>
+            <div style={{ marginTop: 8 }}>
               <DatePanel />
             </div>
           )}
@@ -816,11 +797,11 @@ export default function Reports({ refreshKey = 0 } = {}) {
       )}
 
       {/* Filters */}
-      <div style={{ padding: "0 16px 14px", display: "flex", flexDirection: "column", gap: "8px" }}>
+      <div style={{ padding: "0 16px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
         <input type="text" placeholder="Search…" value={search} onChange={(e) => setSearch(e.target.value)}
-          style={{ border: "1px solid #e5e5e5", borderRadius: "10px", padding: "10px 12px", fontSize: "13px", background: "#fff" }} />
+          style={{ border: `1px solid ${C.line}`, borderRadius: C.radius, padding: "10px 12px", fontSize: 13, background: C.card, color: C.ink }} />
         <select value={clientFilter} onChange={(e) => setClientFilter(e.target.value)}
-          style={{ border: "1px solid #e5e5e5", borderRadius: "10px", padding: "10px 12px", fontSize: "13px", background: "#fff", fontWeight: 500 }}>
+          style={{ border: `1px solid ${C.line}`, borderRadius: C.radius, padding: "10px 12px", fontSize: 13, background: C.card, fontWeight: 500, color: C.ink }}>
           <option value="All">All Clients ({clients.length})</option>
           {clients.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
@@ -834,11 +815,11 @@ export default function Reports({ refreshKey = 0 } = {}) {
 
       {/* Workload summary */}
       {workloadSummary && workloadSummary.length > 0 && (
-        <div style={{ display: "flex", gap: "10px", marginBottom: "16px", flexWrap: "wrap", padding: "0 16px" }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", padding: "0 16px" }}>
           {workloadSummary.map((cat) => (
-            <div key={cat.label} style={{ padding: "12px 16px", borderRadius: "12px", background: "#fff", border: "1px solid #e5e5e5", flex: "1 1 120px", minWidth: "110px" }}>
-              <div style={{ fontSize: "24px", fontWeight: 800, color: "#E8512A", fontFamily: "'DM Mono',monospace" }}>{cat.qty}</div>
-              <div style={{ fontSize: "11px", color: "#888", fontWeight: 500 }}>{cat.label}</div>
+            <div key={cat.label} style={{ padding: "12px 16px", borderRadius: C.radius, background: C.card, border: `1px solid ${C.line}`, flex: "1 1 120px", minWidth: "110px" }}>
+              <div style={{ fontSize: 24, fontWeight: 800, color: C.coral, fontFamily: C.mono }}>{cat.qty}</div>
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 500 }}>{cat.label}</div>
             </div>
           ))}
         </div>
@@ -846,7 +827,7 @@ export default function Reports({ refreshKey = 0 } = {}) {
 
       {/* Toggle: Full Table */}
       <div style={{ padding: "0 16px 8px", display: "flex", justifyContent: "flex-end" }}>
-        <button onClick={() => setMobileTableView(true)} style={{ fontSize: "12px", color: "#666", background: "none", border: "1px solid #e0e0e0", borderRadius: "6px", padding: "5px 12px", cursor: "pointer" }}>
+        <button onClick={() => setMobileTableView(true)} style={{ fontSize: 12, color: C.muted, background: "none", border: `1px solid ${C.line}`, borderRadius: C.radiusSm, padding: "5px 12px", cursor: "pointer" }}>
           Full Table ↗
         </button>
       </div>
@@ -854,13 +835,13 @@ export default function Reports({ refreshKey = 0 } = {}) {
       {/* Line item cards */}
       {isOrderPnl ? (
         filtered.length === 0 ? (
-          <div style={{ margin: "0 16px 24px", padding: "40px 20px", textAlign: "center", background: "#fff", borderRadius: "12px", border: "1px solid #e5e5e5" }}>
+          <div style={{ margin: "0 16px 24px", padding: "40px 20px", textAlign: "center", background: C.card, borderRadius: C.radius, border: `1px solid ${C.line}` }}>
             <div style={{ fontSize: "32px", marginBottom: "10px" }}>📊</div>
-            <div style={{ fontSize: "14px", color: "#999" }}>No orders match this report.</div>
+            <div style={{ fontSize: "14px", color: C.muted }}>No orders match this report.</div>
           </div>
         ) : (
           <div style={{ padding: "0 16px 24px" }}>
-            <div style={{ fontSize: "11px", fontWeight: 700, color: "#9a9a9a", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>
+            <div style={{ fontSize: "11px", fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>
               Orders ({filtered.length})
             </div>
             {filtered.map((o) => {
@@ -872,50 +853,50 @@ export default function Reports({ refreshKey = 0 } = {}) {
               const sc             = ALL_STATUS_COLORS[o.status] || {};
               const orderPurchases = pnlPurchases[o.id] || [];
               return (
-                <div key={o.id} style={{ background: "#fff", border: "1px solid #e5e5e5", borderRadius: "12px", padding: "14px", marginBottom: "10px" }}>
+                <div key={o.id} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: C.radius, padding: "14px", marginBottom: "10px" }}>
                   {/* Header */}
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px", marginBottom: "10px" }}>
                     <div>
                       <div style={{ fontWeight: 700, fontSize: "14px" }}>{o.client}</div>
-                      <div style={{ fontSize: "11px", color: "#9a9a9a", marginTop: "2px" }}>{o.order_num}</div>
+                      <div style={{ fontSize: "11px", color: C.muted, marginTop: "2px" }}>{o.order_num}</div>
                     </div>
                     <StatusBadge status={o.status} colors={sc} />
                   </div>
                   {/* P&L summary grid */}
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "8px", paddingTop: "10px", borderTop: "1px solid #f0f0f0" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "8px", paddingTop: "10px", borderTop: `1px solid ${C.line}` }}>
                     <div>
-                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase" }}>Revenue</div>
-                      <div style={{ fontSize: "13px", fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>{fmtKES(revenue)}</div>
+                      <div style={{ fontSize: "10px", color: C.faint, textTransform: "uppercase" }}>Revenue</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, fontFamily: C.mono }}>{fmtKES(revenue)}</div>
                     </div>
                     <div>
-                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase" }}>Material Costs</div>
-                      <div style={{ fontSize: "13px", fontWeight: 700, fontFamily: "'DM Mono',monospace", color: "#C62828" }}>{costs > 0 ? fmtKES(costs) : "—"}</div>
+                      <div style={{ fontSize: "10px", color: C.faint, textTransform: "uppercase" }}>Material Costs</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, fontFamily: C.mono, color: C.red }}>{costs > 0 ? fmtKES(costs) : "—"}</div>
                     </div>
                     <div>
-                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase" }}>Gross Profit</div>
-                      <div style={{ fontSize: "13px", fontWeight: 700, fontFamily: "'DM Mono',monospace", color: profit >= 0 ? "#2E7D32" : "#C62828" }}>{fmtKES(profit)}</div>
+                      <div style={{ fontSize: "10px", color: C.faint, textTransform: "uppercase" }}>Gross Profit</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, fontFamily: C.mono, color: profit >= 0 ? C.green : C.red }}>{fmtKES(profit)}</div>
                     </div>
                     <div>
-                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase" }}>Margin</div>
-                      <div style={{ fontSize: "13px", fontWeight: 700, color: margin >= 30 ? "#2E7D32" : margin >= 10 ? "#ca8a04" : "#C62828" }}>{margin.toFixed(1)}%</div>
+                      <div style={{ fontSize: "10px", color: C.faint, textTransform: "uppercase" }}>Margin</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, color: margin >= 30 ? C.green : margin >= 10 ? C.amber : C.red }}>{margin.toFixed(1)}%</div>
                     </div>
                   </div>
                   {/* Itemized purchases */}
                   {orderPurchases.length > 0 && (
-                    <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #f0ede8" }}>
-                      <div style={{ fontSize: "9px", fontWeight: 700, color: "#bbb", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: "6px" }}>Cost Breakdown</div>
+                    <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: `1px solid ${C.line}` }}>
+                      <div style={{ fontSize: "9px", fontWeight: 700, color: C.faint, textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: "6px" }}>Cost Breakdown</div>
                       {orderPurchases.map((p, pIdx) => {
                         const dStr = p.purchase_date
                           ? new Date(p.purchase_date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })
                           : "";
                         return (
-                          <div key={pIdx} style={{ display: "flex", alignItems: "flex-start", gap: "6px", padding: "5px 0", borderBottom: pIdx < orderPurchases.length - 1 ? "1px solid #f5f3f0" : "none" }}>
-                            <span style={{ color: "#E8512A", fontWeight: 700, fontSize: "11px", flexShrink: 0, marginTop: "1px" }}>↳</span>
+                          <div key={pIdx} style={{ display: "flex", alignItems: "flex-start", gap: "6px", padding: "5px 0", borderBottom: pIdx < orderPurchases.length - 1 ? `1px solid ${C.line}` : "none" }}>
+                            <span style={{ color: C.coral, fontWeight: 700, fontSize: "11px", flexShrink: 0, marginTop: "1px" }}>↳</span>
                             <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: "12px", fontWeight: 600, color: "#333", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.supplier_name}</div>
-                              <div style={{ fontSize: "10px", color: "#aaa", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.items_bought}{dStr ? ` · ${dStr}` : ""}</div>
+                              <div style={{ fontSize: "12px", fontWeight: 600, color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.supplier_name}</div>
+                              <div style={{ fontSize: "10px", color: C.faint, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.items_bought}{dStr ? ` · ${dStr}` : ""}</div>
                             </div>
-                            <div style={{ fontSize: "12px", fontWeight: 700, color: "#C62828", fontFamily: "'DM Mono',monospace", flexShrink: 0 }}>{fmtKES(p.total_amount)}</div>
+                            <div style={{ fontSize: "12px", fontWeight: 700, color: C.red, fontFamily: C.mono, flexShrink: 0 }}>{fmtKES(p.total_amount)}</div>
                           </div>
                         );
                       })}
@@ -928,40 +909,40 @@ export default function Reports({ refreshKey = 0 } = {}) {
         )
       ) : isSupplierReport ? (
         filtered.length === 0 ? (
-          <div style={{ margin: "0 16px 24px", padding: "40px 20px", textAlign: "center", background: "#fff", borderRadius: "12px", border: "1px solid #e5e5e5" }}>
+          <div style={{ margin: "0 16px 24px", padding: "40px 20px", textAlign: "center", background: C.card, borderRadius: C.radius, border: `1px solid ${C.line}` }}>
             <div style={{ fontSize: "32px", marginBottom: "10px" }}>📊</div>
-            <div style={{ fontSize: "14px", color: "#999" }}>No purchases match this report.</div>
+            <div style={{ fontSize: "14px", color: C.muted }}>No purchases match this report.</div>
           </div>
         ) : (
           <div style={{ padding: "0 16px 24px" }}>
-            <div style={{ fontSize: "11px", fontWeight: 700, color: "#9a9a9a", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>
+            <div style={{ fontSize: "11px", fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>
               Purchases ({filtered.length})
             </div>
             {filtered.map((p) => {
               const bal  = Math.max((parseFloat(p.total_amount) || 0) - (parseFloat(p.amount_paid) || 0), 0);
-              const sClr = p.payment_status === "Paid" ? { bg: "#dcfce7", color: "#16a34a" } : p.payment_status === "Part Paid" ? { bg: "#fef9c3", color: "#ca8a04" } : { bg: "#fee2e2", color: "#dc2626" };
+              const sClr = p.payment_status === "Paid" ? { bg: "#dcfce7", color: C.green } : p.payment_status === "Part Paid" ? { bg: "#fef9c3", color: C.amber } : { bg: "#fee2e2", color: C.red };
               const dStr = p.purchase_date ? new Date(p.purchase_date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—";
               return (
-                <div key={p.id} style={{ background: "#fff", border: "1px solid #e5e5e5", borderRadius: "12px", padding: "14px", marginBottom: "10px" }}>
+                <div key={p.id} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: C.radius, padding: "14px", marginBottom: "10px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontWeight: 700, fontSize: "14px" }}>{p.supplier_name}</div>
-                      <div style={{ fontSize: "11px", color: "#9a9a9a", marginTop: "2px" }}>{dStr} · {p.items_bought || "—"}</div>
+                      <div style={{ fontSize: "11px", color: C.muted, marginTop: "2px" }}>{dStr} · {p.items_bought || "—"}</div>
                     </div>
                     <span style={{ fontSize: "10px", fontWeight: 700, padding: "3px 8px", borderRadius: "6px", whiteSpace: "nowrap", background: sClr.bg, color: sClr.color }}>{p.payment_status}</span>
                   </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #f0f0f0" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: "10px", paddingTop: "10px", borderTop: `1px solid ${C.line}` }}>
                     <div>
-                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase" }}>Total</div>
-                      <div style={{ fontSize: "13px", fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>{fmtKES(parseFloat(p.total_amount) || 0)}</div>
+                      <div style={{ fontSize: "10px", color: C.faint, textTransform: "uppercase" }}>Total</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, fontFamily: C.mono }}>{fmtKES(parseFloat(p.total_amount) || 0)}</div>
                     </div>
                     <div style={{ textAlign: "center" }}>
-                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase" }}>Paid</div>
-                      <div style={{ fontSize: "13px", fontWeight: 700, color: "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(parseFloat(p.amount_paid) || 0)}</div>
+                      <div style={{ fontSize: "10px", color: C.faint, textTransform: "uppercase" }}>Paid</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, color: C.green, fontFamily: C.mono }}>{fmtKES(parseFloat(p.amount_paid) || 0)}</div>
                     </div>
                     <div style={{ textAlign: "right" }}>
-                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase" }}>Balance</div>
-                      <div style={{ fontSize: "13px", fontWeight: 700, color: bal > 0 ? "#C62828" : "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(bal)}</div>
+                      <div style={{ fontSize: "10px", color: C.faint, textTransform: "uppercase" }}>Balance</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, color: bal > 0 ? C.red : C.green, fontFamily: C.mono }}>{fmtKES(bal)}</div>
                     </div>
                   </div>
                 </div>
@@ -970,27 +951,27 @@ export default function Reports({ refreshKey = 0 } = {}) {
           </div>
         )
       ) : cardItems.length === 0 ? (
-        <div style={{ margin: "0 16px 24px", padding: "40px 20px", textAlign: "center", background: "#fff", borderRadius: "12px", border: "1px solid #e5e5e5" }}>
+        <div style={{ margin: "0 16px 24px", padding: "40px 20px", textAlign: "center", background: C.card, borderRadius: C.radius, border: `1px solid ${C.line}` }}>
           <div style={{ fontSize: "32px", marginBottom: "10px" }}>📊</div>
-          <div style={{ fontSize: "14px", color: "#999" }}>No orders match this report.</div>
+          <div style={{ fontSize: "14px", color: C.muted }}>No orders match this report.</div>
         </div>
       ) : (
         <div style={{ padding: "0 16px 24px" }}>
-          <div style={{ fontSize: "11px", fontWeight: 700, color: "#9a9a9a", textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>
+          <div style={{ fontSize: "11px", fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "1px", marginBottom: "8px" }}>
             Line Items ({cardItems.length})
           </div>
           {cardItems.map(({ order, item, paid, tv, balance, payBadge }, idx) => {
             const sc = ALL_STATUS_COLORS[order.status] || {};
             const name = item ? (item.description || item.category || "Item") : (order.items || order.client);
             const spec = item ? [item.size, item.finish_type !== "None" && item.finish_type, item.wood_type].filter(Boolean).join(" · ") : "";
-            const payColors = { paid: { bg: "#dcfce7", color: "#16a34a" }, partial: { bg: "#fef9c3", color: "#ca8a04" }, outstanding: { bg: "#fee2e2", color: "#dc2626" } };
+            const payColors = { paid: { bg: "#dcfce7", color: C.green }, partial: { bg: "#fef9c3", color: C.amber }, outstanding: { bg: "#fee2e2", color: C.red } };
             const pClr = payColors[payBadge] || payColors.outstanding;
             return (
-              <div key={`${order.id}-${item?.id || idx}`} style={{ background: "#fff", border: "1px solid #e5e5e5", borderRadius: "12px", padding: "14px", marginBottom: "10px" }}>
+              <div key={`${order.id}-${item?.id || idx}`} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: C.radius, padding: "14px", marginBottom: "10px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "8px" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: "14px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
-                    <div style={{ fontSize: "11px", color: "#9a9a9a", marginTop: "2px" }}>
+                    <div style={{ fontSize: "11px", color: C.muted, marginTop: "2px" }}>
                       {order.client} · {order.order_num}
                       {order.due_date && <> · Due {fmtDate(order.due_date)}</>}
                     </div>
@@ -1005,28 +986,28 @@ export default function Reports({ refreshKey = 0 } = {}) {
                 </div>
                 {/* Numbers row */}
                 {isFinancial ? (
-                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: "10px", paddingTop: "10px", borderTop: "1px solid #f0f0f0" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: "10px", paddingTop: "10px", borderTop: `1px solid ${C.line}` }}>
                     <div>
-                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase", letterSpacing: "0.5px" }}>Total</div>
-                      <div style={{ fontSize: "13px", fontWeight: 700, marginTop: "1px", fontFamily: "'DM Mono',monospace" }}>{fmtKES(tv)}</div>
+                      <div style={{ fontSize: "10px", color: C.faint, textTransform: "uppercase", letterSpacing: "0.5px" }}>Total</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, marginTop: "1px", fontFamily: C.mono }}>{fmtKES(tv)}</div>
                     </div>
                     <div style={{ textAlign: "center" }}>
-                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase", letterSpacing: "0.5px" }}>Paid</div>
-                      <div style={{ fontSize: "13px", fontWeight: 700, marginTop: "1px", color: "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(paid)}</div>
+                      <div style={{ fontSize: "10px", color: C.faint, textTransform: "uppercase", letterSpacing: "0.5px" }}>Paid</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, marginTop: "1px", color: C.green, fontFamily: C.mono }}>{fmtKES(paid)}</div>
                     </div>
                     <div style={{ textAlign: "right" }}>
-                      <div style={{ fontSize: "10px", color: "#b0b0b0", textTransform: "uppercase", letterSpacing: "0.5px" }}>Balance</div>
-                      <div style={{ fontSize: "13px", fontWeight: 700, marginTop: "1px", color: balance > 0 ? "#C62828" : "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(balance)}</div>
+                      <div style={{ fontSize: "10px", color: C.faint, textTransform: "uppercase", letterSpacing: "0.5px" }}>Balance</div>
+                      <div style={{ fontSize: "13px", fontWeight: 700, marginTop: "1px", color: balance > 0 ? C.red : C.green, fontFamily: C.mono }}>{fmtKES(balance)}</div>
                     </div>
                   </div>
                 ) : item ? (
                   <div style={{ display: "flex", gap: "16px", marginTop: "8px", flexWrap: "wrap" }}>
-                    <div style={{ fontSize: "12px", color: "#555" }}>
-                      <span style={{ color: "#aaa", fontSize: "11px" }}>Qty </span>
+                    <div style={{ fontSize: "12px", color: C.ink }}>
+                      <span style={{ color: C.faint, fontSize: "11px" }}>Qty </span>
                       <strong>{item.quantity || 1}</strong>
                     </div>
-                    {spec && <div style={{ fontSize: "11px", color: "#888" }}>{spec}</div>}
-                    {item.notes && <div style={{ fontSize: "11px", color: "#999", fontStyle: "italic" }}>{item.notes}</div>}
+                    {spec && <div style={{ fontSize: "11px", color: C.muted }}>{spec}</div>}
+                    {item.notes && <div style={{ fontSize: "11px", color: C.muted, fontStyle: "italic" }}>{item.notes}</div>}
                   </div>
                 ) : null}
               </div>
@@ -1060,15 +1041,15 @@ export default function Reports({ refreshKey = 0 } = {}) {
         </div>
       </div>
 
-      <TabBar />
+      <SharedTabBar tabs={reportTabs} active={reportType} onSelect={handleTabSelect} />
       <DatePanel />
 
       {/* Filters */}
-      <div style={{ display: "flex", gap: "10px", marginBottom: "14px", flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
         <input type="text" placeholder="Search..." value={search} onChange={(e) => setSearch(e.target.value)}
-          style={{ flex: "1 1 180px", padding: "8px 12px", borderRadius: "6px", border: "1.5px solid #e0e0e0", fontSize: "13px", background: "#fff", minWidth: "140px" }} />
+          style={{ flex: "1 1 180px", padding: "8px 12px", borderRadius: C.radiusSm, border: `1px solid ${C.line}`, fontSize: 13, background: C.card, minWidth: "140px", color: C.ink }} />
         <select value={clientFilter} onChange={(e) => setClientFilter(e.target.value)}
-          style={{ padding: "8px 12px", borderRadius: "6px", border: "1.5px solid #e0e0e0", fontSize: "13px", background: "#fff", fontWeight: 500, cursor: "pointer" }}>
+          style={{ padding: "8px 12px", borderRadius: C.radiusSm, border: `1px solid ${C.line}`, fontSize: 13, background: C.card, fontWeight: 500, cursor: "pointer", color: C.ink }}>
           <option value="All">All Clients ({clients.length})</option>
           {clients.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
@@ -1082,9 +1063,9 @@ export default function Reports({ refreshKey = 0 } = {}) {
       {workloadSummary && workloadSummary.length > 0 && (
         <div style={{ display: "flex", gap: "10px", marginBottom: "16px", flexWrap: "wrap" }}>
           {workloadSummary.map((cat) => (
-            <div key={cat.label} style={{ padding: "12px 16px", borderRadius: "8px", background: "#fff", border: "1.5px solid #e0e0e0", flex: "1 1 120px", minWidth: "110px" }}>
-              <div style={{ fontSize: "24px", fontWeight: 800, color: "#E8512A", fontFamily: "'DM Mono',monospace" }}>{cat.qty}</div>
-              <div style={{ fontSize: "11px", color: "#888", fontWeight: 500 }}>{cat.label}</div>
+            <div key={cat.label} style={{ padding: "12px 16px", borderRadius: C.radiusSm, background: C.card, border: `1px solid ${C.line}`, flex: "1 1 120px", minWidth: "110px" }}>
+              <div style={{ fontSize: 24, fontWeight: 800, color: C.coral, fontFamily: C.mono }}>{cat.qty}</div>
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 500 }}>{cat.label}</div>
             </div>
           ))}
         </div>
@@ -1092,15 +1073,15 @@ export default function Reports({ refreshKey = 0 } = {}) {
 
       {/* Table */}
       {filtered.length === 0 ? (
-        <div style={{ padding: "60px 20px", textAlign: "center", background: "#fff", borderRadius: "10px", border: "1px solid #e8e8e5" }}>
+        <div style={{ padding: "60px 20px", textAlign: "center", background: C.card, borderRadius: C.radius, border: `1px solid ${C.line}` }}>
           <div style={{ fontSize: "36px", marginBottom: "12px" }}>📊</div>
-          <div style={{ fontSize: "14px", color: "#999" }}>{isSupplierReport ? "No supplier purchases match this report." : "No orders match this report."}</div>
+          <div style={{ fontSize: "14px", color: C.muted }}>{isSupplierReport ? "No supplier purchases match this report." : "No orders match this report."}</div>
         </div>
       ) : isOrderPnl ? (
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", background: "#fff", borderRadius: "10px", overflow: "hidden", border: "1px solid #e8e8e5" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", background: C.card, borderRadius: C.radiusSm, overflow: "hidden", border: `1px solid ${C.line}` }}>
             <thead>
-              <tr style={{ background: "#1a1a1a", color: "#fff", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              <tr style={{ background: C.ink, color: C.card, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.5px" }}>
                 <th style={th}>Order #</th>
                 <th style={th}>Client</th>
                 <th style={th}>Status</th>
@@ -1120,20 +1101,20 @@ export default function Reports({ refreshKey = 0 } = {}) {
                 const margin       = revenue > 0 ? (profit / revenue * 100) : 0;
                 const sc           = ALL_STATUS_COLORS[o.status] || {};
                 const orderPurchases = pnlPurchases[o.id] || [];
-                const rowBg        = idx % 2 === 0 ? "#fff" : "#FAFAF8";
-                const subBg        = idx % 2 === 0 ? "#faf9f7" : "#f4f2ef";
+                const rowBg        = idx % 2 === 0 ? C.card : C.bg;
+                const subBg        = idx % 2 === 0 ? C.bg : C.card;
                 return (
                   <Fragment key={o.id}>
                     {/* Order summary row */}
-                    <tr style={{ background: rowBg, borderBottom: orderPurchases.length > 0 ? "none" : "2px solid #e8e8e5" }}>
-                      <td style={{ ...td, fontFamily: "'DM Mono',monospace", fontSize: "12px" }}>{o.order_num}</td>
+                    <tr style={{ background: rowBg, borderBottom: orderPurchases.length > 0 ? "none" : `2px solid ${C.line}` }}>
+                      <td style={{ ...td, fontFamily: C.mono, fontSize: "12px" }}>{o.order_num}</td>
                       <td style={{ ...td, fontWeight: 700 }}>{o.client}</td>
                       <td style={td}><StatusBadge status={o.status} colors={sc} /></td>
-                      <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }}>{fmtKES(revenue)}</td>
-                      <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace", color: "#2E7D32" }}>{fmtKES(collected)}</td>
-                      <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace", color: "#C62828", fontWeight: costs > 0 ? 700 : 400 }}>{costs > 0 ? fmtKES(costs) : "—"}</td>
-                      <td style={{ ...td, textAlign: "right", fontWeight: 700, fontFamily: "'DM Mono',monospace", color: profit >= 0 ? "#2E7D32" : "#C62828" }}>{fmtKES(profit)}</td>
-                      <td style={{ ...td, textAlign: "right", fontWeight: 600, color: margin >= 30 ? "#2E7D32" : margin >= 10 ? "#ca8a04" : "#C62828" }}>{margin.toFixed(1)}%</td>
+                      <td style={{ ...td, textAlign: "right", fontFamily: C.mono }}>{fmtKES(revenue)}</td>
+                      <td style={{ ...td, textAlign: "right", fontFamily: C.mono, color: C.green }}>{fmtKES(collected)}</td>
+                      <td style={{ ...td, textAlign: "right", fontFamily: C.mono, color: C.red, fontWeight: costs > 0 ? 700 : 400 }}>{costs > 0 ? fmtKES(costs) : "—"}</td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 700, fontFamily: C.mono, color: profit >= 0 ? C.green : C.red }}>{fmtKES(profit)}</td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 600, color: margin >= 30 ? C.green : margin >= 10 ? C.amber : C.red }}>{margin.toFixed(1)}%</td>
                     </tr>
                     {/* Purchase sub-rows */}
                     {orderPurchases.map((p, pIdx) => {
@@ -1141,14 +1122,14 @@ export default function Reports({ refreshKey = 0 } = {}) {
                         ? new Date(p.purchase_date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })
                         : "";
                       return (
-                        <tr key={pIdx} style={{ background: subBg, borderBottom: pIdx === orderPurchases.length - 1 ? "2px solid #e0ddd9" : "1px solid #ece9e4" }}>
-                          <td colSpan={2} style={{ ...td, paddingLeft: "24px", fontSize: "11px", color: "#444" }}>
-                            <span style={{ color: "#E8512A", marginRight: "6px", fontWeight: 700 }}>↳</span>
+                        <tr key={pIdx} style={{ background: subBg, borderBottom: pIdx === orderPurchases.length - 1 ? `2px solid ${C.line}` : `1px solid ${C.line}` }}>
+                          <td colSpan={2} style={{ ...td, paddingLeft: "24px", fontSize: "11px", color: C.ink }}>
+                            <span style={{ color: C.coral, marginRight: "6px", fontWeight: 700 }}>↳</span>
                             <strong>{p.supplier_name}</strong>
-                            {dStr && <span style={{ color: "#bbb", fontWeight: 400, marginLeft: "6px" }}>· {dStr}</span>}
+                            {dStr && <span style={{ color: C.faint, fontWeight: 400, marginLeft: "6px" }}>· {dStr}</span>}
                           </td>
-                          <td colSpan={3} style={{ ...td, fontSize: "11px", color: "#777" }}>{p.items_bought}</td>
-                          <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace", fontSize: "12px", fontWeight: 700, color: "#C62828" }}>{fmtKES(p.total_amount)}</td>
+                          <td colSpan={3} style={{ ...td, fontSize: "11px", color: C.muted }}>{p.items_bought}</td>
+                          <td style={{ ...td, textAlign: "right", fontFamily: C.mono, fontSize: "12px", fontWeight: 700, color: C.red }}>{fmtKES(p.total_amount)}</td>
                           <td colSpan={2} style={td} />
                         </tr>
                       );
@@ -1161,9 +1142,9 @@ export default function Reports({ refreshKey = 0 } = {}) {
         </div>
       ) : isSupplierReport ? (
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", background: "#fff", borderRadius: "10px", overflow: "hidden", border: "1px solid #e8e8e5" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", background: C.card, borderRadius: C.radiusSm, overflow: "hidden", border: `1px solid ${C.line}` }}>
             <thead>
-              <tr style={{ background: "#1a1a1a", color: "#fff", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              <tr style={{ background: C.ink, color: C.card, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.5px" }}>
                 <th style={th}>Supplier</th>
                 <th style={th}>Date</th>
                 <th style={th}>Items Bought</th>
@@ -1176,16 +1157,16 @@ export default function Reports({ refreshKey = 0 } = {}) {
             <tbody>
               {filtered.map((p, idx) => {
                 const bal = Math.max((parseFloat(p.total_amount) || 0) - (parseFloat(p.amount_paid) || 0), 0);
-                const sClr = p.payment_status === "Paid" ? { bg: "#dcfce7", text: "#16a34a" } : p.payment_status === "Part Paid" ? { bg: "#fef9c3", text: "#ca8a04" } : { bg: "#fee2e2", text: "#dc2626" };
+                const sClr = p.payment_status === "Paid" ? { bg: "#dcfce7", text: C.green } : p.payment_status === "Part Paid" ? { bg: "#fef9c3", text: C.amber } : { bg: "#fee2e2", text: C.red };
                 const dStr = p.purchase_date ? new Date(p.purchase_date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—";
                 return (
-                  <tr key={p.id} style={{ background: idx % 2 === 0 ? "#fff" : "#FAFAF8", borderBottom: "1px solid #e8e8e5" }}>
+                  <tr key={p.id} style={{ background: idx % 2 === 0 ? C.card : C.bg, borderBottom: `1px solid ${C.line}` }}>
                     <td style={{ ...td, fontWeight: 700 }}>{p.supplier_name}</td>
                     <td style={td}>{dStr}</td>
-                    <td style={{ ...td, fontSize: "12px", color: "#555" }}>{p.items_bought || "—"}</td>
-                    <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }}>{fmtKES(parseFloat(p.total_amount) || 0)}</td>
-                    <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace", color: "#2E7D32" }}>{fmtKES(parseFloat(p.amount_paid) || 0)}</td>
-                    <td style={{ ...td, textAlign: "right", fontWeight: 700, color: bal > 0 ? "#C62828" : "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{fmtKES(bal)}</td>
+                    <td style={{ ...td, fontSize: "12px", color: C.muted }}>{p.items_bought || "—"}</td>
+                    <td style={{ ...td, textAlign: "right", fontFamily: C.mono }}>{fmtKES(parseFloat(p.total_amount) || 0)}</td>
+                    <td style={{ ...td, textAlign: "right", fontFamily: C.mono, color: C.green }}>{fmtKES(parseFloat(p.amount_paid) || 0)}</td>
+                    <td style={{ ...td, textAlign: "right", fontWeight: 700, color: bal > 0 ? C.red : C.green, fontFamily: C.mono }}>{fmtKES(bal)}</td>
                     <td style={td}><span style={{ fontSize: "10px", fontWeight: 700, color: sClr.text, background: sClr.bg, padding: "3px 8px", borderRadius: "4px", whiteSpace: "nowrap" }}>{p.payment_status}</span></td>
                   </tr>
                 );
@@ -1195,9 +1176,9 @@ export default function Reports({ refreshKey = 0 } = {}) {
         </div>
       ) : (
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", background: "#fff", borderRadius: "10px", overflow: "hidden", border: "1px solid #e8e8e5" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", background: C.card, borderRadius: C.radiusSm, overflow: "hidden", border: `1px solid ${C.line}` }}>
             <thead>
-              <tr style={{ background: "#1a1a1a", color: "#fff", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              <tr style={{ background: C.ink, color: C.card, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.5px" }}>
                 <th style={{ ...th, cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("client")}>Client{sortIcon("client")}</th>
                 <th style={{ ...th, cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("order_num")}>Order #{sortIcon("order_num")}</th>
                 <th style={{ ...th, cursor: "pointer", userSelect: "none" }} onClick={() => handleSort("due_date")}>Due Date{sortIcon("due_date")}</th>
@@ -1225,9 +1206,9 @@ export default function Reports({ refreshKey = 0 } = {}) {
 
                 if (items.length === 0) {
                   return (
-                    <tr key={order.id} style={{ borderBottom: "2px solid #e8e8e5" }}>
+                    <tr key={order.id} style={{ borderBottom: `2px solid ${C.line}` }}>
                       <td style={{ ...td, fontWeight: 700 }}>{order.client}</td>
-                      <td style={{ ...td, fontFamily: "'DM Mono',monospace", fontSize: "12px" }}>{order.order_num}</td>
+                      <td style={{ ...td, fontFamily: C.mono, fontSize: "12px" }}>{order.order_num}</td>
                       <td style={td}>{fmtDate(order.due_date)}</td>
                       <td style={td}><StatusBadge status={order.status} colors={sc} /></td>
                       <td style={td}>—</td>
@@ -1237,13 +1218,13 @@ export default function Reports({ refreshKey = 0 } = {}) {
                       <td style={td}>—</td>
                       {!isFinancial && <td style={td}>—</td>}
                       {isFinancial && (
-                        <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }}>
+                        <td style={{ ...td, textAlign: "right", fontFamily: C.mono }}>
                           {tv === null
-                            ? <span style={{ fontSize: "10px", color: "#b91c1c", fontStyle: "italic" }}>Delivered value unavailable</span>
+                            ? <span style={{ fontSize: "10px", color: C.red, fontStyle: "italic" }}>Delivered value unavailable</span>
                             : <>
                                 {fmtKES(tv)}
                                 {undelivered > 0 && (
-                                  <div style={{ fontSize: "10px", color: "#888", marginTop: "2px" }}>
+                                  <div style={{ fontSize: "10px", color: C.muted, marginTop: "2px" }}>
                                     +{fmtKES(undelivered)} undelivered
                                   </div>
                                 )}
@@ -1251,40 +1232,40 @@ export default function Reports({ refreshKey = 0 } = {}) {
                           }
                         </td>
                       )}
-                      {isFinancial && <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }}>{fmtKES(paid)}</td>}
-                      {isFinancial && <td style={{ ...td, textAlign: "right", fontWeight: 700, color: balance === null ? "#888" : balance > 0 ? "#C62828" : "#2E7D32", fontFamily: "'DM Mono',monospace" }}>{balance === null ? "—" : fmtKES(balance)}</td>}
-                      {!isFinancial && <td style={{ ...td, fontSize: "11px", color: "#888" }}>{order.notes || ""}</td>}
+                      {isFinancial && <td style={{ ...td, textAlign: "right", fontFamily: C.mono }}>{fmtKES(paid)}</td>}
+                      {isFinancial && <td style={{ ...td, textAlign: "right", fontWeight: 700, color: balance === null ? C.muted : balance > 0 ? C.red : C.green, fontFamily: C.mono }}>{balance === null ? "—" : fmtKES(balance)}</td>}
+                      {!isFinancial && <td style={{ ...td, fontSize: "11px", color: C.muted }}>{order.notes || ""}</td>}
                     </tr>
                   );
                 }
 
                 return items.map((item, idx) => (
                   <tr key={`${order.id}-${item.id}`} style={{
-                    borderBottom: idx === items.length - 1 ? "2px solid #e8e8e5" : "1px solid #f0ede8",
-                    background: idx % 2 === 1 ? "#FAFAF8" : "#fff",
+                    borderBottom: `1px solid ${C.line}`,
+                    background: idx % 2 === 1 ? C.bg : C.card,
                   }}>
                     {idx === 0 && (
                       <>
                         <td style={{ ...td, fontWeight: 700 }} rowSpan={items.length}>{order.client}</td>
-                        <td style={{ ...td, fontFamily: "'DM Mono',monospace", fontSize: "12px" }} rowSpan={items.length}>{order.order_num}</td>
+                        <td style={{ ...td, fontFamily: C.mono, fontSize: "12px" }} rowSpan={items.length}>{order.order_num}</td>
                         <td style={td} rowSpan={items.length}>{fmtDate(order.due_date)}</td>
                         <td style={td} rowSpan={items.length}><StatusBadge status={order.status} colors={sc} /></td>
                       </>
                     )}
                     <td style={td}>{item.category || "—"}</td>
                     <td style={td}>{item.description || "—"}</td>
-                    <td style={{ ...td, textAlign: "center", fontWeight: 600, fontFamily: "'DM Mono',monospace" }}>{item.quantity || 1}</td>
+                    <td style={{ ...td, textAlign: "center", fontWeight: 600, fontFamily: C.mono }}>{item.quantity || 1}</td>
                     <td style={td}>{item.size || "—"}</td>
                     <td style={{ ...td, fontSize: "11px" }}>{[item.finish_type, item.finish_color].filter(Boolean).join(" / ") || "—"}</td>
                     {!isFinancial && <td style={td}>{item.wood_type || "—"}</td>}
                     {isFinancial && idx === 0 && (
-                      <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }} rowSpan={items.length}>
+                      <td style={{ ...td, textAlign: "right", fontFamily: C.mono }} rowSpan={items.length}>
                         {tv === null
-                          ? <span style={{ fontSize: "10px", color: "#b91c1c", fontStyle: "italic" }}>Delivered value unavailable</span>
+                          ? <span style={{ fontSize: "10px", color: C.red, fontStyle: "italic" }}>Delivered value unavailable</span>
                           : <>
                               {fmtKES(tv)}
                               {undelivered > 0 && (
-                                <div style={{ fontSize: "10px", color: "#888", marginTop: "2px" }}>
+                                <div style={{ fontSize: "10px", color: C.muted, marginTop: "2px" }}>
                                   +{fmtKES(undelivered)} undelivered
                                 </div>
                               )}
@@ -1292,9 +1273,9 @@ export default function Reports({ refreshKey = 0 } = {}) {
                         }
                       </td>
                     )}
-                    {isFinancial && idx === 0 && <td style={{ ...td, textAlign: "right", fontFamily: "'DM Mono',monospace" }} rowSpan={items.length}>{tv === null ? "—" : fmtKES(paid)}</td>}
-                    {isFinancial && idx === 0 && <td style={{ ...td, textAlign: "right", fontWeight: 700, color: balance === null ? "#888" : balance > 0 ? "#C62828" : "#2E7D32", fontFamily: "'DM Mono',monospace" }} rowSpan={items.length}>{balance === null ? "—" : fmtKES(balance)}</td>}
-                    {!isFinancial && <td style={{ ...td, fontSize: "11px", color: "#888" }}>{item.notes || ""}</td>}
+                    {isFinancial && idx === 0 && <td style={{ ...td, textAlign: "right", fontFamily: C.mono }} rowSpan={items.length}>{tv === null ? "—" : fmtKES(paid)}</td>}
+                    {isFinancial && idx === 0 && <td style={{ ...td, textAlign: "right", fontWeight: 700, color: balance === null ? C.muted : balance > 0 ? C.red : C.green, fontFamily: C.mono }} rowSpan={items.length}>{balance === null ? "—" : fmtKES(balance)}</td>}
+                    {!isFinancial && <td style={{ ...td, fontSize: "11px", color: C.muted }}>{item.notes || ""}</td>}
                   </tr>
                 ));
               })}
@@ -1318,8 +1299,8 @@ export default function Reports({ refreshKey = 0 } = {}) {
   if (isMobile && mobileTableView) {
     return (
       <div>
-        <div style={{ padding: "12px 16px", borderBottom: "1px solid #e5e7eb" }}>
-          <button onClick={() => setMobileTableView(false)} style={{ fontSize: "13px", color: "#E8512A", fontWeight: 600, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+        <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.line}` }}>
+          <button onClick={() => setMobileTableView(false)} style={{ fontSize: "13px", color: C.coral, fontWeight: 600, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
             ← Card View
           </button>
         </div>
@@ -1339,7 +1320,7 @@ function StatusBadge({ status, colors }) {
   return (
     <span style={{
       fontSize: "10px", fontWeight: 700,
-      color: colors.text || "#666", background: colors.bg || "#f5f5f5",
+      color: colors.text || C.muted, background: colors.bg || C.bg,
       padding: "3px 8px", borderRadius: "4px", whiteSpace: "nowrap",
     }}>{status}</span>
   );
