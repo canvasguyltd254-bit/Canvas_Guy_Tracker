@@ -14,7 +14,7 @@
  */
 
 import { useState, useEffect, useCallback } from "react";
-import { C, PageHeader, Btn } from "@/shared/ui/ds";
+import { C, PageHeader, Btn, Loading, Notice } from "@/shared/ui/ds";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -47,15 +47,15 @@ function KpiCard({ label, value, color, onClick, active }) {
       style={{
         flex: 1, minWidth: 120, padding: "16px", borderRadius: 8,
         background: active ? DARK : SURFACE,
-        color: active ? "#fff" : TEXT,
+        color: active ? C.card : TEXT,
         border: active ? `2px solid ${DARK}` : `2px solid ${BORDER}`,
         cursor: "pointer", textAlign: "left", transition: "all 0.15s",
       }}
     >
-      <div style={{ fontSize: 24, fontWeight: 800, color: active ? "#fff" : color }}>
+      <div style={{ fontSize: 24, fontWeight: 800, color: active ? C.card : color }}>
         {value}
       </div>
-      <div style={{ fontSize: 12, color: active ? "#ccc" : MUTED, marginTop: 4 }}>{label}</div>
+      <div style={{ fontSize: 12, color: active ? C.faint : MUTED, marginTop: 4 }}>{label}</div>
     </button>
   );
 }
@@ -71,8 +71,8 @@ function SectionLabel({ children, count }) {
       {children}
       {count != null && (
         <span style={{
-          background: count > 0 ? BRAND : "#ddd",
-          color: count > 0 ? "#fff" : "#888",
+          background: count > 0 ? BRAND : C.line,
+          color: count > 0 ? C.card : C.muted,
           fontSize: 11, fontWeight: 700, borderRadius: 20,
           padding: "1px 8px",
         }}>{count}</span>
@@ -86,8 +86,8 @@ function EmptyState({ label }) {
     <div style={{
       padding: "28px 0", textAlign: "center", color: MUTED, fontSize: 13,
     }}>
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#ccc" strokeWidth="1.5"
-           style={{ display: "block", margin: "0 auto 8px" }}>
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" strokeWidth="1.5"
+           style={{ display: "block", margin: "0 auto 8px", stroke: C.line }}>
         <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
       </svg>
       {label}
@@ -102,8 +102,8 @@ function RetryButton({ onClick, loading, disabled }) {
       disabled={loading || disabled}
       style={{
         padding: "4px 12px", borderRadius: 5, fontSize: 12, fontWeight: 600,
-        background: loading ? "#ddd" : BRAND,
-        color: loading ? MUTED : "#fff",
+        background: loading ? C.line : BRAND,
+        color: loading ? MUTED : C.card,
         border: "none", cursor: loading || disabled ? "default" : "pointer",
         whiteSpace: "nowrap", flexShrink: 0,
       }}
@@ -117,8 +117,8 @@ function InlineError({ msg }) {
   if (!msg) return null;
   return (
     <div style={{
-      marginTop: 4, fontSize: 11, color: "#c62828",
-      background: "#fff5f5", border: "1px solid #ffcdd2",
+      marginTop: 4, fontSize: 11, color: C.red,
+      background: C.redBg, border: `1px solid ${C.redBd}`,
       borderRadius: 4, padding: "3px 8px",
     }}>
       {msg}
@@ -283,9 +283,9 @@ function PurchasesTable({ rows, categories, onRetried }) {
                       onChange={e => setSelectedCat(s => ({ ...s, [row.id]: e.target.value }))}
                       style={{
                         fontSize: 12, padding: "3px 6px", borderRadius: 4,
-                        border: `1px solid ${catId ? BORDER : "#c62828"}`,
-                        background: "#fff", maxWidth: 200, width: "100%",
-                        color: catId ? TEXT : "#c62828",
+                        border: `1px solid ${catId ? BORDER : C.red}`,
+                        background: C.card, maxWidth: 200, width: "100%",
+                        color: catId ? TEXT : C.red,
                       }}
                     >
                       <option value="">— assign category —</option>
@@ -310,20 +310,14 @@ function PurchasesTable({ rows, categories, onRetried }) {
                     </>
                   ) : (
                     <>
-                      <button
+                      <Btn
+                        primary
+                        small
                         onClick={() => catId && handleRetry(row.id, catId)}
                         disabled={retrying[row.id] || !catId}
-                        style={{
-                          padding: "4px 12px", borderRadius: 5, fontSize: 12, fontWeight: 600,
-                          background: (retrying[row.id] || !catId) ? "#ddd" : BRAND,
-                          color: (retrying[row.id] || !catId) ? MUTED : "#fff",
-                          border: "none",
-                          cursor: (retrying[row.id] || !catId) ? "default" : "pointer",
-                          whiteSpace: "nowrap",
-                        }}
                       >
                         {retrying[row.id] ? "Posting…" : "Assign & Post"}
-                      </button>
+                      </Btn>
                       <InlineError msg={errors[row.id]} />
                     </>
                   )}
@@ -377,8 +371,8 @@ function UnpostedTab({ data, categories, onRetried }) {
   if (total === 0) {
     return (
       <div style={{ padding: 40, textAlign: "center" }}>
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#4caf50" strokeWidth="1.5"
-             style={{ display: "block", margin: "0 auto 16px" }}>
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" strokeWidth="1.5"
+             style={{ display: "block", margin: "0 auto 16px", stroke: C.green }}>
           <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
         </svg>
         <div style={{ fontWeight: 700, fontSize: 16, color: DARK }}>All transactions are posted</div>
@@ -489,7 +483,7 @@ function ErrorsTab({ errors, onRetried }) {
               <td style={{ padding: "8px 10px", fontFamily: "monospace", fontSize: 11, color: MUTED, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" }}>
                 {e.source_id || "—"}
               </td>
-              <td style={{ padding: "8px 10px", color: "#c62828", maxWidth: 320 }}>{e.error_message}</td>
+              <td style={{ padding: "8px 10px", color: C.red, maxWidth: 320 }}>{e.error_message}</td>
               <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
                 {e.source_type && e.source_id ? (
                   <>
@@ -603,9 +597,9 @@ export default function AccountingReview({ refreshKey = 0 } = {}) {
   const summary = data?.summary || { unposted_count: 0, error_count: 0, reversal_count: 0 };
 
   const tabs = [
-    { id: "unposted",   label: "Unposted",  count: summary.unposted_count,  alertColor: summary.unposted_count > 0 ? BRAND : "#4caf50" },
-    { id: "errors",     label: "Errors",    count: summary.error_count,     alertColor: summary.error_count > 0 ? "#c62828" : "#4caf50" },
-    { id: "reversals",  label: "Reversals", count: summary.reversal_count,  alertColor: "#1565c0" },
+    { id: "unposted",   label: "Unposted",  count: summary.unposted_count,  alertColor: summary.unposted_count > 0 ? BRAND : C.green },
+    { id: "errors",     label: "Errors",    count: summary.error_count,     alertColor: summary.error_count > 0 ? C.red : C.green },
+    { id: "reversals",  label: "Reversals", count: summary.reversal_count,  alertColor: C.blue },
   ];
 
   return (
@@ -643,9 +637,7 @@ export default function AccountingReview({ refreshKey = 0 } = {}) {
 
       {/* Content card */}
       {loading ? (
-        <div style={{ padding: 48, textAlign: "center", color: MUTED, fontSize: 13 }}>
-          Loading GL data…
-        </div>
+        <Loading style={{ padding: 48 }} />
       ) : data ? (
         <div style={{
           background: SURFACE, borderRadius: C.radius, border: `1px solid ${BORDER}`,
