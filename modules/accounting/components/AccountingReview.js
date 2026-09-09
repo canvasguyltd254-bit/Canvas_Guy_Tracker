@@ -14,7 +14,7 @@
  */
 
 import { useState, useEffect, useCallback } from "react";
-import { C, PageHeader, Btn, Loading, Notice } from "@/shared/ui/ds";
+import { C, PageHeader, Btn, Loading } from "@/shared/ui/ds";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 

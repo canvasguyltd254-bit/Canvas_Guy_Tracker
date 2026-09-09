@@ -580,7 +580,7 @@ export default function Reports({ refreshKey = 0 } = {}) {
   // ── Batch load error banner (non-blocking — page renders but financial data is stale) ──
   const BatchErrorBanner = batchLoadError ? (
     <Notice color="red" style={{ marginBottom: 16, fontSize: 12, fontWeight: 600 }}>
-      ⚠ {batchLoadError} Partially delivered batch orders show "Delivered value unavailable" and are excluded from KPI totals.
+      ⚠ {batchLoadError} Partially delivered batch orders show "Delivered value unavailable" and are excluded from Billable Value and Collectable Balance; recorded payments remain included.
     </Notice>
   ) : null;
 
@@ -1273,7 +1273,7 @@ export default function Reports({ refreshKey = 0 } = {}) {
                         }
                       </td>
                     )}
-                    {isFinancial && idx === 0 && <td style={{ ...td, textAlign: "right", fontFamily: C.mono }} rowSpan={items.length}>{tv === null ? "—" : fmtKES(paid)}</td>}
+                    {isFinancial && idx === 0 && <td style={{ ...td, textAlign: "right", fontFamily: C.mono }} rowSpan={items.length}>{fmtKES(paid)}</td>}
                     {isFinancial && idx === 0 && <td style={{ ...td, textAlign: "right", fontWeight: 700, color: balance === null ? C.muted : balance > 0 ? C.red : C.green, fontFamily: C.mono }} rowSpan={items.length}>{balance === null ? "—" : fmtKES(balance)}</td>}
                     {!isFinancial && <td style={{ ...td, fontSize: "11px", color: C.muted }}>{item.notes || ""}</td>}
                   </tr>
