@@ -1341,14 +1341,14 @@ function RunDetail({ run: initialRun, userRole, onBack }) {
   const canEdit    = isDraft ? PAYROLL_ROLES.includes(userRole) : userRole === 'admin';
   const canApprove = ADMIN_ONLY.includes(userRole);
 
-  const totalGross = entries.reduce((s, e) => s + Number(e.gross_pay || 0), 0);
-  const totalNet   = entries.reduce((s, e) => s + Number(e.net_pay || 0), 0);
+  const totalGross    = entries.reduce((s, e) => s + Number(e.gross_pay    || 0), 0);
+  const totalNet      = entries.reduce((s, e) => s + Number(e.net_pay      || 0), 0);
+  const totalPaid     = entries.reduce((s, e) => s + Number(e.amount_paid  || 0), 0);
 
-  // Live net payable: always use saved entry values.
+  // Outstanding = total net minus what has already been paid.
   // The server recomputes entries after every attendance save, so entry.net_pay
-  // is always current. A client-side recompute would miss adjustments (bonuses,
-  // advances, damages) and apply SHA to zero-gross employees.
-  const liveNetPayable = totalNet;
+  // and entry.amount_paid are always current.
+  const liveNetPayable = totalNet - totalPaid;
 
   const tabStyle = (t) => ({
     padding: '8px 16px', borderBottom: activeTab === t ? `3px solid ${CORAL}` : '3px solid transparent',
@@ -1372,9 +1372,9 @@ function RunDetail({ run: initialRun, userRole, onBack }) {
         <div style={{ flex: 1 }} />
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontSize: 12, color: '#9ca3af' }}>
-            Net Payable
+            Outstanding
           </div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: CORAL }}>KES {fmt(liveNetPayable)}</div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: liveNetPayable > 0 ? CORAL : GREEN }}>KES {fmt(liveNetPayable)}</div>
         </div>
       </div>
 
@@ -1760,7 +1760,7 @@ function ApportionmentModal({ runs, onClose, onCreated }) {
               <option value="">— Select approved run —</option>
               {runs.map(r => (
                 <option key={r.id} value={r.id}>
-                  {r.run_num} | {fmtD(r.period_start)}–{fmtD(r.period_end)} | KES {fmt(r.total_net)}
+                  {r.run_num} | {fmtD(r.period_start)}–{fmtD(r.period_end)} | KES {fmt(r.total_outstanding ?? r.total_net)} due
                 </option>
               ))}
             </select>
