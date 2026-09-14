@@ -304,7 +304,8 @@ export async function GET(request, { params }) {
     // Pre-migration quotes have gross_amount/net_amount/vat_amount stored as 0.
     // Recompute from unit_price + quantity when the stored values are zero.
     const VAT_RATE = 0.16;
-    const pricingMode = quote?.pricing_mode || 'none';
+    // Pre-CRM orders all have VAT-inclusive prices; default to vat_inclusive when unset
+    const pricingMode = quote?.pricing_mode || 'vat_inclusive';
 
     const computedItems = (quote?.quote_items || [])
       .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
