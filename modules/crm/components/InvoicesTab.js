@@ -29,6 +29,16 @@ const fmtDate = (d) => d
   : '—';
 const fmtKes = (n) => Number(n || 0).toLocaleString('en-KE', { minimumFractionDigits: 0 });
 
+// Returns a readable quote reference for both CRM and legacy direct orders.
+// CRM orders: "QT-2026-0012 R2" (revision appended only when it exists and quote_num is present).
+// Legacy direct orders: the stored quote_number value (e.g. "12735") or "Direct Order".
+const formatQuoteRef = (inv) => {
+  if (!inv.quote_num) return 'Direct Order';
+  return inv.quote_revision != null
+    ? `${inv.quote_num} R${inv.quote_revision}`
+    : inv.quote_num;
+};
+
 const BADGE_MAP = {
   blue:  [C.blueBg,  C.blue],
   green: [C.greenBg, C.green],
@@ -163,7 +173,7 @@ function InvoiceDetailPanel({ orderId, onClose }) {
               ['Invoice #',       invoice.invoice_number || '—'],
               ['Invoice Date',    fmtDate(invoice.invoice_issued_at)],
               ['Customer',        invoice.customer?.name || invoice.client],
-              ['Quote Ref',       invoice.quote_num ? `${invoice.quote_num} R${invoice.quote_revision}` : '—'],
+              ['Quote Ref',       formatQuoteRef(invoice)],
               ['Order #',         invoice.order_num],
               ['VAT Mode',        vatModeLabel[invoice.pricing_mode] || invoice.pricing_mode],
               ['Payment Terms',   invoice.payment_terms?.replace(/_/g, ' ')],
@@ -188,8 +198,10 @@ function InvoiceDetailPanel({ orderId, onClose }) {
         {section === 'items' && vatBreakdown && (
           <>
             <div style={{ marginBottom: 10, fontSize: 12, color: C.muted }}>
-              Amounts snapshotted at conversion — never recalculated.
-              Pricing: <strong>{vatModeLabel[vatBreakdown.pricing_mode]}</strong>
+              {vatBreakdown.source === 'quote'
+                ? 'Amounts snapshotted at conversion — never recalculated.'
+                : 'Amounts reconstructed from the saved order items.'}
+              {' '}Pricing: <strong>{vatModeLabel[vatBreakdown.pricing_mode]}</strong>
               {vatBreakdown.tax_status === 'exempt' && <Badge color="gray" style={{ marginLeft: 6 }}>Tax Exempt</Badge>}
             </div>
             <div style={{ overflowX: 'auto' }}>
@@ -528,7 +540,7 @@ export default function InvoicesTab({ customerId, refreshKey = 0 } = {}) {
                             <div style={{ fontSize: 10.5, color: C.muted }}>{inv.customer_type?.replace(/_/g, ' ')}</div>
                           </Td>
                         )}
-                        <Td>{inv.quote_num ? `${inv.quote_num} R${inv.quote_revision}` : '—'}</Td>
+                        <Td>{formatQuoteRef(inv)}</Td>
                         <Td><span style={{ fontFamily: 'monospace', fontSize: 11.5 }}>{inv.order_num}</span></Td>
                         <Td>{vatModeLabel[inv.pricing_mode] || inv.pricing_mode}</Td>
                         <Td right><strong>{fmtKes(inv.total_value)}</strong></Td>

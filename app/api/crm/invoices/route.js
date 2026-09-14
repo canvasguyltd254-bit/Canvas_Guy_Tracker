@@ -52,7 +52,7 @@ export async function GET(request) {
       .select(`
         id, order_num, client, status, total_value, pricing_mode,
         invoice_number, invoice_issued_at, customer_type, payment_terms,
-        customer_id, quote_id,
+        customer_id, quote_id, quote_number,
         customers ( id, name, email, phone ),
         order_payments ( id, amount, reversed_at ),
         order_items ( id, quantity ),
@@ -174,10 +174,10 @@ export async function GET(request) {
         customer_id:      order.customer_id,
         customer_name:    order.customers?.name || order.client,
         customer:         order.customers,
-        quote_num:        quote?.quote_num,
-        quote_id:         quote?.id,
-        quote_group_id:   quote?.quote_group_id,
-        quote_revision:   quote?.revision,
+        quote_num:        quote?.quote_num || order.quote_number || null,
+        quote_id:         quote?.id || null,
+        quote_group_id:   quote?.quote_group_id || null,
+        quote_revision:   quote ? quote.revision : null,
         total_paid:       totalPaid,
         balance,
         payment_status:   computedPmtStatus,
@@ -196,7 +196,7 @@ export async function GET(request) {
       );
     }
 
-    // Filter by quote_num
+    // Filter by quote_num (covers both CRM quote_num and legacy order.quote_number)
     if (quote) {
       const q = quote.toLowerCase();
       invoices = invoices.filter(i =>

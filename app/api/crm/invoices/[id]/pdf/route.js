@@ -61,11 +61,11 @@ export async function GET(request, { params }) {
       .from('orders')
       .select(`
         id, order_num, client, contact_person, status, total_value,
-        pricing_mode, invoice_number, invoice_issued_at,
+        pricing_mode, tax_status, invoice_number, invoice_issued_at,
         customer_type, payment_terms, payment_due_date,
         batch_delivery, deliverable_units, due_date,
-        customer_id, quote_id,
-        customers ( id, name, email, phone )
+        customer_id, quote_id, quote_number,
+        customers ( id, name, email, phone, tax_status )
       `)
       .eq('id', orderId)
       .single();
@@ -250,8 +250,11 @@ export async function GET(request, { params }) {
     // ── VAT amount fallback helper ─────────────────────────────────────────────
     // Pre-migration rows have gross_amount / net_amount / vat_amount stored as 0.
     // Recompute from unit_price × quantity using the pricing_mode when all three are 0.
+    // Use the historical order snapshot first; fall back to live customer record.
     const VAT_RATE = 0.16;
-    function computeItemAmounts(i, pricingMode) {
+    const taxStatus = order.tax_status || order.customers?.tax_status || 'taxable';
+
+    function computeItemAmounts(i, pricingMode, ts) {
       const qty       = Number(i.quantity    || 0);
       const unitPrice = Number(i.unit_price  || 0);
       let gross = Number(i.gross_amount || 0);
@@ -259,18 +262,18 @@ export async function GET(request, { params }) {
       let vat   = Number(i.vat_amount   || 0);
 
       if (gross === 0 && net === 0 && vat === 0 && unitPrice > 0) {
-        if (pricingMode === 'vat_inclusive') {
+        if (ts === 'exempt') {
+          net   = unitPrice * qty;
+          vat   = 0;
+          gross = net;
+        } else if (pricingMode === 'vat_inclusive') {
           gross = unitPrice * qty;
-          vat   = gross - gross / (1 + VAT_RATE);
-          net   = gross - vat;
-        } else if (pricingMode === 'vat_exclusive') {
+          net   = gross / (1 + VAT_RATE);
+          vat   = gross - net;
+        } else {
           net   = unitPrice * qty;
           vat   = net * VAT_RATE;
           gross = net + vat;
-        } else {
-          gross = unitPrice * qty;
-          net   = gross;
-          vat   = 0;
         }
       }
       return { gross, net, vat };
@@ -280,10 +283,12 @@ export async function GET(request, { params }) {
     if (quote) {
       // CRM-originated order: use snapshotted quote amounts (with pre-migration fallback)
       const pricingMode = quote.pricing_mode || 'vat_inclusive';
+      // Quote's own tax_status snapshot is authoritative for CRM orders; order snapshot as fallback.
+      const quoteTaxStatus = quote.tax_status || taxStatus;
       const computedItems = (quote.quote_items || [])
         .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
         .map(i => {
-          const { gross, net, vat } = computeItemAmounts(i, pricingMode);
+          const { gross, net, vat } = computeItemAmounts(i, pricingMode, quoteTaxStatus);
           return {
             description:  i.description,
             category:     i.category,
@@ -309,7 +314,7 @@ export async function GET(request, { params }) {
 
       vatBreakdown = {
         pricing_mode: pricingMode,
-        tax_status:   quote.tax_status,
+        tax_status:   quoteTaxStatus,
         subtotal,
         vat_amount:   vatAmt,
         total,
@@ -317,16 +322,21 @@ export async function GET(request, { params }) {
       };
     } else {
       // Direct order (no quote): build line-item breakdown from order_items
-      const { data: orderItems } = await serviceClient
+      const { data: orderItems, error: orderItemsError } = await serviceClient
         .from('order_items')
         .select('id, description, category, quantity, unit_price, net_amount, vat_amount, gross_amount, finish_type, finish_color, wood_type, sort_order')
         .eq('order_id', orderId)
         .order('sort_order', { ascending: true });
 
+      if (orderItemsError) {
+        console.error('Invoice PDF order items:', orderItemsError.message);
+        return NextResponse.json({ error: 'Failed to fetch invoice line items' }, { status: 500 });
+      }
+
       // Pre-CRM orders all have VAT-inclusive prices; default to vat_inclusive when unset
       const pricingMode = order.pricing_mode || 'vat_inclusive';
       const items = (orderItems || []).map(i => {
-        const { gross, net, vat } = computeItemAmounts(i, pricingMode);
+        const { gross, net, vat } = computeItemAmounts(i, pricingMode, taxStatus);
         return {
           description:  i.description,
           category:     i.category,
@@ -345,7 +355,9 @@ export async function GET(request, { params }) {
       const vatAmt   = items.reduce((s, i) => s + i.vat_amount,   0);
       vatBreakdown = {
         pricing_mode: pricingMode,
-        tax_status:   order.customer_type === 'vat_registered' ? 'vat_registered' : 'standard',
+        // Use the historical order snapshot first so a customer tax change doesn't
+        // retroactively alter a historic invoice. customer_type is a credit classification — never use it for VAT status.
+        tax_status:   taxStatus,
         subtotal,
         vat_amount:   vatAmt,
         total:        Number(order.total_value),
@@ -360,7 +372,7 @@ export async function GET(request, { params }) {
       invoice_issued_at: order.invoice_issued_at,
       status:            order.status,
       total_value:       totalValue,
-      pricing_mode:      order.pricing_mode,
+      pricing_mode:      vatBreakdown?.pricing_mode || order.pricing_mode || 'vat_inclusive',
       customer_type:     order.customer_type,
       payment_terms:     order.payment_terms,
       payment_due_date:  order.payment_due_date,
@@ -370,8 +382,8 @@ export async function GET(request, { params }) {
       contact_person:    order.contact_person,
       customer:          order.customers,
       quote_id:          order.quote_id,
-      quote_num:         quote?.quote_num,
-      quote_revision:    quote?.revision,
+      quote_num:         quote?.quote_num || order.quote_number || null,
+      quote_revision:    quote ? quote.revision : null,
       total_paid:        totalPaid,
       balance:           Math.max(0, totalValue - totalPaid),
     };
