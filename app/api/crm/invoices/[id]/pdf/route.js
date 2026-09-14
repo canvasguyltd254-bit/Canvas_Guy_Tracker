@@ -393,7 +393,7 @@ export async function GET(request, { params }) {
       return NextResponse.json({ error: 'PDF generation failed', detail: err.message }, { status: 500 });
     }
 
-    const filename = `${order.invoice_number}_Invoice.pdf`.replace(/[^a-zA-Z0-9_.-]/g, '_');
+    const filename = `${order.invoice_number || order.order_num}_Invoice.pdf`.replace(/[^a-zA-Z0-9_.-]/g, '_');
     return new NextResponse(pdfBuffer, {
       status: 200,
       headers: {

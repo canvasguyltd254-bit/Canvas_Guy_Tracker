@@ -2399,7 +2399,9 @@ function buildReportPDF(data) {
         coralAccent(COL2X, detailStartY);
         pLeft('INVOICE DETAILS', COL2X + 4 * MM, detailStartY + 0.8 * MM, { font: 'Helvetica-Bold', size: 7.5, color: NAVY });
         const detailRows = [
-          ['Quote',       `${invoice.quote_num || '—'}${invoice.quote_revision != null ? ` R${invoice.quote_revision}` : ''}`],
+          ['Quote',       invoice.quote_num
+                            ? `${invoice.quote_num}${invoice.quote_revision != null ? ` R${invoice.quote_revision}` : ''}`
+                            : 'Direct Order'],
           ['Order',       invoice.order_num || '—'],
           ['Terms',       fmtTerms(invoice.payment_terms)],
           ['VAT Mode',    vatBreakdown?.pricing_mode === 'vat_exclusive' ? 'VAT Exclusive'
