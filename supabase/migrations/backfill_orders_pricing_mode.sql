@@ -14,11 +14,6 @@ WHERE pricing_mode = 'none';
 ALTER TABLE orders
   ALTER COLUMN pricing_mode SET DEFAULT 'vat_inclusive';
 
--- 3. Same treatment for quotations — pre-CRM quotes were also VAT-inclusive
-UPDATE quotations
-SET pricing_mode = 'vat_inclusive'
-WHERE pricing_mode = 'none' OR pricing_mode IS NULL;
-
--- Quotations table may have been created with a different default; ensure consistency
-ALTER TABLE quotations
-  ALTER COLUMN pricing_mode SET DEFAULT 'vat_inclusive';
+-- NOTE: quotations.pricing_mode is intentionally left unchanged.
+-- The quotations CHECK constraint does not allow 'none', and new CRM quotes
+-- default to 'vat_exclusive' — that is the correct behaviour for CRM-originated quotes.
