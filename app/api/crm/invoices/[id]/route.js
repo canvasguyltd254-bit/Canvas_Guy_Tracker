@@ -202,7 +202,7 @@ export async function GET(request, { params }) {
         const batchValue = items.reduce((s, i) => {
           const oi = i.order_items;
           if (!oi) return s;
-          const grossUnit = oi.gross_amount != null && Number(oi.quantity) > 0
+          const grossUnit = Number(oi.gross_amount || 0) > 0 && Number(oi.quantity) > 0
             ? Number(oi.gross_amount) / Number(oi.quantity)
             : Number(oi.unit_price || 0);
           const delivered = isDeliveredBatch ? (i.quantity_delivered || 0) : 0;
@@ -220,7 +220,7 @@ export async function GET(request, { params }) {
           counts_toward_progress: isDeliveredBatch,
           items: items.map(i => {
             const oi = i.order_items;
-            const grossUnit = oi && oi.gross_amount != null && Number(oi.quantity) > 0
+            const grossUnit = oi && Number(oi.gross_amount || 0) > 0 && Number(oi.quantity) > 0
               ? Number(oi.gross_amount) / Number(oi.quantity)
               : Number(oi?.unit_price || 0);
             return {
@@ -301,26 +301,69 @@ export async function GET(request, { params }) {
       .reduce((s, p) => s + Number(p.amount), 0);
 
     // ── VAT breakdown (always from snapshotted quote) ─────────────────────────
-    const vatBreakdown = quote ? {
-      pricing_mode: quote.pricing_mode,
-      tax_status:   quote.tax_status,
-      subtotal:     Number(quote.subtotal || 0),
-      vat_amount:   Number(quote.vat_amount || 0),
-      total:        Number(quote.total || 0),
-      items:        (quote.quote_items || [])
-        .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
-        .map(i => ({
+    // Pre-migration quotes have gross_amount/net_amount/vat_amount stored as 0.
+    // Recompute from unit_price + quantity when the stored values are zero.
+    const VAT_RATE = 0.16;
+    const pricingMode = quote?.pricing_mode || 'none';
+
+    const computedItems = (quote?.quote_items || [])
+      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+      .map(i => {
+        const qty       = Number(i.quantity    || 0);
+        const unitPrice = Number(i.unit_price  || 0);
+        let gross = Number(i.gross_amount || 0);
+        let net   = Number(i.net_amount   || 0);
+        let vat   = Number(i.vat_amount   || 0);
+
+        // Fallback: if all three stored amounts are 0, recompute from unit_price
+        if (gross === 0 && net === 0 && vat === 0 && unitPrice > 0) {
+          if (pricingMode === 'vat_inclusive') {
+            gross = unitPrice * qty;
+            vat   = gross - gross / (1 + VAT_RATE);
+            net   = gross - vat;
+          } else if (pricingMode === 'vat_exclusive') {
+            net   = unitPrice * qty;
+            vat   = net * VAT_RATE;
+            gross = net + vat;
+          } else {
+            // 'none' — no VAT
+            gross = unitPrice * qty;
+            net   = gross;
+            vat   = 0;
+          }
+        }
+
+        return {
           description:  i.description,
           category:     i.category,
-          quantity:     i.quantity,
-          unit_price:   Number(i.unit_price || 0),
-          net_amount:   Number(i.net_amount || 0),
-          vat_amount:   Number(i.vat_amount || 0),
-          gross_amount: Number(i.gross_amount || 0),
+          quantity:     qty,
+          unit_price:   unitPrice,
+          net_amount:   net,
+          vat_amount:   vat,
+          gross_amount: gross,
           finish_type:  i.finish_type,
           finish_color: i.finish_color,
           wood_type:    i.wood_type,
-        })),
+        };
+      });
+
+    // Recompute quote-level totals if stored subtotal is 0 (pre-migration)
+    let subtotal  = Number(quote?.subtotal   || 0);
+    let vatTotal  = Number(quote?.vat_amount || 0);
+    let total     = Number(quote?.total      || 0);
+    if (subtotal === 0 && computedItems.length > 0) {
+      subtotal = computedItems.reduce((s, i) => s + i.net_amount,   0);
+      vatTotal = computedItems.reduce((s, i) => s + i.vat_amount,   0);
+      total    = computedItems.reduce((s, i) => s + i.gross_amount, 0);
+    }
+
+    const vatBreakdown = quote ? {
+      pricing_mode: pricingMode,
+      tax_status:   quote.tax_status,
+      subtotal,
+      vat_amount:   vatTotal,
+      total,
+      items:        computedItems,
     } : null;
 
     // ── Assemble invoice summary ──────────────────────────────────────────────

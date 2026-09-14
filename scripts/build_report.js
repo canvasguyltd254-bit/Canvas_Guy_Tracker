@@ -2456,20 +2456,37 @@ function buildReportPDF(data) {
             item.finish_color,
             item.wood_type,
           ].filter(Boolean).join('  ·  ');
-          const rowH = spec ? 10 * MM : 6 * MM;
+
+          // ── Dynamic row height based on actual description text ────────────
+          portDoc.font('Helvetica').fontSize(7);
+          const descTextH = portDoc.heightOfString(String(item.description || '—'), { width: IC.desc.maxW });
+          const PAD   = 3 * MM;   // top + bottom breathing room
+          const specH = spec ? 4 * MM : 0;
+          const rowH  = Math.max(descTextH + PAD + specH, spec ? 10 * MM : 6 * MM);
+
           y = guard(y, rowH);
           if (y === pPM) y = ITEM_HDR(y);
           pFill(pPM, y, pCW, rowH, idx % 2 === 0 ? WHITE : LGRAY);
-          pCenter(idx + 1,                       IC.num.cx,   y + 1.5 * MM, { size: 7 });
-          pLeft(item.description || '—',         IC.desc.x,   y + 1.5 * MM, { size: 7, maxW: IC.desc.maxW });
-          pRight(String(item.quantity ?? '—'),    IC.qty.rx,   y + 1.5 * MM, { size: 7 });
-          pRight(`KES ${fmtKes(item.unit_price)}`,IC.unit.rx, y + 1.5 * MM, { size: 7 });
-          pRight(`KES ${fmtKes(item.net_amount)}`,IC.net.rx,  y + 1.5 * MM, { size: 7 });
-          pRight(`KES ${fmtKes(item.vat_amount)}`,IC.vat.rx,  y + 1.5 * MM, { size: 7 });
-          pRight(`KES ${fmtKes(item.gross_amount)}`,IC.gross.rx,y+1.5*MM,   { size: 7.5, font: 'Helvetica-Bold' });
+
+          pCenter(idx + 1, IC.num.cx, y + 1.5 * MM, { size: 7 });
+
+          // Description — allow PDFKit to wrap within the column width
+          portDoc.font('Helvetica').fontSize(7).fillColor(DGRAY)
+                 .text(String(item.description || '—'), IC.desc.x, y + 1.5 * MM,
+                       { width: IC.desc.maxW, lineBreak: false });
+
+          pRight(String(item.quantity ?? '—'),     IC.qty.rx,  y + 1.5 * MM, { size: 7 });
+          pRight(`KES ${fmtKes(item.unit_price)}`, IC.unit.rx, y + 1.5 * MM, { size: 7 });
+          pRight(`KES ${fmtKes(item.net_amount)}`, IC.net.rx,  y + 1.5 * MM, { size: 7 });
+          pRight(`KES ${fmtKes(item.vat_amount)}`, IC.vat.rx,  y + 1.5 * MM, { size: 7 });
+          pRight(`KES ${fmtKes(item.gross_amount)}`, IC.gross.rx, y + 1.5 * MM,
+                 { size: 7.5, font: 'Helvetica-Bold' });
+
+          // Spec line positioned below the wrapped description text
           if (spec) {
+            const specY = y + 1.5 * MM + descTextH + 0.5 * MM;
             portDoc.font('Helvetica').fontSize(6).fillColor('#999999')
-                   .text(spec, IC.desc.x, y + 6 * MM, { lineBreak: false });
+                   .text(spec, IC.desc.x, specY, { lineBreak: false });
           }
           y += rowH;
         }
