@@ -171,7 +171,10 @@ export async function GET(request, { params }) {
         const batchValue = items.reduce((s, i) => {
           const oi = i.order_items;
           if (!oi) return s;
-          const grossUnit = oi.quantity > 0 ? Number(oi.gross_amount || 0) / oi.quantity : Number(oi.unit_price || 0);
+          // gross_amount stored as 0 for pre-migration rows → fall back to unit_price
+          const grossUnit = Number(oi.gross_amount || 0) > 0 && Number(oi.quantity) > 0
+            ? Number(oi.gross_amount) / Number(oi.quantity)
+            : Number(oi.unit_price || 0);
           return s + (isDelivered ? (i.quantity_delivered || 0) : 0) * grossUnit;
         }, 0);
         return {
@@ -182,9 +185,9 @@ export async function GET(request, { params }) {
           counts_toward_progress: isDelivered,
           items: items.map(i => {
             const oi = i.order_items;
-            const grossUnit = oi && oi.gross_amount != null && Number(oi.quantity) > 0
-            ? Number(oi.gross_amount) / Number(oi.quantity)
-            : Number(oi?.unit_price || 0);
+            const grossUnit = oi && Number(oi.gross_amount || 0) > 0 && Number(oi.quantity) > 0
+              ? Number(oi.gross_amount) / Number(oi.quantity)
+              : Number(oi?.unit_price || 0);
             return {
               description: oi?.description || '—',
               category: oi?.category,
@@ -244,57 +247,107 @@ export async function GET(request, { params }) {
     });
     const totalPaid = (pmtRows || []).filter(p => !p.reversed_at).reduce((s, p) => s + Number(p.amount), 0);
 
+    // ── VAT amount fallback helper ─────────────────────────────────────────────
+    // Pre-migration rows have gross_amount / net_amount / vat_amount stored as 0.
+    // Recompute from unit_price × quantity using the pricing_mode when all three are 0.
+    const VAT_RATE = 0.16;
+    function computeItemAmounts(i, pricingMode) {
+      const qty       = Number(i.quantity    || 0);
+      const unitPrice = Number(i.unit_price  || 0);
+      let gross = Number(i.gross_amount || 0);
+      let net   = Number(i.net_amount   || 0);
+      let vat   = Number(i.vat_amount   || 0);
+
+      if (gross === 0 && net === 0 && vat === 0 && unitPrice > 0) {
+        if (pricingMode === 'vat_inclusive') {
+          gross = unitPrice * qty;
+          vat   = gross - gross / (1 + VAT_RATE);
+          net   = gross - vat;
+        } else if (pricingMode === 'vat_exclusive') {
+          net   = unitPrice * qty;
+          vat   = net * VAT_RATE;
+          gross = net + vat;
+        } else {
+          gross = unitPrice * qty;
+          net   = gross;
+          vat   = 0;
+        }
+      }
+      return { gross, net, vat };
+    }
+
     let vatBreakdown = null;
     if (quote) {
-      // CRM-originated order: use snapshotted quote amounts
-      vatBreakdown = {
-        pricing_mode: quote.pricing_mode,
-        tax_status:   quote.tax_status,
-        subtotal:     Number(quote.subtotal || 0),
-        vat_amount:   Number(quote.vat_amount || 0),
-        total:        Number(quote.total || 0),
-        items:        (quote.quote_items || [])
-          .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
-          .map(i => ({
+      // CRM-originated order: use snapshotted quote amounts (with pre-migration fallback)
+      const pricingMode = quote.pricing_mode || 'vat_inclusive';
+      const computedItems = (quote.quote_items || [])
+        .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+        .map(i => {
+          const { gross, net, vat } = computeItemAmounts(i, pricingMode);
+          return {
             description:  i.description,
             category:     i.category,
-            quantity:     i.quantity,
+            quantity:     Number(i.quantity || 0),
             unit_price:   Number(i.unit_price || 0),
-            net_amount:   Number(i.net_amount || 0),
-            vat_amount:   Number(i.vat_amount || 0),
-            gross_amount: Number(i.gross_amount || 0),
+            net_amount:   net,
+            vat_amount:   vat,
+            gross_amount: gross,
             finish_type:  i.finish_type,
             finish_color: i.finish_color,
             wood_type:    i.wood_type,
-          })),
+          };
+        });
+
+      let subtotal = Number(quote.subtotal || 0);
+      let vatAmt   = Number(quote.vat_amount || 0);
+      let total    = Number(quote.total || 0);
+      if (subtotal === 0 && computedItems.length > 0) {
+        subtotal = computedItems.reduce((s, i) => s + i.net_amount,   0);
+        vatAmt   = computedItems.reduce((s, i) => s + i.vat_amount,   0);
+        total    = computedItems.reduce((s, i) => s + i.gross_amount, 0);
+      }
+
+      vatBreakdown = {
+        pricing_mode: pricingMode,
+        tax_status:   quote.tax_status,
+        subtotal,
+        vat_amount:   vatAmt,
+        total,
+        items:        computedItems,
       };
     } else {
-      // Direct order: build line-item breakdown from order_items
+      // Direct order (no quote): build line-item breakdown from order_items
       const { data: orderItems } = await serviceClient
         .from('order_items')
         .select('id, description, category, quantity, unit_price, net_amount, vat_amount, gross_amount, finish_type, finish_color, wood_type, sort_order')
         .eq('order_id', orderId)
         .order('sort_order', { ascending: true });
 
-      const items = (orderItems || []).map(i => ({
-        description:  i.description,
-        category:     i.category,
-        quantity:     i.quantity,
-        unit_price:   Number(i.unit_price || 0),
-        net_amount:   Number(i.net_amount || 0),
-        vat_amount:   Number(i.vat_amount || 0),
-        gross_amount: Number(i.gross_amount || 0),
-        finish_type:  i.finish_type,
-        finish_color: i.finish_color,
-        wood_type:    i.wood_type,
-      }));
-      const subtotal  = items.reduce((s, i) => s + i.net_amount, 0);
-      const vatAmount = items.reduce((s, i) => s + i.vat_amount, 0);
+      // Pre-CRM orders all have VAT-inclusive prices; default to vat_inclusive when unset
+      const pricingMode = order.pricing_mode || 'vat_inclusive';
+      const items = (orderItems || []).map(i => {
+        const { gross, net, vat } = computeItemAmounts(i, pricingMode);
+        return {
+          description:  i.description,
+          category:     i.category,
+          quantity:     Number(i.quantity || 0),
+          unit_price:   Number(i.unit_price || 0),
+          net_amount:   net,
+          vat_amount:   vat,
+          gross_amount: gross,
+          finish_type:  i.finish_type,
+          finish_color: i.finish_color,
+          wood_type:    i.wood_type,
+        };
+      });
+
+      const subtotal = items.reduce((s, i) => s + i.net_amount,   0);
+      const vatAmt   = items.reduce((s, i) => s + i.vat_amount,   0);
       vatBreakdown = {
-        pricing_mode: order.pricing_mode,
+        pricing_mode: pricingMode,
         tax_status:   order.customer_type === 'vat_registered' ? 'vat_registered' : 'standard',
         subtotal,
-        vat_amount:   vatAmount,
+        vat_amount:   vatAmt,
         total:        Number(order.total_value),
         items,
       };
