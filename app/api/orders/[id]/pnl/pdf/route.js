@@ -15,8 +15,8 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { spawn } from 'child_process';
 import { join } from 'path';
+import { isChargeItem } from '@/shared/lib/orderLineTypes';
 
-const CHARGE_CATS = new Set(['Delivery Fee', 'Installation Fee', 'Design Fee', 'Rush Fee', 'Discount']);
 
 function spawnPdf(data) {
   return new Promise((resolve, reject) => {
@@ -60,7 +60,7 @@ export async function GET(request, { params }) {
     // ── Fetch order items (for revenue breakdown) ─────────────────────────
     const { data: allItems, error: itemsErr } = await serviceClient
       .from('order_items')
-      .select('id, category, description, unit_price, quantity, sort_order')
+      .select('id, category, line_type, description, unit_price, quantity, sort_order')
       .eq('order_id', orderId)
       .order('sort_order');
 
@@ -70,8 +70,8 @@ export async function GET(request, { params }) {
     }
 
     const items        = allItems || [];
-    const chargeItems  = items.filter(i =>  CHARGE_CATS.has(i.category));
-    const regularItems = items.filter(i => !CHARGE_CATS.has(i.category));
+    const chargeItems  = items.filter(i =>  isChargeItem(i));
+    const regularItems = items.filter(i => !isChargeItem(i));
     const itemsSubtotal = regularItems.reduce((s, i) =>
       s + (parseFloat(i.unit_price) || 0) * (parseInt(i.quantity) || 1), 0);
 

@@ -15,6 +15,7 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
+import { lineTypeForCategory } from '@/shared/lib/orderLineTypes';
 
 export async function GET(request) {
   try {
@@ -99,6 +100,8 @@ export async function POST(request) {
       const itemRows = items.map((item) => ({
         ...pick(item, ALLOWED_FIELDS.order_items.insert),
         order_id: order.id, // injected server-side — never trust body.order_id
+        // Classified server-side from the category; a client-supplied line_type is ignored.
+        line_type: lineTypeForCategory(item.category),
       }));
 
       const { error: itemsErr } = await serviceClient
@@ -107,7 +110,10 @@ export async function POST(request) {
 
       if (itemsErr) {
         console.error('POST /api/orders — items insert:', itemsErr);
-        // Order already created — log but don't roll back (order_items can be added later)
+        // Do not leave an empty order header behind: remove it and fail the request.
+        const { error: cleanupErr } = await serviceClient.from('orders').delete().eq('id', order.id);
+        if (cleanupErr) console.error('POST /api/orders — cleanup of order without items failed:', cleanupErr);
+        return NextResponse.json({ error: 'Failed to save order items; the order was not created' }, { status: 500 });
       }
     }
 

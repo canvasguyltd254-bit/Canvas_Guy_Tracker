@@ -17,6 +17,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import { createClient } from '@/shared/supabase/client';
+import { isChargeItem, isProductItem } from '@/shared/lib/orderLineTypes';
 
 const supabase = createClient();
 
@@ -25,8 +26,6 @@ const fmtDate = d => d
   : '—';
 
 const fmtKES = v => `KES ${Math.round(parseFloat(v) || 0).toLocaleString('en-KE')}`;
-
-const CHARGE_CATEGORIES = ['Delivery Fee', 'Installation Fee', 'Design Fee', 'Rush Fee', 'Discount'];
 
 export default function DeliveryNotePage() {
   const { id }        = useParams();
@@ -58,7 +57,7 @@ export default function DeliveryNotePage() {
                 *,
                 delivery_batch_items (
                   id, quantity_planned, quantity_delivered,
-                  order_items ( id, category, description, size, finish_type, finish_color, wood_type, unit_price, sort_order )
+                  order_items ( id, category, line_type, description, size, finish_type, finish_color, wood_type, unit_price, sort_order )
                 )
               `)
               .eq('id', batchId)
@@ -71,7 +70,11 @@ export default function DeliveryNotePage() {
           setPayments(paysRes.data || []);
 
           // Build display items from batch items, sorted by order_items.sort_order
+          // Defence in depth: charges are never deliverable. The fulfillment view
+          // already keeps them out of new batches; this also hides any that were
+          // batched before that fix (completed batches are preserved, not rewritten).
           const batchItems = (batchRes.data?.delivery_batch_items || [])
+            .filter(bi => isProductItem(bi.order_items))
             .sort((a, b) => (a.order_items?.sort_order || 0) - (b.order_items?.sort_order || 0))
             .map(bi => ({
               ...bi.order_items,
@@ -111,8 +114,8 @@ export default function DeliveryNotePage() {
     </div>
   );
 
-  const regularItems   = items.filter(i => !CHARGE_CATEGORIES.includes(i.category));
-  const chargeItems    = items.filter(i => CHARGE_CATEGORIES.includes(i.category));
+  const regularItems   = items.filter(i => !isChargeItem(i));
+  const chargeItems    = items.filter(i =>  isChargeItem(i));
   const totalPaid      = payments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
   const balance        = Math.max((parseFloat(order.total_value) || 0) - totalPaid, 0);
   const totalPieces    = regularItems.reduce((s, i) => s + (parseInt(i.quantity) || 0), 0);

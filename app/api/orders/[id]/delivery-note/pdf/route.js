@@ -17,6 +17,7 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { spawn } from 'child_process';
 import { join } from 'path';
+import { isChargeItem, isProductItem } from '@/shared/lib/orderLineTypes';
 
 function spawnPdf(data) {
   return new Promise((resolve, reject) => {
@@ -71,7 +72,7 @@ export async function GET(request, { params }) {
           *,
           delivery_batch_items (
             id, quantity_planned, quantity_delivered,
-            order_items ( id, category, description, size, finish_type, finish_color, wood_type, unit_price, sort_order )
+            order_items ( id, category, line_type, description, size, finish_type, finish_color, wood_type, unit_price, sort_order )
           )
         `)
         .eq('id', batchId)
@@ -83,7 +84,11 @@ export async function GET(request, { params }) {
       }
       batch = batchRow;
 
+      // Charges are never deliverable. The fulfillment view keeps them out of
+      // new batches; this also hides any batched before that fix (completed
+      // batches are preserved as history, not rewritten).
       items = (batchRow.delivery_batch_items || [])
+        .filter(bi => isProductItem(bi.order_items))
         .sort((a, b) => (a.order_items?.sort_order || 0) - (b.order_items?.sort_order || 0))
         .map(bi => ({
           ...bi.order_items,
@@ -101,7 +106,9 @@ export async function GET(request, { params }) {
       if (iErr) {
         return NextResponse.json({ error: 'Failed to fetch items' }, { status: 500 });
       }
-      items = allItems || [];
+      // build_report.js is a CommonJS child process and cannot import the shared
+      // ESM helper, so classification happens here and travels with each row.
+      items = (allItems || []).map(i => ({ ...i, is_charge: isChargeItem(i) }));
     }
 
     // ── Fetch payments ──────────────────────────────────────────────────────

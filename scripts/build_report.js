@@ -1191,9 +1191,13 @@ function buildReportPDF(data) {
         const payments    = deliveryNote.payments || [];
         const showAmounts = !!deliveryNote.showAmounts;
 
-        const CHARGE_CATS  = new Set(['Delivery Fee','Installation Fee','Design Fee','Rush Fee','Discount']);
-        const regularItems = items.filter(i => !CHARGE_CATS.has(i.category));
-        const chargeItems  = items.filter(i =>  CHARGE_CATS.has(i.category));
+        // The route classifies each row (shared/lib/orderLineTypes.js) and sends
+        // is_charge. The category set below is only a fallback for callers that
+        // do not — keep it identical to LEGACY_CHARGE_CATEGORIES.
+        const CHARGE_CATS  = new Set(['Delivery Fee','Design Fee','Installation Fee','Packaging','Other Charge','Rush Fee','Discount']);
+        const isChargeRow  = i => (typeof i.is_charge === 'boolean') ? i.is_charge : CHARGE_CATS.has(i.category);
+        const regularItems = items.filter(i => !isChargeRow(i));
+        const chargeItems  = items.filter(i =>  isChargeRow(i));
 
         const totalPaid     = payments.reduce((s, p) => s + parseFloat(p.amount || 0), 0);
         const contractTotal = parseFloat(order.total_value || 0);

@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/shared/supabase/client';
+import { lineTypeForCategory } from '@/shared/lib/orderLineTypes';
 import {
   CATEGORIES, CHARGE_TYPES, FINISH_TYPES, WOOD_TYPES,
   CUSTOMER_TYPES, PAYMENT_TERMS, CREDIT_TERMS,
@@ -369,6 +370,7 @@ function NewOrderContent() {
           finish_color: item.finish_color || null,
           wood_type: item.wood_type || null,
           unit_price: parseFloat(item.unit_price) || 0,
+          line_type: lineTypeForCategory(item.category),
           sort_order: idx,
         })),
         ...charges.filter(c => parseFloat(c.amount) > 0).map((c, idx) => ({
@@ -377,12 +379,23 @@ function NewOrderContent() {
           description: c.label,
           quantity: 1,
           unit_price: parseFloat(c.amount) || 0,
+          // Charges are never 'product'; an unrecognised label falls back to 'other'.
+          line_type: lineTypeForCategory(c.label) === 'product' ? 'other' : lineTypeForCategory(c.label),
           sort_order: items.length + idx,
         })),
       ];
       if (allRows.length > 0) {
         const { error: itemsErr } = await supabase.from('order_items').insert(allRows);
-        if (itemsErr) console.error('Items error:', itemsErr);
+        if (itemsErr) {
+          // Never leave an empty order header behind. Remove it, then fail the save.
+          console.error('Items error:', itemsErr);
+          const { error: cleanupErr } = await supabase.from('orders').delete().eq('id', created.id);
+          throw new Error(
+            cleanupErr
+              ? `Order ${created.order_num} was created but its items could not be saved, and it could not be removed automatically. Delete it from the orders list and try again.`
+              : 'Order items could not be saved, so the order was not created. Please try again.',
+          );
+        }
       }
 
       // Activity log

@@ -17,6 +17,7 @@ import {
   CREDIT_TERMS, HEAD_OF_SALES_CREDIT_LIMIT, REWORK_TARGETS, REWORK_REASONS,
   SALES_MAX_ADVANCE_TO, STATUS_BORDER_CLASS, ss, getPayStatus, getStatusList, genId,
 } from "./constants";
+import { lineTypeForCategory } from "@/shared/lib/orderLineTypes";
 
 async function logAct(sb, oid, t, d, o, n) {
   await sb.from("order_activities").insert({
@@ -877,7 +878,7 @@ export default function OrderTracker() {
   const saveItems = async (oid, items) => {
     await sb.from("order_items").delete().eq("order_id", oid);
     if (items.length > 0) {
-      const rows = items.map((i, idx) => ({ order_id: oid, category: i.category, description: i.description || null, quantity: parseInt(i.quantity) || 1, size: i.size || null, finish_type: i.finish_type || null, finish_color: i.finish_color || null, wood_type: i.wood_type || null, unit_price: parseFloat(i.unit_price) || 0, notes: i.notes || null, sort_order: idx }));
+      const rows = items.map((i, idx) => ({ order_id: oid, category: i.category, description: i.description || null, quantity: parseInt(i.quantity) || 1, size: i.size || null, finish_type: i.finish_type || null, finish_color: i.finish_color || null, wood_type: i.wood_type || null, unit_price: parseFloat(i.unit_price) || 0, notes: i.notes || null, line_type: lineTypeForCategory(i.category), sort_order: idx }));
       await sb.from("order_items").insert(rows);
     }
   };
