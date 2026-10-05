@@ -3,9 +3,11 @@
  *
  * Full invoice detail for a given order (id = order.id).
  *
- * Returns 6 sections:
+ * Returns 7 sections:
  *   1. invoice         — invoice + order summary fields
- *   2. vatBreakdown    — snapshotted amounts from the quotation (never recalculated)
+ *   2. vatBreakdown    — lines + totals from the order's CURRENT order_items (shared/lib/invoiceLines.js);
+ *                        the quotation is provenance only (vatBreakdown.quotation)
+ *   2b. adjustments    — 'Adjustments since quotation' from order_item_adjustments
  *   3. quoteHistory    — all revisions in the same quote_group_id
  *   4. trackerProgress — order stages with timestamps from order_activities
  *   5. deliveryHistory — batches (with items) for batch orders; simple event for standard
@@ -18,6 +20,7 @@ export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { buildInvoiceBreakdown, loadInvoiceAdjustments } from '@/shared/lib/invoiceLines';
 
 const ROLES_CRM = ['admin', 'head_of_sales', 'sales'];
 
@@ -73,11 +76,7 @@ export async function GET(request, { params }) {
         .select(`
           id, quote_num, revision, quote_group_id, status, pricing_mode,
           tax_status, subtotal, vat_amount, total, payment_terms,
-          customer_id,
-          quote_items (
-            id, description, category, quantity, unit_price, net_amount,
-            vat_amount, gross_amount, finish_type, finish_color, wood_type, sort_order
-          )
+          customer_id
         `)
         .eq('id', order.quote_id)
         .single();
@@ -87,6 +86,31 @@ export async function GET(request, { params }) {
         return NextResponse.json({ error: `Failed to fetch quotation: ${quoteErr.message}` }, { status: 500 });
       }
       quote = quoteData;
+    }
+
+    // ── 2b. Invoice lines — ALWAYS from current order_items ───────────────────
+    // Use the historical order snapshot first; fall back to live customer record.
+    // This prevents a customer tax_status change from retroactively altering the VAT on an issued invoice.
+    const taxStatus = order.tax_status || order.customers?.tax_status || 'taxable';
+
+    const { data: currentItems, error: oiErr } = await serviceClient
+      .from('order_items')
+      .select('id, description, category, line_type, quantity, unit_price, net_amount, vat_amount, gross_amount, finish_type, finish_color, wood_type, sort_order')
+      .eq('order_id', orderId)
+      .order('sort_order', { ascending: true });
+
+    if (oiErr) {
+      console.error('GET /api/crm/invoices/[id] order_items fetch error:', oiErr.message);
+      return NextResponse.json({ error: 'Failed to fetch line items' }, { status: 500 });
+    }
+
+    const vatBreakdown = buildInvoiceBreakdown({ order, orderItems: currentItems, quote, taxStatus });
+    const invoiceTotal = vatBreakdown.total;
+
+    const { adjustments, error: adjErr } = await loadInvoiceAdjustments(serviceClient, orderId);
+    if (adjErr) {
+      // Non-fatal: the invoice is still correct; the audit list is just unavailable.
+      console.error('GET /api/crm/invoices/[id] adjustments fetch error:', adjErr.message);
     }
 
     // ── 3. Quote history — all revisions in the same quote_group_id ───────────
@@ -255,7 +279,7 @@ export async function GET(request, { params }) {
           status:               order.status,
           actual_delivery_date: deliveryActivity?.created_at?.split('T')[0] || null,
           created_at:           deliveryActivity?.created_at || null,
-          batch_value:          Number(order.total_value),
+          batch_value:          invoiceTotal,
           counts_toward_progress: true,
           items:                [],
         }];
@@ -276,7 +300,8 @@ export async function GET(request, { params }) {
       return NextResponse.json({ error: 'Failed to fetch payment data' }, { status: 500 });
     }
 
-    const totalValue = Number(order.total_value);
+    // Balance is measured against the invoice total built from the same lines shown above.
+    const totalValue = invoiceTotal;
     let runningBalance = totalValue;
     const paymentHistory = (pmtRows || []).map(p => {
       const isReversed = !!p.reversed_at;
@@ -300,131 +325,6 @@ export async function GET(request, { params }) {
       .filter(p => !p.reversed_at)
       .reduce((s, p) => s + Number(p.amount), 0);
 
-    // ── VAT breakdown ─────────────────────────────────────────────────────────
-    // CRM orders: built from snapshotted quote items.
-    // Direct/legacy orders (no quote_id): built from order_items.
-    // Pre-migration rows have gross_amount/net_amount/vat_amount stored as 0;
-    // recompute from unit_price × quantity when all three are 0.
-    const VAT_RATE = 0.16;
-
-    // Use the historical order snapshot first; fall back to live customer record.
-    // This prevents a customer tax_status change from retroactively altering the VAT on an issued invoice.
-    const taxStatus = order.tax_status || order.customers?.tax_status || 'taxable';
-
-    function computeAmounts(i, pm, ts) {
-      const qty       = Number(i.quantity   || 0);
-      const unitPrice = Number(i.unit_price || 0);
-      let gross = Number(i.gross_amount || 0);
-      let net   = Number(i.net_amount   || 0);
-      let vat   = Number(i.vat_amount   || 0);
-      if (gross === 0 && net === 0 && vat === 0 && unitPrice > 0) {
-        if (ts === 'exempt') {
-          net   = unitPrice * qty;
-          vat   = 0;
-          gross = net;
-        } else if (pm === 'vat_inclusive') {
-          gross = unitPrice * qty;
-          net   = gross / (1 + VAT_RATE);
-          vat   = gross - net;
-        } else {
-          net   = unitPrice * qty;
-          vat   = net * VAT_RATE;
-          gross = net + vat;
-        }
-      }
-      return { gross, net, vat };
-    }
-
-    let vatBreakdown = null;
-
-    if (quote) {
-      // CRM-originated order — use snapshotted quote items
-      const pricingMode = quote.pricing_mode || 'vat_inclusive';
-      // Quote's own tax_status snapshot is authoritative for CRM orders; order snapshot as fallback.
-      const quoteTaxStatus = quote.tax_status || taxStatus;
-      const computedItems = (quote.quote_items || [])
-        .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
-        .map(i => {
-          const { gross, net, vat } = computeAmounts(i, pricingMode, quoteTaxStatus);
-          return {
-            description:  i.description,
-            category:     i.category,
-            quantity:     Number(i.quantity   || 0),
-            unit_price:   Number(i.unit_price || 0),
-            net_amount:   net,
-            vat_amount:   vat,
-            gross_amount: gross,
-            finish_type:  i.finish_type,
-            finish_color: i.finish_color,
-            wood_type:    i.wood_type,
-          };
-        });
-
-      let subtotal = Number(quote.subtotal   || 0);
-      let vatTotal = Number(quote.vat_amount || 0);
-      let total    = Number(quote.total      || 0);
-      if (subtotal === 0 && computedItems.length > 0) {
-        subtotal = computedItems.reduce((s, i) => s + i.net_amount,   0);
-        vatTotal = computedItems.reduce((s, i) => s + i.vat_amount,   0);
-        total    = computedItems.reduce((s, i) => s + i.gross_amount, 0);
-      }
-
-      vatBreakdown = {
-        source:       'quote',
-        pricing_mode: pricingMode,
-        tax_status:   quoteTaxStatus,
-        subtotal,
-        vat_amount:   vatTotal,
-        total,
-        items:        computedItems,
-      };
-    } else {
-      // Direct / legacy order — build from order_items
-      const { data: orderItems, error: oiErr } = await serviceClient
-        .from('order_items')
-        .select('id, description, category, quantity, unit_price, net_amount, vat_amount, gross_amount, finish_type, finish_color, wood_type, sort_order')
-        .eq('order_id', orderId)
-        .order('sort_order', { ascending: true });
-
-      if (oiErr) {
-        console.error('GET /api/crm/invoices/[id] order_items fetch error:', oiErr.message);
-        return NextResponse.json({ error: 'Failed to fetch line items' }, { status: 500 });
-      }
-
-      // Pre-CRM orders are VAT-inclusive; default to vat_inclusive when unset
-      const pricingMode = order.pricing_mode || 'vat_inclusive';
-      const computedItems = (orderItems || []).map(i => {
-        const { gross, net, vat } = computeAmounts(i, pricingMode, taxStatus);
-        return {
-          description:  i.description,
-          category:     i.category,
-          quantity:     Number(i.quantity   || 0),
-          unit_price:   Number(i.unit_price || 0),
-          net_amount:   net,
-          vat_amount:   vat,
-          gross_amount: gross,
-          finish_type:  i.finish_type,
-          finish_color: i.finish_color,
-          wood_type:    i.wood_type,
-        };
-      });
-
-      const subtotal = computedItems.reduce((s, i) => s + i.net_amount,   0);
-      const vatTotal = computedItems.reduce((s, i) => s + i.vat_amount,   0);
-
-      vatBreakdown = {
-        source:       'order_items',
-        pricing_mode: pricingMode,
-        // Use the historical order snapshot first so a customer tax change doesn't
-        // retroactively alter a historic invoice. customer_type is a credit classification — never use it for VAT status.
-        tax_status:   taxStatus,
-        subtotal,
-        vat_amount:   vatTotal,
-        total:        Number(order.total_value),
-        items:        computedItems,
-      };
-    }
-
     // ── Assemble invoice summary ──────────────────────────────────────────────
     const invoice = {
       order_id:             order.id,
@@ -434,6 +334,8 @@ export async function GET(request, { params }) {
       pending_invoice:      !order.invoice_number,
       status:               order.status,
       total_value:          totalValue,
+      order_total_value:    vatBreakdown.order_total_value,
+      total_mismatch:       vatBreakdown.total_mismatch,
       pricing_mode:         vatBreakdown?.pricing_mode || order.pricing_mode || 'vat_inclusive',
       customer_type:        order.customer_type,
       payment_terms:        order.payment_terms,
@@ -459,6 +361,7 @@ export async function GET(request, { params }) {
       invoice,
       vatBreakdown,
       quoteHistory,
+      adjustments,
       trackerProgress,
       deliveryHistory,
       paymentHistory,

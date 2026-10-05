@@ -122,11 +122,13 @@ function InvoiceDetailPanel({ orderId, onClose }) {
   if (!data || !data.invoice) return null;
 
   const { invoice, vatBreakdown, quoteHistory, trackerProgress, deliveryHistory, paymentHistory } = data;
+  const adjustments = data.adjustments || [];
 
   const SECTIONS = [
     { key: 'summary',  label: 'Summary' },
     { key: 'items',    label: 'Line Items' },
     { key: 'history',  label: 'Quote Revisions' },
+    { key: 'adjustments', label: `Adjustments${adjustments.length ? ` (${adjustments.length})` : ''}` },
     { key: 'tracker',  label: 'Tracker' },
     { key: 'delivery', label: 'Delivery' },
     { key: 'payments', label: 'Payments' },
@@ -198,9 +200,15 @@ function InvoiceDetailPanel({ orderId, onClose }) {
         {section === 'items' && vatBreakdown && (
           <>
             <div style={{ marginBottom: 10, fontSize: 12, color: C.muted }}>
-              {vatBreakdown.source === 'quote'
-                ? 'Amounts snapshotted at conversion — never recalculated.'
-                : 'Amounts reconstructed from the saved order items.'}
+              Lines and totals come from the order's current items.
+              {vatBreakdown.quotation && (
+                <> Original quotation <strong>{vatBreakdown.quotation.quote_num} R{vatBreakdown.quotation.revision}</strong> was KES {fmtKes(vatBreakdown.quotation.original_total)}
+                  {vatBreakdown.quotation.changed && <>; current order total is KES {fmtKes(vatBreakdown.quotation.current_total)} (see Adjustments).</>}
+                </>
+              )}
+              {vatBreakdown.total_mismatch && (
+                <Badge color="red" style={{ marginLeft: 6 }}>Stored order total (KES {fmtKes(vatBreakdown.order_total_value)}) differs from lines</Badge>
+              )}
               {' '}Pricing: <strong>{vatModeLabel[vatBreakdown.pricing_mode]}</strong>
               {vatBreakdown.tax_status === 'exempt' && <Badge color="gray" style={{ marginLeft: 6 }}>Tax Exempt</Badge>}
             </div>
@@ -263,6 +271,51 @@ function InvoiceDetailPanel({ orderId, onClose }) {
                         <Td right><strong>{fmtKes(q.total)}</strong></Td>
                         <Td>{fmtDate(q.accepted_at)}</Td>
                       </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )
+            }
+          </div>
+        )}
+
+        {/* Adjustments since quotation */}
+        {section === 'adjustments' && (
+          <div style={{ overflowX: 'auto' }}>
+            {adjustments.length === 0
+              ? <div style={{ color: C.muted, fontSize: 13 }}>No adjustments since the order was created.</div>
+              : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead><tr>
+                    <Th>Date</Th><Th>User</Th><Th>Reason</Th><Th>Changed line</Th>
+                    <Th right>Before</Th><Th right>After</Th><Th right>Change (gross)</Th>
+                  </tr></thead>
+                  <tbody>
+                    {adjustments.map((ev, ei) => (
+                      <React.Fragment key={ev.event_id}>
+                        {ev.lines.map((l, li) => {
+                          const ref = l.after || l.before || {};
+                          const fmtSnap = (x) => x ? `${x.quantity} × ${fmtKes(x.unit_price)} = ${fmtKes(x.gross)}` : '—';
+                          const typeLabel = { item_added: 'Added', item_removed: 'Removed', item_changed: 'Changed' }[l.type] || l.type;
+                          return (
+                            <tr key={li} style={{ background: ei % 2 === 0 ? C.card : '#fafaf8' }}>
+                              <Td>{li === 0 ? fmtDate(ev.created_at) : ''}</Td>
+                              <Td>{li === 0 ? ev.user : ''}</Td>
+                              <Td>{li === 0 ? ev.reason : ''}</Td>
+                              <Td><Badge color={l.type === 'item_removed' ? 'red' : l.type === 'item_added' ? 'green' : 'gray'}>{typeLabel}</Badge> {ref.description || ref.category || '—'}</Td>
+                              <Td right>{fmtSnap(l.before)}</Td>
+                              <Td right>{fmtSnap(l.after)}</Td>
+                              <Td right>{l.gross_delta >= 0 ? '+' : '−'}{fmtKes(Math.abs(l.gross_delta))}</Td>
+                            </tr>
+                          );
+                        })}
+                        {(
+                          <tr style={{ background: '#efede9' }}>
+                            <td colSpan={6} style={{ padding: '6px 14px', fontSize: 11.5, fontWeight: 700, textAlign: 'right' }}>Event total</td>
+                            <Td right><strong>{ev.gross_delta >= 0 ? '+' : '−'}{fmtKes(Math.abs(ev.gross_delta))}</strong></Td>
+                          </tr>
+                        )}
+                      </React.Fragment>
                     ))}
                   </tbody>
                 </table>

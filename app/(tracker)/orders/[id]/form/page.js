@@ -1528,6 +1528,8 @@ export default function OrderFormPage() {
 
   // Full item editing (admin + head_of_sales)
   const [deletedItemIds, setDeletedItemIds] = useState([]);
+  const [editReason, setEditReason] = useState('');
+  const [saveError, setSaveError]   = useState(null);
 
   // Increment to force order data refresh (used by DeliveryTab)
   const [refreshKey, setRefreshKey] = useState(0);
@@ -1683,95 +1685,95 @@ export default function OrderFormPage() {
   const salesBlocked = userRole === 'sales' && nextSt && sList.indexOf(nextSt) > sList.indexOf(SALES_MAX_ADVANCE_TO);
 
   // ── Edit save ────────────────────────────────────────────────────────────────
+  // One call to PATCH /api/orders/:id. The server saves items atomically,
+  // recomputes net/VAT/gross and the order total, and writes the audit trail.
+  // The browser never sends total_value.
   const handleSave = async () => {
+    setSaveError(null);
+
+    const toRow = (item, idx) => ({
+      id: item.id || undefined,
+      category: item.category,
+      description: item.description || item.category || null,
+      quantity: isChargeItem(item) ? 1 : (parseInt(item.quantity) || 1),
+      size: item.size || null,
+      finish_type: item.finish_type || null,
+      finish_color: item.finish_color || null,
+      wood_type: item.wood_type || null,
+      unit_price: parseFloat(item.unit_price) || 0,
+      sort_order: item.id ? item.sort_order : (items.length - deletedItemIds.length) + idx,
+    });
+
+    // Only send rows that are new or differ from what was loaded.
+    let newIdx = 0;
+    const changedRows = [];
+    let financialChange = deletedItemIds.length > 0;
+    if (canEditItems) {
+      for (const item of editedItems) {
+        if (!item.id) {
+          changedRows.push(toRow(item, newIdx++));
+          financialChange = true;
+          continue;
+        }
+        const orig = items.find(i => i.id === item.id);
+        if (!orig) continue;
+        const priceOrQtyOrCat =
+          orig.quantity !== (isChargeItem(item) ? 1 : parseInt(item.quantity)) ||
+          parseFloat(orig.unit_price) !== parseFloat(item.unit_price) ||
+          orig.category !== item.category;
+        const metaOnly =
+          (orig.description || '') !== (item.description || '') ||
+          (orig.size || '') !== (item.size || '');
+        if (priceOrQtyOrCat) financialChange = true;
+        if (priceOrQtyOrCat || metaOnly) changedRows.push(toRow(item, 0));
+      }
+    }
+
+    if (financialChange && !editReason.trim()) {
+      setSaveError('Enter a reason for the item changes before saving — it is recorded in the order audit trail.');
+      return;
+    }
+
     setSaving(true);
     try {
-      // Compute new contract total from edited items
-      const newTotal = editedItems
-        .filter(i => !deletedItemIds.includes(i.id))
-        .reduce((s, i) => s + (parseFloat(i.unit_price) || 0) * (parseInt(i.quantity) || 1), 0);
-
-      // Update order metadata
-      const orderUpdate = {
+      const payload = {
         notes: editedNotes,
         due_date: editedDueDate || null,
         delivery_address: editedDeliveryAddress || null,
         delivery_contact: editedDeliveryContact || null,
         delivery_instructions: editedDeliveryInstructions || null,
       };
-      if (canEditItems) orderUpdate.total_value = newTotal;
-      await supabase.from('orders').update(orderUpdate).eq('id', id);
-
       if (canEditItems) {
-        // Delete removed items
-        if (deletedItemIds.length > 0) {
-          await supabase.from('order_items').delete().in('id', deletedItemIds);
-        }
-        // Insert new items (no id — identified by _id only)
-        const newItems = editedItems.filter(i => !i.id && !deletedItemIds.includes(i.id));
-        if (newItems.length > 0) {
-          const rows = newItems.map((item, idx) => ({
-            order_id: id,
-            category: isChargeItem(item) ? item.category : item.category,
-            description: item.description || item.category || null,
-            quantity: isChargeItem(item) ? 1 : (parseInt(item.quantity) || 1),
-            size: item.size || null,
-            finish_type: item.finish_type || null,
-            finish_color: item.finish_color || null,
-            wood_type: item.wood_type || null,
-            unit_price: parseFloat(item.unit_price) || 0,
-            sort_order: (items.length - deletedItemIds.length) + idx,
-          }));
-          await supabase.from('order_items').insert(rows);
-        }
-        // Update changed existing items
-        for (const item of editedItems.filter(i => i.id && !deletedItemIds.includes(i.id))) {
-          const orig = items.find(i => i.id === item.id);
-          if (!orig) continue;
-          const changed = orig.quantity !== parseInt(item.quantity) ||
-            parseFloat(orig.unit_price) !== parseFloat(item.unit_price) ||
-            orig.category !== item.category ||
-            (orig.description || '') !== (item.description || '') ||
-            (orig.size || '') !== (item.size || '');
-          if (changed) {
-            await supabase.from('order_items').update({
-              category: item.category,
-              description: item.description || null,
-              quantity: isChargeItem(item) ? 1 : (parseInt(item.quantity) || 1),
-              size: item.size || null,
-              finish_type: item.finish_type || null,
-              finish_color: item.finish_color || null,
-              wood_type: item.wood_type || null,
-              unit_price: parseFloat(item.unit_price) || 0,
-            }).eq('id', item.id);
-          }
-        }
-      } else {
-        // Non-admin/HoS: quantity-only edits
-        for (const item of editedItems) {
-          const orig = items.find(i => i.id === item.id);
-          if (orig && orig.quantity !== item.quantity) {
-            await supabase.from('order_items').update({ quantity: item.quantity }).eq('id', item.id);
-          }
-        }
+        payload.items = changedRows;
+        payload.deletedItemIds = deletedItemIds;
+        if (financialChange) payload.reason = editReason.trim();
       }
 
-      const [{ data: refreshed }, { data: refreshedItems }] = await Promise.all([
-        supabase.from('orders').select('*').eq('id', id).single(),
-        supabase.from('order_items').select('*').eq('order_id', id).order('sort_order'),
-      ]);
+      const res = await fetch(`/api/orders/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(json.error || `Save failed (${res.status})`);
+      }
+
+      // Canonical order + items come back from the server.
+      const refreshed = json.data;
       if (refreshed?.customer_id) {
         const { data: cust } = await supabase.from('customers').select('id, name').eq('id', refreshed.customer_id).maybeSingle();
         if (cust) refreshed._customer = cust;
       }
       setOrder(refreshed);
-      const loaded = refreshedItems || [];
+      const loaded = json.items || [];
       setItems(loaded);
       setEditedItems(loaded.map(i => ({ ...i })));
       setDeletedItemIds([]);
+      setEditReason('');
       setEditMode(false);
     } catch (err) {
-      setError('Save failed: ' + (err.message || err));
+      setSaveError('Save failed: ' + (err.message || err));
     }
     setSaving(false);
   };
@@ -1784,6 +1786,8 @@ export default function OrderFormPage() {
     setEditedDeliveryContact(order.delivery_contact || '');
     setEditedDeliveryInstructions(order.delivery_instructions || '');
     setDeletedItemIds([]);
+    setEditReason('');
+    setSaveError(null);
     setEditMode(false);
   };
 
@@ -2469,9 +2473,27 @@ export default function OrderFormPage() {
                     )}
                     {editMode && canEditItems && contractTotal > 0 && (
                       <tr style={{ background: '#f0fdf4', borderTop: '2px solid #86efac' }}>
-                        <td colSpan={4} style={{ padding: '10px 14px', textAlign: 'right', fontSize: '12px', fontWeight: 700, color: '#15803d' }}>Contract total</td>
+                        <td colSpan={4} style={{ padding: '10px 14px', textAlign: 'right', fontSize: '12px', fontWeight: 700, color: '#15803d' }}>Contract total (preview — final total is calculated on save)</td>
                         <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'monospace', fontSize: '15px', fontWeight: 800, color: '#15803d' }}>KES {contractTotal.toLocaleString()}</td>
                         <td />
+                      </tr>
+                    )}
+                    {editMode && canEditItems && (
+                      <tr style={{ borderTop: '1px solid #f3f4f6' }}>
+                        <td colSpan={6} style={{ padding: '10px 14px' }}>
+                          <label htmlFor="order-edit-reason" style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>
+                            Reason for item changes (required if you add, remove or re-price items)
+                          </label>
+                          <input
+                            id="order-edit-reason"
+                            type="text"
+                            value={editReason}
+                            onChange={e => setEditReason(e.target.value)}
+                            placeholder="e.g. Customer asked for packaging added"
+                            style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px', minHeight: 44, boxSizing: 'border-box' }}
+                          />
+                          {saveError && <p role="alert" style={{ margin: '8px 0 0', fontSize: '12px', color: '#dc2626' }}>⚠ {saveError}</p>}
+                        </td>
                       </tr>
                     )}
                   </tfoot>

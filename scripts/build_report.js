@@ -2230,7 +2230,7 @@ function buildReportPDF(data) {
       // ════════════════════════════════════════════════════════════════════════
       if (data.crmInvoice) {
         const { invoice = {}, vatBreakdown, quoteHistory = [], trackerProgress = [],
-                deliveryHistory = [], paymentHistory = [] } = data.crmInvoice;
+                deliveryHistory = [], paymentHistory = [], adjustments = [] } = data.crmInvoice;
         const customer = invoice.customer || {};
         const items    = vatBreakdown?.items || [];
 
@@ -2742,6 +2742,66 @@ function buildReportPDF(data) {
             pRight(`KES ${fmtKes(batch.batch_value)}`, pPM + pCW, y + 1.5 * MM,
               { size: 7, font: 'Helvetica-Bold', color: cancelled ? '#999999' : DGRAY });
             y += 6 * MM;
+          }
+          y += 4 * MM;
+        }
+
+        // ── Quotation provenance + adjustments since quotation ────────────────
+        // Lines and totals above come from the order's CURRENT items. The
+        // quotation is shown for provenance only; adjustments explain any gap.
+        const qProv = vatBreakdown?.quotation;
+        if (qProv) {
+          y = guard(y, 24 * MM);
+          y = secHeading('Quotation Reference', y);
+          y += 2 * MM;
+          for (const [lbl, val] of [
+            ['Original quotation',    `${qProv.quote_num || '—'}${qProv.revision != null ? ` R${qProv.revision}` : ''}`],
+            ['Original quoted total', `KES ${fmtKes(qProv.original_total)}`],
+            ['Current order total',   `KES ${fmtKes(qProv.current_total)}`],
+          ]) {
+            y = guard(y, 5.5 * MM);
+            pLeft(lbl, pPM + 1 * MM, y + 1.2 * MM, { size: 7, color: DGRAY });
+            pRight(val, pPM + pCW,   y + 1.2 * MM, { size: 7, font: 'Helvetica-Bold' });
+            y += 5.5 * MM;
+          }
+          y += 4 * MM;
+        }
+
+        if (adjustments.length > 0) {
+          y = guard(y, 20 * MM);
+          y = secHeading('Adjustments Since Quotation', y);
+          y += 2 * MM;
+
+          const ADJ_HDR = (py) => navyHdr(py, (ty) => {
+            pLeft('Date',   pPM + 1 * MM,  ty, { font: 'Helvetica-Bold', size: 6.5, color: WHITE });
+            pLeft('User',   pPM + 24 * MM, ty, { font: 'Helvetica-Bold', size: 6.5, color: WHITE });
+            pLeft('Change', pPM + 52 * MM, ty, { font: 'Helvetica-Bold', size: 6.5, color: WHITE });
+            pRight('Amount (KES)', pPM + pCW, ty, { font: 'Helvetica-Bold', size: 6.5, color: WHITE });
+          });
+          y = ADJ_HDR(y);
+
+          const sign = n => (n >= 0 ? '+' : '-') + fmtKes(Math.abs(n));
+          const lineText = l => {
+            const nm = (l.after || l.before)?.description || '—';
+            if (l.type === 'item_added')   return `Added: ${nm}`;
+            if (l.type === 'item_removed') return `Removed: ${nm}`;
+            const b = l.before || {}, a = l.after || {};
+            return `Changed: ${nm} (${b.quantity}x${fmtKes(b.unit_price)} -> ${a.quantity}x${fmtKes(a.unit_price)})`;
+          };
+
+          let ai = 0;
+          for (const ev of adjustments) {
+            for (const l of ev.lines) {
+              y = guard(y, 9 * MM);
+              if (y === pPM) y = ADJ_HDR(y);
+              pFill(pPM, y, pCW, 9 * MM, ai++ % 2 === 0 ? WHITE : LGRAY);
+              pLeft(fmtDate(ev.created_at), pPM + 1 * MM,  y + 1.2 * MM, { size: 7 });
+              pLeft(String(ev.user || '—'), pPM + 24 * MM, y + 1.2 * MM, { size: 7 });
+              pLeft(lineText(l).slice(0, 70), pPM + 52 * MM, y + 1.2 * MM, { size: 7 });
+              pLeft(`Reason: ${String(ev.reason || '—').slice(0, 80)}`, pPM + 52 * MM, y + 5 * MM, { size: 6, color: DGRAY });
+              pRight(sign(l.gross_delta), pPM + pCW, y + 1.2 * MM, { size: 7, font: 'Helvetica-Bold' });
+              y += 9 * MM;
+            }
           }
           y += 4 * MM;
         }
