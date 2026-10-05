@@ -8,7 +8,8 @@
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 
-export async function GET(request, { params }) {
+export async function GET(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role, ['admin', 'head_of_sales', 'production_manager']);
@@ -36,7 +37,8 @@ export async function GET(request, { params }) {
   }
 }
 
-export async function PATCH(request, { params }) {
+export async function PATCH(request, props) {
+  const params = await props.params;
   try {
     const { user, role, displayName } = await getAuthContext();
     const authError = requireRole(user, role, ['admin']);
@@ -186,7 +188,8 @@ export async function PATCH(request, { params }) {
   }
 }
 
-export async function DELETE(request, { params }) {
+export async function DELETE(request, props) {
+  const params = await props.params;
   try {
     const { user, role, displayName } = await getAuthContext();
     const authError = requireRole(user, role, ['admin']);

@@ -7,7 +7,8 @@ import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
 const ROLES_CRM = ['admin', 'head_of_sales', 'sales'];
 
 // PATCH /api/crm/enquiries/[id]  — update stage or other editable fields
-export async function PATCH(request, { params }) {
+export async function PATCH(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

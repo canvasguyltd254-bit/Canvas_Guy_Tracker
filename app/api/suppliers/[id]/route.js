@@ -15,7 +15,8 @@ import { postOpeningBalanceJournal } from '@/shared/lib/accountingService';
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales'];
 
-export async function GET(request, { params }) {
+export async function GET(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role);
@@ -103,7 +104,8 @@ export async function GET(request, { params }) {
   }
 }
 
-export async function PATCH(request, { params }) {
+export async function PATCH(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role, WRITE_ROLES);
@@ -205,7 +207,8 @@ export async function PATCH(request, { params }) {
   }
 }
 
-export async function DELETE(request, { params }) {
+export async function DELETE(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role, ['admin']);

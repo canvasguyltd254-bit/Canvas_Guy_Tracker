@@ -11,7 +11,8 @@ const STORAGE_BUCKET = 'order-documents';
 const DOC_DELETE_ROLES = ['admin', 'production_manager', 'head_of_sales'];
 
 // ── GET — signed URL for viewing/downloading a document ──────────────────────
-export async function GET(request, { params }) {
+export async function GET(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role);
@@ -59,7 +60,8 @@ export async function GET(request, { params }) {
 }
 
 // ── DELETE — remove document + storage file ───────────────────────────────────
-export async function DELETE(request, { params }) {
+export async function DELETE(request, props) {
+  const params = await props.params;
   try {
     const orderId = params.id;
     const { searchParams } = new URL(request.url);

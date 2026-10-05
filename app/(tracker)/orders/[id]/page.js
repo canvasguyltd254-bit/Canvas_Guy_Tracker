@@ -4,6 +4,7 @@
 
 import { redirect } from 'next/navigation';
 
-export default function OrderDetailRedirect({ params }) {
+export default async function OrderDetailRedirect(props) {
+  const params = await props.params;
   redirect(`/orders/${params.id}/form`);
 }

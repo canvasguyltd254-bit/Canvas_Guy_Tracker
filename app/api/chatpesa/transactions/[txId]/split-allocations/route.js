@@ -47,7 +47,8 @@ import { postChatpesaAllocationJournal }    from '@/shared/lib/accountingService
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales'];
 const VALID_TYPES = ['supplier_purchase', 'opening_balance', 'petty_cash'];
 
-export async function POST(request, { params }) {
+export async function POST(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role, WRITE_ROLES);

@@ -47,7 +47,8 @@ const LOGISTICS_ADVANCEABLE = new Set(['Out for Delivery', 'Delivered', 'Rejecte
 // Terminal statuses — no further updates allowed
 const TERMINAL_STATUSES = new Set(['Signed', 'Cancelled', 'Rejected', 'Returned']);
 
-export async function DELETE(request, { params }) {
+export async function DELETE(request, props) {
+  const params = await props.params;
   try {
     const { id: orderId, batchId } = params;
     const { user, role } = await getAuthContext();
@@ -97,7 +98,8 @@ export async function DELETE(request, { params }) {
   }
 }
 
-export async function PATCH(request, { params }) {
+export async function PATCH(request, props) {
+  const params = await props.params;
   try {
     const { id: orderId, batchId } = params;
 

@@ -13,7 +13,8 @@ import { resolveShaDeduction } from '@/shared/lib/resolveShaDeduction';
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 const OVERTIME_RATE = 200;
 
-export async function GET(request, { params }) {
+export async function GET(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role, ALLOWED_ROLES);
@@ -42,7 +43,8 @@ export async function GET(request, { params }) {
   }
 }
 
-export async function POST(request, { params }) {
+export async function POST(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role, ALLOWED_ROLES);

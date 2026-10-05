@@ -38,7 +38,8 @@ const WRITE_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 
 const VALID_PAYMENT_METHODS = new Set(['cash', 'bank', 'chatpesa', 'mpesa']);
 
-export async function GET(request, { params }) {
+export async function GET(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role);
@@ -83,7 +84,8 @@ export async function GET(request, { params }) {
   }
 }
 
-export async function POST(request, { params }) {
+export async function POST(request, props) {
+  const params = await props.params;
   try {
     const { user, role, displayName } = await getAuthContext();
     const authError = requireRole(user, role, WRITE_ROLES);

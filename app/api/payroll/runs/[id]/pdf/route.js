@@ -36,7 +36,8 @@ function spawnPdf(data) {
   });
 }
 
-export async function GET(request, { params }) {
+export async function GET(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role, ALLOWED_ROLES);

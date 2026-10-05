@@ -17,7 +17,8 @@ import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-aut
 
 const ADMIN_ONLY = ['admin'];
 
-export async function DELETE(request, { params }) {
+export async function DELETE(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

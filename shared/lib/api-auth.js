@@ -40,7 +40,7 @@ export { serviceClient };
  */
 export async function getAuthContext() {
   try {
-    const authClient = createServerSupabase();
+    const authClient = await createServerSupabase();
     const { data: { user }, error } = await authClient.auth.getUser();
 
     if (error || !user) return { user: null, role: null };

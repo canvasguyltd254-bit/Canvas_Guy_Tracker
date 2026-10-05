@@ -32,7 +32,8 @@ function spawnPdf(data) {
   });
 }
 
-export async function GET(request, { params }) {
+export async function GET(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

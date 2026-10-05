@@ -34,7 +34,8 @@ import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 
 // ── GET ───────────────────────────────────────────────────────────────────────
 
-export async function GET(_req, { params }) {
+export async function GET(_req, props) {
+  const params = await props.params;
   try {
     const { user } = await getAuthContext();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -71,7 +72,8 @@ export async function GET(_req, { params }) {
 
 // ── POST ──────────────────────────────────────────────────────────────────────
 
-export async function POST(request, { params }) {
+export async function POST(request, props) {
+  const params = await props.params;
   try {
     const orderId = params.id;
 

@@ -23,7 +23,8 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { reverseJournal } from '@/shared/lib/reverseJournal';
 
-export async function POST(request, { params }) {
+export async function POST(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     // Reversals are admin-only — they permanently alter the audit trail

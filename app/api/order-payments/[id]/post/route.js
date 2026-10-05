@@ -13,7 +13,8 @@ import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-aut
 
 const ROLES_POST = ['admin', 'head_of_sales'];
 
-export async function POST(request, { params }) {
+export async function POST(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

@@ -13,7 +13,8 @@ import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-aut
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
 import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 
-export async function GET(request, { params }) {
+export async function GET(request, props) {
+  const params = await props.params;
   try {
     const orderId = params.id;
 
@@ -40,7 +41,8 @@ export async function GET(request, { params }) {
   }
 }
 
-export async function POST(request, { params }) {
+export async function POST(request, props) {
+  const params = await props.params;
   try {
     const orderId = params.id;
 
@@ -118,7 +120,8 @@ export async function POST(request, { params }) {
   }
 }
 
-export async function DELETE(request, { params }) {
+export async function DELETE(request, props) {
+  const params = await props.params;
   try {
     const orderId = params.id;
     const { searchParams } = new URL(request.url);

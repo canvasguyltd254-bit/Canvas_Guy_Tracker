@@ -95,7 +95,8 @@ export async function GET(request, { params }) {
 
 // ── POST — upload drawing ─────────────────────────────────────────────────────
 
-export async function POST(request, { params }) {
+export async function POST(request, props) {
+  const params = await props.params;
   try {
     const orderId = params.id;
 
@@ -204,7 +205,8 @@ export async function POST(request, { params }) {
 
 // ── DELETE — soft delete ──────────────────────────────────────────────────────
 
-export async function DELETE(request, { params }) {
+export async function DELETE(request, props) {
+  const params = await props.params;
   try {
     const orderId = params.id;
     const { searchParams } = new URL(request.url);

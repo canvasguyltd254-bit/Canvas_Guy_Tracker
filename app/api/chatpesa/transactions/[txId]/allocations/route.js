@@ -63,7 +63,8 @@ export async function POST() {
 
 // ── DELETE ────────────────────────────────────────────────────────────────────
 
-export async function DELETE(request, { params }) {
+export async function DELETE(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role, ['admin', 'production_manager']);

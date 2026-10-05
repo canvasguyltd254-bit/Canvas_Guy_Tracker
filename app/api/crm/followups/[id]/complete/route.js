@@ -12,7 +12,8 @@ import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
 
 const ROLES_CRM = ['admin', 'head_of_sales', 'sales'];
 
-export async function POST(request, { params }) {
+export async function POST(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -20,7 +21,7 @@ export async function POST(request, { params }) {
     if (authErr) return authErr;
 
     let body = {};
-    try { body = await request.json() ?? {}; } catch { /* empty body is fine */ }
+    try { body = (await request.json()) ?? {}; } catch { /* empty body is fine */ }
 
     // Fetch the follow-up to get parent IDs
     const { data: followup, error: fetchErr } = await serviceClient

@@ -15,7 +15,8 @@ import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-aut
 
 const CONTACT_TYPES = ['General', 'Transporter'];
 
-export async function PATCH(request, { params }) {
+export async function PATCH(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role);
@@ -55,7 +56,8 @@ export async function PATCH(request, { params }) {
   }
 }
 
-export async function DELETE(request, { params }) {
+export async function DELETE(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role, ['admin', 'production_manager', 'head_of_sales']);

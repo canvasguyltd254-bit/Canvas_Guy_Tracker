@@ -41,7 +41,8 @@ const ORDER_STAGES = [
 // 'Signed' is the DB status for a customer-signed batch; 'Partially Delivered' is an ORDER status, not a batch status.
 const DELIVERED_BATCH_STATUSES = new Set(['Delivered', 'Signed']);
 
-export async function GET(request, { params }) {
+export async function GET(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role, ROLES_CRM);

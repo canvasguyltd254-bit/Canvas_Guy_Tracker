@@ -28,7 +28,8 @@ import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 const ROLES_CAN_REPAIR = ['admin', 'production_manager'];
 const VALID_REPAIR_TYPES = ['repair', 'return'];
 
-export async function POST(request, { params }) {
+export async function POST(request, props) {
+  const params = await props.params;
   try {
     const parentOrderId = params.id;
 

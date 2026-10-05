@@ -62,7 +62,8 @@ function mapRpcError(error) {
   return null;
 }
 
-export async function PATCH(request, { params }) {
+export async function PATCH(request, props) {
+  const params = await props.params;
   try {
     const orderId = params.id;
 

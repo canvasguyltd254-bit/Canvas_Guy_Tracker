@@ -23,7 +23,8 @@ import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 
 // ── GET ───────────────────────────────────────────────────────────────────────
 
-export async function GET(request, { params }) {
+export async function GET(request, props) {
+  const params = await props.params;
   try {
     const orderId = params.id;
 
@@ -52,7 +53,8 @@ export async function GET(request, { params }) {
 
 // ── POST ──────────────────────────────────────────────────────────────────────
 
-export async function POST(request, { params }) {
+export async function POST(request, props) {
+  const params = await props.params;
   try {
     const orderId = params.id;
 
@@ -182,7 +184,8 @@ export async function POST(request, { params }) {
 
 // ── PATCH ─────────────────────────────────────────────────────────────────────
 
-export async function PATCH(request, { params }) {
+export async function PATCH(request, props) {
+  const params = await props.params;
   try {
     const orderId = params.id;
     const { searchParams } = new URL(request.url);

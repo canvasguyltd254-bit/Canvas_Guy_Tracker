@@ -17,7 +17,8 @@ import { checkQuotationSuspended } from '@/shared/lib/suspendGuard';
 
 const ROLES_CRM = ['admin', 'head_of_sales', 'sales'];
 
-export async function POST(request, { params }) {
+export async function POST(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

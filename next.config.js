@@ -46,8 +46,8 @@ const nextConfig = {
   // the tracer never sees a static import of it.
   // Note: serverExternalPackages is not needed — pdfkit is never imported by
   // the route files directly, so webpack never attempts to bundle it.
-  experimental: {
-    outputFileTracingIncludes: {
+  // Next 15: outputFileTracingIncludes is a stable top-level option (was experimental).
+  outputFileTracingIncludes: {
       '/api/reports/pdf':                      PDF_ROUTES_INCLUDES,
       '/api/orders/[id]/delivery-note/pdf':    PDF_ROUTES_INCLUDES,
       '/api/orders/[id]/pnl/pdf':              PDF_ROUTES_INCLUDES,
@@ -55,7 +55,6 @@ const nextConfig = {
       '/api/crm/quotations/[id]/pdf':          PDF_ROUTES_INCLUDES,
       '/api/crm/invoices/[id]/pdf':           PDF_ROUTES_INCLUDES,
       '/api/crm/enquiries/report':            PDF_ROUTES_INCLUDES,
-    },
   },
 };
 

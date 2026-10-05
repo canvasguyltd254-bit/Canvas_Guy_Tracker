@@ -13,7 +13,8 @@ import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-aut
 
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 
-export async function GET(request, { params }) {
+export async function GET(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     const authError = requireRole(user, role, ALLOWED_ROLES);
@@ -43,7 +44,8 @@ export async function GET(request, { params }) {
   }
 }
 
-export async function PATCH(request, { params }) {
+export async function PATCH(request, props) {
+  const params = await props.params;
   try {
     const { user, role, displayName } = await getAuthContext();
     const authError = requireRole(user, role, ALLOWED_ROLES);
@@ -105,7 +107,8 @@ export async function PATCH(request, { params }) {
   }
 }
 
-export async function DELETE(request, { params }) {
+export async function DELETE(request, props) {
+  const params = await props.params;
   try {
     const { user, role, displayName } = await getAuthContext();
     // Admin, Head of Sales and PM can deactivate employees

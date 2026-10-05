@@ -39,7 +39,8 @@ import {
 const ALL_VALID_STATUSES = new Set([...STATUSES, ...REPAIR_STATUSES]);
 const REWORK_SOURCES = new Set(Object.keys(REWORK_TARGETS));
 
-export async function POST(request, { params }) {
+export async function POST(request, props) {
+  const params = await props.params;
   try {
     const orderId = params.id;
 

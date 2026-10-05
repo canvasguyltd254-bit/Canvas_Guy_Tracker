@@ -8,7 +8,8 @@ import { checkQuotationSuspended } from '@/shared/lib/suspendGuard';
 const ROLES_CRM = ['admin', 'head_of_sales', 'sales'];
 
 // GET /api/crm/quotations/[id]
-export async function GET(request, { params }) {
+export async function GET(request, props) {
+  const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -168,7 +169,8 @@ function diffQuote(existing, body, oldItems, newItems) {
 // Converted quotes (converted_order_id IS NOT NULL) are immutable.
 // Status-only patches (accept/reject/send) always allowed.
 // When items are provided, diffs old vs new and logs changes to quote_activities.
-export async function PATCH(request, { params }) {
+export async function PATCH(request, props) {
+  const params = await props.params;
   try {
     const suspendedErr = await checkQuotationSuspended(params.id);
     if (suspendedErr) return suspendedErr;

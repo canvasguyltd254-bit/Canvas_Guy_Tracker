@@ -12,7 +12,8 @@
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 
-export async function POST(request, { params }) {
+export async function POST(request, props) {
+  const params = await props.params;
   try {
     const { user, role, displayName } = await getAuthContext();
     const authError = requireRole(user, role, ['admin']);

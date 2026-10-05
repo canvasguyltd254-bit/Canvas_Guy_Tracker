@@ -19,7 +19,8 @@ import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-aut
 const ADMIN_ONLY = ['admin'];
 
 // ── POST: suspend ─────────────────────────────────────────────────────────────
-export async function POST(request, { params }) {
+export async function POST(request, props) {
+  const params = await props.params;
   try {
     // 1. Auth first — before any DB read
     const { user, role } = await getAuthContext();
@@ -74,7 +75,8 @@ export async function POST(request, { params }) {
 }
 
 // ── DELETE: unsuspend ─────────────────────────────────────────────────────────
-export async function DELETE(_req, { params }) {
+export async function DELETE(_req, props) {
+  const params = await props.params;
   try {
     // 1. Auth first
     const { user, role } = await getAuthContext();
