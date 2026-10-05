@@ -2,8 +2,9 @@
 -- Database-level checks for update_order_items_with_audit()
 -- Run on STAGING (SQL Editor). Everything is rolled back at the end.
 -- Any failed check raises an exception naming the case.
--- If your orders / order_payments tables have extra NOT NULL columns,
--- add them to the two INSERTs below.
+-- Seed rows set every NOT NULL column known from schema.sql (orders.order_num,
+-- order_payments.description, journal_entries.*). If your live schema has extra
+-- NOT NULL columns, add them to the INSERTs.
 -- ============================================================
 BEGIN;
 
@@ -14,9 +15,10 @@ DECLARE
   v_item  uuid;
   v_res   jsonb;
   v_msg   text;
+  v_journal uuid;
 BEGIN
-  INSERT INTO public.orders (client, status, pricing_mode, tax_status, total_value)
-  VALUES ('__TEST__', 'Inquiry', 'vat_inclusive', 'taxable', 0)
+  INSERT INTO public.orders (order_num, client, status, pricing_mode, tax_status, total_value)
+  VALUES ('TEST-' || substr(gen_random_uuid()::text, 1, 8), '__TEST__', 'Inquiry', 'vat_inclusive', 'taxable', 0)
   RETURNING id INTO v_order;
 
   -- Seed: one product 100,000 gross
@@ -31,8 +33,8 @@ BEGIN
   END IF;
 
   -- 80,000 paid
-  INSERT INTO public.order_payments (order_id, amount, payment_date)
-  VALUES (v_order, 80000, current_date);
+  INSERT INTO public.order_payments (order_id, amount, description, payment_date)
+  VALUES (v_order, 80000, '__TEST__ payment', current_date);
 
   -- CASE 1: lowering total to 60,000 (below paid 80,000) must be refused
   BEGIN
@@ -92,7 +94,11 @@ BEGIN
   END IF;
 
   -- CASE 5: posted invoice blocks financial change but allows metadata
-  UPDATE public.orders SET invoice_journal_entry_id = gen_random_uuid() WHERE id = v_order;
+  -- invoice_journal_entry_id is an FK to journal_entries, so create a real (temporary) header.
+  INSERT INTO public.journal_entries (entry_date, description, source_type, source_id)
+  VALUES (current_date, '__TEST__ invoice posting', 'order_invoice_test', v_order)
+  RETURNING id INTO v_journal;
+  UPDATE public.orders SET invoice_journal_entry_id = v_journal WHERE id = v_order;
   BEGIN
     PERFORM public.update_order_items_with_audit(
       v_order,
