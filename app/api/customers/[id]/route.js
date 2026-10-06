@@ -248,6 +248,45 @@ export async function PATCH(request, { params }) {
       return NextResponse.json({ error: 'Customer name cannot be empty' }, { status: 400 });
     }
 
+    // Browser form controls submit empty optional fields as "". PostgreSQL cannot
+    // cast an empty string to numeric/date columns, so normalise these values before
+    // sending the update to Supabase (matching the customer-create route).
+    for (const field of ['credit_limit', 'opening_balance']) {
+      if (update[field] !== undefined) {
+        const value = update[field] === '' || update[field] === null
+          ? 0
+          : Number(update[field]);
+
+        if (!Number.isFinite(value)) {
+          return NextResponse.json({
+            error: `${field.replace('_', ' ')} must be a number`,
+          }, { status: 400 });
+        }
+        if (field === 'credit_limit' && value < 0) {
+          return NextResponse.json({ error: 'credit limit cannot be negative' }, { status: 400 });
+        }
+        update[field] = value;
+      }
+    }
+
+    if (update.opening_balance_date !== undefined) {
+      const value = update.opening_balance_date;
+      if (value === '' || value === null) {
+        update.opening_balance_date = null;
+      } else if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        return NextResponse.json({
+          error: 'opening balance date must be YYYY-MM-DD',
+        }, { status: 400 });
+      }
+    }
+
+    for (const field of ['contact_person', 'phone', 'email', 'address', 'kra_pin', 'notes']) {
+      if (update[field] !== undefined && typeof update[field] === 'string' && update[field].trim() === '') {
+        update[field] = null;
+      }
+    }
+    if (update.name !== undefined) update.name = update.name.trim();
+
     const { data, error } = await serviceClient
       .from('customers')
       .update(update)
@@ -257,7 +296,10 @@ export async function PATCH(request, { params }) {
 
     if (error) {
       console.error('PATCH /api/customers/[id]:', error);
-      return NextResponse.json({ error: 'Failed to update customer' }, { status: 500 });
+      return NextResponse.json({
+        error: 'Failed to update customer',
+        detail: error.message,
+      }, { status: 500 });
     }
 
     return NextResponse.json({ success: true, data });
