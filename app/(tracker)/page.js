@@ -1,181 +1,219 @@
 "use client";
 
-import { useState, useEffect }  from "react";
-import Link                     from "next/link";
-import * as modules             from "@/modules/registry";
-import { useAuth }              from "@/shared/context/AuthContext";
+import { useState, useEffect } from "react";
+import Link                    from "next/link";
+import { useAuth }             from "@/shared/context/AuthContext";
+import {
+  C, StatCard, Panel, PanelHead, Badge, Empty, Loading, MetricBar, Btn, fmtKes,
+} from "@/shared/ui/ds";
 
-const moduleList = Object.values(modules);
+// ─── Greeting ─────────────────────────────────────────────────────────────────
+function greetingFor(date = new Date()) {
+  const h = date.getHours();
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  return "Good evening";
+}
 
-// Badge labels and colours per module key
-const BADGE_CONFIG = {
-  orders:     { key: "active",       label: "active",    color: "#1a1a1a" },
-  production: { key: "in_production",label: "active",    color: "#7C3AED" },
-  customers:  { key: "overdue",      label: "overdue",   color: "#DC2626" },
-  suppliers:  { key: "unmatched",    label: "unmatched", color: "#D97706" },
-  contacts:   { key: "total",        label: "contacts",  color: "#0369A1" },
-  accounting: { key: "unposted",     label: "unposted",  color: "#DC2626" },
-  admin:      { key: "total_users",  label: "users",     color: "#1a1a1a" },
-};
+const CHIP_COLOR = { red: "red", amber: "amber", blue: "blue", green: "green" };
 
-// Icon backgrounds per module
-const MODULE_BG = {
-  dashboard:  "#FFF7ED",
-  orders:     "#F0FDF4",
-  production: "#FAF5FF",
-  reports:    "#EFF6FF",
-  customers:  "#FFF1F2",
-  contacts:   "#F0F9FF",
-  suppliers:  "#FEFCE8",
-  accounting: "#F7FEE7",
-  admin:      "#F9FAFB",
-};
-
-function ModuleCard({ mod, counts }) {
-  const badge  = BADGE_CONFIG[mod.id];
-  const count  = badge && counts ? counts[mod.id]?.[badge.key] : undefined;
-  const path   = mod.navItems[0]?.path;
-
+// ─── Needs-attention row ──────────────────────────────────────────────────────
+function QueueRow({ item }) {
   return (
-    <Link href={path} style={{ textDecoration: "none", display: "flex", flexDirection: "column" }}>
-      <div style={{
-        background: "#fff",
-        border: "1.5px solid #E0DDD8",
-        borderRadius: "12px",
-        padding: "20px",
-        transition: "box-shadow 0.15s, transform 0.15s",
-        cursor: "pointer",
-        position: "relative",
-        minHeight: "120px",
-        height: "100%",
-        display: "flex",
-        flexDirection: "column",
-        gap: "10px",
-      }}
-        onMouseEnter={e => { e.currentTarget.style.boxShadow = "0 4px 16px rgba(0,0,0,0.08)"; e.currentTarget.style.transform = "translateY(-1px)"; }}
-        onMouseLeave={e => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.transform = "none"; }}
+    <Link href={item.source.path} style={{ textDecoration: "none", color: "inherit" }}>
+      <div
+        style={{
+          display: "flex", alignItems: "center", gap: 12,
+          padding: "13px 18px", borderTop: `1px solid ${C.line}`,
+          cursor: "pointer",
+        }}
+        onMouseEnter={e => { e.currentTarget.style.background = C.bg; }}
+        onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
       >
-        {/* Module icon — standalone, no badge alongside */}
-        <div style={{
-          width: "44px", height: "44px", borderRadius: "10px", flexShrink: 0,
-          background: MODULE_BG[mod.id] || "#F3F4F6",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: "22px",
-        }}>
-          {mod.icon}
-        </div>
-
-        {/* Name + inline badge chip + description */}
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: "7px", flexWrap: "wrap", marginBottom: "4px" }}>
-            <span style={{ fontSize: "15px", fontWeight: 700, color: "#1a1a1a" }}>
-              {mod.name}
-            </span>
-            {typeof count === "number" && count > 0 && badge && (
-              <span style={{
-                fontSize: "11px", fontWeight: 600,
-                color: badge.color,
-                // Use module icon tint for coloured badges; neutral for dark-text badges
-                background: badge.color === "#1a1a1a" ? "#f0f0ee" : (MODULE_BG[mod.id] || "#f0f0ee"),
-                padding: "1px 7px", borderRadius: "10px",
-                fontFamily: "'DM Mono', monospace",
-                letterSpacing: "0.2px",
-                lineHeight: "1.6",
-                whiteSpace: "nowrap",
-              }}>
-                {count} {badge.label}
-              </span>
-            )}
-          </div>
-          <div style={{ fontSize: "12px", color: "#888", lineHeight: 1.4 }}>
-            {mod.description}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: C.ink }}>{item.title}</div>
+          <div style={{
+            fontSize: 12, color: C.muted, marginTop: 2,
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          }}>
+            {item.subtitle}
           </div>
         </div>
-
-        {/* Arrow */}
-        <div style={{
-          position: "absolute", bottom: "18px", right: "18px",
-          fontSize: "14px", color: "#CCC",
-        }}>
-          →
-        </div>
+        <Badge color={CHIP_COLOR[item.chip.tone] || "gray"} style={{ flexShrink: 0 }}>
+          {item.chip.label}
+        </Badge>
       </div>
     </Link>
   );
 }
 
-export default function ModulesHome() {
-  const { userRole, loaded } = useAuth();
-  const [counts,  setCounts]  = useState(null);
-  const [loading, setLoading] = useState(true);
+// ─── Production floor card ────────────────────────────────────────────────────
+function FloorRow({ job }) {
+  const label = `${job.jobNum} · ${job.description || job.category || "Job"}`;
+  const value = job.blocked ? "Blocked" : `${job.acceptedQty}/${job.plannedQuantity}`;
+  return (
+    <div style={{ padding: "0 18px" }}>
+      <MetricBar
+        label={label}
+        value={value}
+        pct={job.blocked ? 6 : job.pct}
+        style={{
+          paddingTop: 12, paddingBottom: 12,
+          borderTop: `1px solid ${C.line}`,
+          marginBottom: 0,
+        }}
+      />
+    </div>
+  );
+}
+
+export default function HomeDashboard() {
+  const { userRole, displayName, loaded } = useAuth();
+  const [summary,    setSummary]    = useState(null);
+  const [priorities, setPriorities] = useState(null);
+  const [loading,    setLoading]    = useState(true);
+  const [showAllQueue, setShowAllQueue] = useState(false);
 
   useEffect(() => {
     if (!loaded || !userRole) return;
-    fetch("/api/home/summary")
-      .then(r => r.json())
-      .then(j => { if (j.success) setCounts(j.data); })
+    Promise.all([
+      fetch("/api/home/summary").then(r => r.json()),
+      fetch("/api/home/priorities").then(r => r.json()),
+    ])
+      .then(([summaryRes, prioritiesRes]) => {
+        if (summaryRes.success)    setSummary(summaryRes.data);
+        if (prioritiesRes.success) setPriorities(prioritiesRes.data);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [loaded, userRole]);
 
-  // Accounting is hidden until the module is fully built
-  const HIDDEN_ON_HOME = new Set(['accounting']);
-  const visibleModules = userRole
-    ? moduleList.filter(mod => mod.allowedRoles?.includes(userRole) && !HIDDEN_ON_HOME.has(mod.id))
-    : [];
+  if (loading || !userRole) {
+    return (
+      <div style={{ padding: "24px 20px 40px" }}>
+        <Loading />
+      </div>
+    );
+  }
+
+  const customers  = summary?.customers;
+  const production = summary?.production;
+  const cashflow   = summary?.cashflow; // always present: { connected: false, reason }
+
+  const queue = priorities?.queue || [];
+  const floor = priorities?.floor || [];
+  const visibleQueue = showAllQueue ? queue : queue.slice(0, 4);
 
   return (
-    <>
     <div style={{ padding: "24px 20px 40px" }}>
-        {/* Page header */}
-        <div style={{ marginBottom: "28px" }}>
-          <h1 style={{
-            fontSize: "22px", fontWeight: 800, color: "#1a1a1a",
-            margin: 0, letterSpacing: "-0.3px",
-          }}>
-            Home
-          </h1>
-          <p style={{ fontSize: "13px", color: "#888", margin: "4px 0 0" }}>
-            {userRole
-              ? `You have access to ${visibleModules.length} module${visibleModules.length !== 1 ? "s" : ""}.`
-              : "Loading…"}
-          </p>
-        </div>
+      <div style={{ marginBottom: 22 }}>
+        <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800, color: C.ink, letterSpacing: "-0.3px" }}>
+          {greetingFor()}{displayName ? `, ${displayName}` : ""}
+        </h1>
+        <p style={{ margin: "5px 0 0", color: C.muted, fontSize: 13 }}>
+          Here is what needs attention today.
+        </p>
+      </div>
 
-        {/* Module grid */}
-        {loading || !userRole ? (
-          <div className="module-grid">
-            {[...Array(6)].map((_, i) => (
-              <div key={i} style={{
-                background: "#fff", border: "1.5px solid #E0DDD8",
-                borderRadius: "12px", padding: "20px", minHeight: "120px",
-                animation: "pulse 1.4s ease-in-out infinite",
-              }} />
-            ))}
-          </div>
+      {/* ── KPI cards ─────────────────────────────────────────────────────── */}
+      <div style={{
+        display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+        gap: 14, marginBottom: 20,
+      }}>
+        {customers && (
+          <StatCard
+            label="Collections due"
+            value={fmtKes(customers.overdueAmount)}
+            sub={`${customers.overdue} overdue · ${customers.dueThisWeek} due this week`}
+            alert={customers.overdue > 0}
+          />
+        )}
+        {production && (
+          <StatCard
+            label="Production active"
+            value={`${production.in_production} order${production.in_production === 1 ? "" : "s"}`}
+            sub={
+              `${production.unitsInProduction} units moving · ${production.unitsAwaitingQc} awaiting QC` +
+              (production.jobsBlocked > 0 ? ` · ${production.jobsBlocked} blocked` : "")
+            }
+            alert={production.jobsBlocked > 0}
+          />
+        )}
+        {/* Cashflow — real Stage 2 forecast when the caller has access and the
+            engine ran cleanly; otherwise honestly "not connected" rather than
+            a fabricated number (see /api/home/summary's cashflow section). */}
+        {cashflow?.connected ? (
+          <>
+            <StatCard
+              label="Payments planned"
+              value={fmtKes(cashflow.thisWeekPlanned)}
+              sub={
+                cashflow.shortfallWeeks > 0
+                  ? `This week · ${cashflow.shortfallWeeks} shortfall week${cashflow.shortfallWeeks === 1 ? "" : "s"} ahead`
+                  : "This week · no shortfalls ahead"
+              }
+              alert={cashflow.shortfallWeeks > 0}
+            />
+            <StatCard
+              label="Available cash"
+              value={fmtKes(cashflow.openingCash)}
+              sub={cashflow.isProvisional ? "As of today · provisional (review required)" : "As of today"}
+              alert={cashflow.isProvisional}
+            />
+          </>
         ) : (
-          <div className="module-grid">
-            {visibleModules.map(mod => (
-              <ModuleCard key={mod.id} mod={mod} counts={counts} />
-            ))}
-          </div>
+          <>
+            <StatCard
+              label="Payments planned"
+              value="Not connected"
+              sub={cashflow?.reason || "Cashflow forecast is not wired up yet"}
+            />
+            <StatCard
+              label="Available cash"
+              value="Not connected"
+              sub={cashflow?.reason || "Cashflow forecast is not wired up yet"}
+            />
+          </>
         )}
       </div>
 
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50%       { opacity: 0.5; }
-        }
-        .module-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-          gap: 14px;
-        }
-        @media (max-width: 480px) {
-          .module-grid { grid-template-columns: 1fr; }
-        }
-      `}</style>
-    </>
+      {/* ── Needs your attention ─────────────────────────────────────────── */}
+      <Panel>
+        <PanelHead
+          title="Needs your attention"
+          sub="One queue, drawn from every module"
+          actions={queue.length > 4 && (
+            <Btn small onClick={() => setShowAllQueue(v => !v)}>
+              {showAllQueue ? "Show fewer" : `View all ${queue.length}`}
+            </Btn>
+          )}
+        />
+        {visibleQueue.length === 0
+          ? <Empty message="Nothing needs your attention right now." />
+          : visibleQueue.map(item => <QueueRow key={`${item.type}-${item.id}`} item={item} />)}
+      </Panel>
+
+      {/* ── Production floor ─────────────────────────────────────────────── */}
+      {production && (
+        <Panel>
+          <PanelHead
+            title="Production floor"
+            sub="Jobs currently in motion"
+            actions={
+              <Link href="/production" style={{ textDecoration: "none" }}>
+                <Btn small>Open production</Btn>
+              </Link>
+            }
+          />
+          {floor.length === 0
+            ? <Empty message="No active jobs on the floor right now." />
+            : (
+              <div style={{ paddingBottom: 12 }}>
+                {floor.map(job => <FloorRow key={job.jobId} job={job} />)}
+              </div>
+            )}
+        </Panel>
+      )}
+    </div>
   );
 }

@@ -9,12 +9,28 @@
  * Response shape:
  *   {
  *     orders:     { active: number }           — non-terminal orders
- *     production: { in_production: number }    — Material Check → Ready for Delivery
- *     customers:  { overdue: number }          — orders past payment_due_date, delivered but unpaid
+ *     production: {
+ *       in_production: number,       — orders currently in PRODUCTION_STATUSES (order-level, unchanged)
+ *       jobsBlocked: number,         — production_jobs blocked: status 'Awaiting Materials',
+ *                                      or 'Paused' with a blocker_reason recorded (job-level, new)
+ *       unitsInProduction: number,   — sum(production_jobs.in_production_qty) over non-terminal jobs (new)
+ *       unitsAwaitingQc: number,     — sum(production_jobs.awaiting_qc_qty) over non-terminal jobs (new)
+ *     }
+ *     customers:  {
+ *       overdue: number,             — orders past payment_due_date, delivered but unpaid (unchanged)
+ *       overdueAmount: number,       — sum of remaining balance across those overdue orders (new)
+ *       dueThisWeek: number,         — delivered, unpaid orders due within the next 7 days, not yet overdue (new)
+ *     }
  *     suppliers:  { unmatched: number }        — chatpesa txns not fully matched
  *     contacts:   { total: number }
  *     accounting: { unposted: number }         — purchases + manual payments without journal entry
  *     admin:      { total_users: number }
+ *     cashflow:   { connected: true, thisWeekPlanned: number, shortfallWeeks: number,
+ *                   openingCash: number, isProvisional: boolean }
+ *                 | { connected: false, reason: string }
+ *               — connected:false only when the caller lacks CAN_SEE_CASHFLOW
+ *                 or the forecast engine itself throws (e.g. cashflow_settings
+ *                 missing). Never a fabricated 0 in place of a real failure.
  *   }
  *
  * Modules with no useful badge (dashboard, reports) are omitted.
@@ -26,16 +42,13 @@ export const runtime = 'nodejs';
 
 import { NextResponse }            from 'next/server';
 import { getAuthContext, serviceClient } from '@/shared/lib/api-auth';
-
-const PRODUCTION_STATUSES = ['Material Check', 'Production', 'Quality Control', 'Ready for Delivery', 'Partially Delivered'];
-const DELIVERED_STATUSES  = ['Partially Delivered', 'Delivered'];
-
-// Roles that can see each restricted module
-const CAN_SEE_PRODUCTION  = ['admin', 'production_manager', 'head_of_sales', 'production_staff'];
-const CAN_SEE_CUSTOMERS   = ['admin', 'production_manager', 'head_of_sales', 'sales'];
-const CAN_SEE_SUPPLIERS   = ['admin', 'production_manager', 'head_of_sales'];
-const CAN_SEE_ACCOUNTING  = ['admin', 'production_manager', 'head_of_sales'];
-const CAN_SEE_ADMIN       = ['admin'];
+import {
+  PRODUCTION_STATUSES, DELIVERED_STATUSES,
+  CAN_SEE_PRODUCTION, CAN_SEE_CUSTOMERS, CAN_SEE_SUPPLIERS, CAN_SEE_ACCOUNTING, CAN_SEE_ADMIN,
+  CAN_SEE_CASHFLOW,
+} from '@/shared/lib/homeAccess';
+import { buildCashflowSnapshot } from '@/shared/lib/cashflow/buildSnapshot';
+import { projectCashflow } from '@/shared/lib/cashflow/projectCashflow';
 
 export async function GET() {
   try {
@@ -58,39 +71,69 @@ export async function GET() {
         return { active: count ?? 0 };
       });
 
-    // Production — no sales/viewer
+    // Production — order-level count unchanged; job-level fields are new and
+    // read from production_jobs directly (a different status vocabulary from
+    // orders.status — the two are never conflated).
     if (CAN_SEE_PRODUCTION.includes(role)) {
-      queries.production = serviceClient
-        .from('orders')
-        .select('id', { count: 'exact', head: true })
-        .in('status', PRODUCTION_STATUSES)
-        .then(({ count, error }) => {
-          if (error) { console.error('home/summary production:', error.message); return null; }
-          return { in_production: count ?? 0 };
-        });
+      queries.production = Promise.all([
+        serviceClient
+          .from('orders')
+          .select('id', { count: 'exact', head: true })
+          .in('status', PRODUCTION_STATUSES),
+        serviceClient
+          .from('production_jobs')
+          .select('status, in_production_qty, awaiting_qc_qty, blocker_reason')
+          .not('status', 'in', '(Completed,Cancelled)'),
+      ]).then(([orderCountRes, jobsRes]) => {
+        if (orderCountRes.error) console.error('home/summary production orders:', orderCountRes.error.message);
+        if (jobsRes.error)       console.error('home/summary production jobs:',   jobsRes.error.message);
+        const jobs = jobsRes.data || [];
+        const jobsBlocked = jobs.filter(j =>
+          j.status === 'Awaiting Materials' ||
+          (j.status === 'Paused' && !!j.blocker_reason)
+        ).length;
+        const unitsInProduction = jobs.reduce((s, j) => s + (j.in_production_qty || 0), 0);
+        const unitsAwaitingQc   = jobs.reduce((s, j) => s + (j.awaiting_qc_qty   || 0), 0);
+        return {
+          in_production: orderCountRes.count ?? 0,
+          jobsBlocked,
+          unitsInProduction,
+          unitsAwaitingQc,
+        };
+      });
     }
 
-    // Customers — delivered orders past due date AND still carrying an outstanding balance.
-    // We must fetch rows (not HEAD) to compute remaining = total_value − sum(payments).
-    // This set is typically small: only delivered orders past their payment_due_date.
+    // Customers — delivered orders with a payment_due_date, still carrying an
+    // outstanding balance. Fetches both overdue AND due-this-week in one pass
+    // (a superset query filtered client-side) so "overdue" stays numerically
+    // identical to before while adding the two new fields.
     if (CAN_SEE_CUSTOMERS.includes(role)) {
+      const weekFromNow = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       queries.customers = serviceClient
         .from('orders')
-        .select('id, total_value, order_payments(amount, reversed_at)')
+        .select('id, total_value, payment_due_date, order_payments(amount, reversed_at)')
         .in('status', DELIVERED_STATUSES)
         .not('payment_due_date', 'is', null)
-        .lt('payment_due_date', today)
+        .lt('payment_due_date', weekFromNow)
         .then(({ data, error }) => {
           if (error) { console.error('home/summary customers:', error.message); return null; }
-          const overdue = (data || []).filter(order => {
+          let overdue = 0, overdueAmount = 0, dueThisWeek = 0;
+          for (const order of (data || [])) {
             // Reversed payments no longer count as paid — the reversal journal
             // already backs the receipt out in the GL.
             const paid = (order.order_payments || [])
               .filter(p => !p.reversed_at)
               .reduce((s, p) => s + parseFloat(p.amount || 0), 0);
-            return paid < parseFloat(order.total_value || 0) - 0.01;
-          }).length;
-          return { overdue };
+            const remaining = parseFloat(order.total_value || 0) - paid;
+            if (remaining <= 0.01) continue; // fully paid — not a collection concern
+            if (order.payment_due_date < today) {
+              overdue += 1;
+              overdueAmount += remaining;
+            } else {
+              dueThisWeek += 1;
+            }
+          }
+          return { overdue, overdueAmount, dueThisWeek };
         });
     }
 
@@ -161,6 +204,28 @@ export async function GET() {
       });
     }
 
+    // Cashflow — real Stage 2 forecast, built and projected fresh on every
+    // request (buildCashflowSnapshot does the Supabase reads; projectCashflow
+    // is pure). Narrower role gate than accounting — see CAN_SEE_CASHFLOW.
+    if (CAN_SEE_CASHFLOW.includes(role)) {
+      queries.cashflow = buildCashflowSnapshot(serviceClient)
+        .then((snapshot) => projectCashflow(snapshot))
+        .then((projection) => ({
+          connected: true,
+          thisWeekPlanned: projection.weeks[0]?.money_out?.total_planned ?? 0,
+          shortfallWeeks: projection.counts.shortfall_weeks,
+          openingCash: projection.opening_cash,
+          isProvisional: projection.ledger_health.is_provisional,
+          provisionalReasons: projection.warnings
+            .filter((warning) => ['provisional_opening_cash', 'unresolved_posting_errors', 'sha_remittance_status_untracked'].includes(warning.code))
+            .map((warning) => warning.code),
+        }))
+        .catch((err) => {
+          console.error('home/summary cashflow:', err.message);
+          return { connected: false, reason: 'Cashflow forecast could not be computed — see server logs.' };
+        });
+    }
+
     // Admin — total users
     if (CAN_SEE_ADMIN.includes(role)) {
       queries.admin = serviceClient
@@ -177,6 +242,15 @@ export async function GET() {
     const values = await Promise.all(Object.values(queries));
     const result = {};
     keys.forEach((k, i) => { result[k] = values[i]; });
+
+    // Caller has no cashflow visibility at all (role not in CAN_SEE_CASHFLOW)
+    // — honestly "not connected", never a fabricated number.
+    if (!result.cashflow) {
+      result.cashflow = {
+        connected: false,
+        reason: 'Cashflow is only visible to admin and head of sales in this phase.',
+      };
+    }
 
     return NextResponse.json({ success: true, data: result });
   } catch (err) {

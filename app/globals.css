@@ -85,6 +85,131 @@ button:active:not(:disabled) { transform: scale(0.97); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
 ::selection { background: var(--accent); color: white; }
+
+/* ── Desktop quick-access rail ───────────────────────────────────────────── */
+.application-body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: stretch;
+}
+
+.application-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.quick-access-rail {
+  position: sticky;
+  top: 56px;
+  z-index: 80;
+  width: 60px;
+  height: calc(100dvh - 56px);
+  flex: 0 0 60px;
+  align-self: flex-start;
+  overflow-y: auto;
+  overflow-x: visible;
+  background: #151515;
+  border-right: 1px solid #262626;
+}
+
+.quick-access-nav {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 12px 0;
+}
+
+.quick-access-link {
+  position: relative;
+  display: flex;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  color: #777;
+  text-decoration: none;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.quick-access-link:hover,
+.quick-access-link:focus-visible {
+  color: #f5f5f5;
+  background: #222;
+}
+
+.quick-access-link:focus-visible {
+  outline: 3px solid rgba(232, 81, 42, 0.55);
+  outline-offset: 1px;
+}
+
+.quick-access-link.is-active {
+  color: #fff;
+  background: rgba(232, 81, 42, 0.16);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.quick-access-divider {
+  width: 26px;
+  height: 1px;
+  flex: 0 0 1px;
+  margin: 6px 0;
+  background: #2a2a2a;
+}
+
+.quick-access-admin {
+  display: flex;
+  width: 100%;
+  margin-top: auto;
+  flex-direction: column;
+  align-items: center;
+}
+
+.quick-access-tooltip {
+  position: fixed;
+  z-index: 140;
+  max-width: 180px;
+  padding: 6px 9px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  color: #fff;
+  background: #252525;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.24);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  pointer-events: none;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+
+.quick-access-rail.is-loading::before {
+  content: "";
+  display: block;
+  width: 36px;
+  height: 132px;
+  margin: 16px auto;
+  border-radius: 10px;
+  background: linear-gradient(#202020, #191919);
+}
+
+@media (max-width: 900px) {
+  .quick-access-rail { display: none; }
+}
+
+/* The quick-access rail owns desktop module navigation. Keep the legacy top
+   navigation only in the 769-900px bridge where the rail is intentionally
+   hidden and the mobile menu has not taken over yet. */
+@media (min-width: 901px) {
+  .desktop-nav { display: none !important; }
+}
+
 /* Mobile order cards */
 @media (max-width: 480px) {
   .order-card { border-radius: 8px !important; }

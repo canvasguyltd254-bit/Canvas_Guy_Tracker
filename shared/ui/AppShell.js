@@ -6,6 +6,8 @@ import { createClient } from "@/shared/supabase/client";
 import * as modules from "@/modules/registry";
 import { useAuth } from "@/shared/context/AuthContext";
 import QuickActions from "@/shared/ui/QuickActions";
+import QuickAccessRail from "@/shared/ui/QuickAccessRail";
+import { isPathActive } from "@/shared/lib/quickAccess";
 
 const moduleList = Object.values(modules);
 // NOTE: modules without an allowedRoles array are hidden for ALL roles.
@@ -39,7 +41,8 @@ export default function AppShell({ children }) {
   const accessibleModules = moduleList.filter(mod => mod.allowedRoles?.includes(userRole));
   const primaryModules    = accessibleModules.filter(mod => PRIMARY_MODULE_IDS.includes(mod.id));
   const moreModules       = accessibleModules.filter(mod => !PRIMARY_MODULE_IDS.includes(mod.id));
-  const moreActive        = moreModules.some(mod => mod.navItems?.some(item => pathname.startsWith(item.path)));
+  const mobileModules     = accessibleModules.filter(mod => mod.id !== 'dashboard');
+  const moreActive        = moreModules.some(mod => mod.navItems?.some(item => isPathActive(pathname, item.path)));
 
   // Lock QuickActions while the mobile menu is open; unlock on close or unmount.
   // Only dispatch lock when opening (not on every false→false re-run) to avoid
@@ -93,7 +96,7 @@ export default function AppShell({ children }) {
           {/* Primary module links */}
           {primaryModules.map((mod) =>
             mod.navItems.map((item) => {
-              const active = pathname.startsWith(item.path);
+              const active = isPathActive(pathname, item.path);
               return (
                 <Link key={item.path} href={item.path} style={{
                   padding: "6px 14px", borderRadius: "4px", background: "transparent",
@@ -146,7 +149,7 @@ export default function AppShell({ children }) {
                   }}>
                     {moreModules.map((mod) =>
                       mod.navItems.map((item) => {
-                        const active = pathname.startsWith(item.path);
+                        const active = isPathActive(pathname, item.path);
                         return (
                           <Link key={item.path} href={item.path}
                             style={{
@@ -212,9 +215,19 @@ export default function AppShell({ children }) {
             background: "#1a1a1a", padding: "12px",
             borderBottom: "1px solid #333",
           }} onClick={e => e.stopPropagation()}>
-            {moduleList.filter(mod => mod.allowedRoles?.includes(userRole)).map((mod) =>
+            <Link href="/" style={{
+              display: "flex", alignItems: "center", gap: "10px",
+              padding: "12px 16px", borderRadius: "6px", marginBottom: "4px",
+              background: pathname === "/" ? "#2a1f1b" : "transparent",
+              borderLeft: pathname === "/" ? "3px solid #E8512A" : "3px solid transparent",
+              color: pathname === "/" ? "#fff" : "#999",
+              textDecoration: "none", fontSize: "15px", fontWeight: pathname === "/" ? 700 : 500,
+            }}>
+              <span>⌂</span> <span>Home</span>
+            </Link>
+            {mobileModules.map((mod) =>
               mod.navItems.map((item) => {
-                const active = pathname.startsWith(item.path);
+                const active = isPathActive(pathname, item.path);
                 return (
                   <Link key={item.path} href={item.path} style={{
                     display: "flex", alignItems: "center", gap: "10px",
@@ -244,24 +257,30 @@ export default function AppShell({ children }) {
         </div>
       )}
 
-      {/* Main content — WorkspaceShell is injected from layout.js, not here.
-          AppShell is unaware of workspace tabs; it simply renders its children.
-          layout.js wraps children with WorkspaceShell before passing them in. */}
-      <div style={{ flex: 1 }}>
-        {children}
-      </div>
+      <div className="application-body">
+        <QuickAccessRail modules={moduleList} userRole={userRole} loaded={loaded} />
 
-      {/* Trademark — static footer */}
-      <div style={{
-        fontSize: "10px", color: "#bbb", letterSpacing: "0.3px",
-        userSelect: "none",
-        fontFamily: "'DM Mono', 'Courier New', monospace",
-        padding: "10px 14px",
-        paddingBottom: "calc(10px + env(safe-area-inset-bottom))",
-        textAlign: "right",
-        borderTop: "1px solid #ececec",
-      }}>
-        © {new Date().getFullYear()} Canvas Guy Limited. All rights reserved.
+        <div className="application-main">
+          {/* WorkspaceShell is injected from layout.js, not here. AppShell stays
+              unaware of workspace state; rail links navigate through real URLs
+              and WorkspaceShell handles opening/switching tabs from pathname. */}
+          <div style={{ flex: 1 }}>
+            {children}
+          </div>
+
+          {/* Trademark — static footer */}
+          <div style={{
+            fontSize: "10px", color: "#bbb", letterSpacing: "0.3px",
+            userSelect: "none",
+            fontFamily: "'DM Mono', 'Courier New', monospace",
+            padding: "10px 14px",
+            paddingBottom: "calc(10px + env(safe-area-inset-bottom))",
+            textAlign: "right",
+            borderTop: "1px solid #ececec",
+          }}>
+            © {new Date().getFullYear()} Canvas Guy Limited. All rights reserved.
+          </div>
+        </div>
       </div>
 
       <style>{`
