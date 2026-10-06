@@ -8,6 +8,7 @@ import { createClient } from '@/shared/supabase/client';
 import { DrawingsUpload } from '@/modules/orders/components/DrawingsUpload';
 import DeliveryTab from '@/modules/orders/components/DeliveryTab';
 import DangerZoneTab from '@/modules/orders/components/DangerZoneTab';
+import OrderCostingPanel from '@/modules/production/components/OrderCosting';
 import {
   STATUSES, REPAIR_STATUSES, ALL_STATUS_COLORS,
   ROLES_CAN_ADVANCE, ROLES_CAN_REWORK, ROLES_CAN_REFUND,
@@ -1277,6 +1278,7 @@ function PnLTab({ orderId, orderNum, contractTotal, itemsSubtotal, chargeItems, 
                   <span style={{ fontFamily: 'monospace' }}>KES {Math.round(totals.totalPurchaseCost || 0).toLocaleString('en-KE')}</span>
                 </div>
                 {totals.outstandingAP > 0.01 && (
+          {['admin', 'production_manager'].includes(userRole) && tabBtn('production', 'Production costing')}
                   <div style={{ marginTop: 10, fontSize: 12, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '8px 12px' }}>
                     ⚠ KES {Math.round(totals.outstandingAP).toLocaleString('en-KE')} still owed to suppliers (outstanding AP)
                   </div>
@@ -1461,6 +1463,8 @@ function PnLTab({ orderId, orderNum, contractTotal, itemsSubtotal, chargeItems, 
     </div>
   );
 }
+      {subTab === 'production' && ['admin', 'production_manager'].includes(userRole) && <OrderCostingPanel orderId={orderId} />}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN PAGE
