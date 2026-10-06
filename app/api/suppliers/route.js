@@ -10,6 +10,7 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { postOpeningBalanceJournal } from '@/shared/lib/accountingService';
+import { parsePaymentTermsDays } from '@/shared/lib/supplierTerms';
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales'];
 
@@ -94,6 +95,13 @@ export async function POST(request) {
 
     const openingBalance = parseFloat(body.opening_balance) || 0;
 
+    // Credit terms: blank -> null (not recorded), 0 -> cash on delivery.
+    // See shared/lib/supplierTerms.js for why those must stay distinct.
+    const terms = parsePaymentTermsDays(body.payment_terms_days);
+    if (!terms.ok) {
+      return NextResponse.json({ error: terms.error }, { status: 400 });
+    }
+
     const safe = {
       name:                   body.name.trim(),
       contact_person:         body.contact_person?.trim() || null,
@@ -104,6 +112,7 @@ export async function POST(request) {
       opening_balance:        openingBalance > 0 ? openingBalance : 0,
       opening_balance_date:   body.opening_balance_date || null,
       opening_balance_notes:  body.opening_balance_notes?.trim() || null,
+      payment_terms_days:     terms.value,
       created_by:             user.id,
     };
 

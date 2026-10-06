@@ -12,6 +12,8 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { recalcPurchasePayment } from '@/shared/lib/recalcPurchasePayment';
 import { postPurchaseJournal, postManualPaymentJournal } from '@/shared/lib/accountingService';
+import { isValidIsoDate, compareIsoDates } from '@/shared/lib/isoDate';
+import { inferLegacyDueDateMode, shouldRequestSupplierTermsDerivation } from '@/shared/lib/supplierTerms';
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales'];
 
@@ -88,9 +90,119 @@ export async function POST(request) {
       );
     }
 
+    const purchaseDate = body.purchase_date || new Date().toISOString().split('T')[0];
+    if (!isValidIsoDate(purchaseDate)) {
+      return NextResponse.json({ error: 'purchase_date must be a valid date in YYYY-MM-DD format' }, { status: 400 });
+    }
+
+    // due_date_mode says WHY due_date has the value it will get — provenance
+    // decided at write time, never re-derived later (see shared/lib/supplierTerms.js).
+    //
+    // Legacy-omission rule (P0 fix): a caller that sends no due_date_mode at
+    // all is NOT the same as a caller who chose "unrecorded" — that was the
+    // rev-2 bug (`body.due_date_mode || 'unrecorded'` claimed "unrecorded"
+    // as the default while the trigger silently derived from supplier terms
+    // anyway whenever they existed, i.e. the string and the behavior
+    // disagreed). The actual pre-mode contract was: a raw due_date present
+    // means explicit; otherwise derive from supplier terms if the supplier
+    // has any, else leave unrecorded. We reproduce that contract explicitly
+    // here instead of leaving it as an accidental trigger side effect.
+    const VALID_DUE_DATE_MODES = ['explicit', 'supplier_terms', 'unrecorded'];
+    const rawDueDateProvided = String(body.due_date ?? '').trim() !== '';
+
+    let dueDateMode = body.due_date_mode;
+    let cachedSupplierTermsDays; // avoid a second supplier lookup below when already fetched here
+
+    if (dueDateMode === undefined || dueDateMode === null) {
+      if (!rawDueDateProvided) {
+        const { data: sup, error: supErr } = await serviceClient
+          .from('suppliers')
+          .select('payment_terms_days')
+          .eq('id', body.supplier_id)
+          .single();
+        if (supErr || !sup) {
+          return NextResponse.json({ error: 'Supplier not found' }, { status: 400 });
+        }
+        cachedSupplierTermsDays = sup.payment_terms_days;
+      }
+      // shared/lib/supplierTerms.js — see the P0 rev-3 review for why this
+      // is a named, tested rule and not an inline default string.
+      dueDateMode = inferLegacyDueDateMode({
+        rawDueDateProvided,
+        supplierTermsDays: cachedSupplierTermsDays,
+      });
+    } else if (!VALID_DUE_DATE_MODES.includes(dueDateMode)) {
+      return NextResponse.json(
+        { error: `due_date_mode must be one of: ${VALID_DUE_DATE_MODES.join(', ')}` },
+        { status: 400 },
+      );
+    }
+
+    let explicitDueDate;
+
+    if (dueDateMode === 'explicit') {
+      const raw = String(body.due_date ?? '').trim();
+      if (!raw) {
+        return NextResponse.json({ error: 'due_date is required when due_date_mode is "explicit"' }, { status: 400 });
+      }
+      if (!isValidIsoDate(raw)) {
+        return NextResponse.json({ error: 'due_date must be a valid date in YYYY-MM-DD format' }, { status: 400 });
+      }
+      if (compareIsoDates(raw, purchaseDate) < 0) {
+        return NextResponse.json({ error: 'due_date cannot be earlier than purchase_date' }, { status: 400 });
+      }
+      explicitDueDate = raw;
+      // The trigger reads NEW.due_date to decide provenance — this must be
+      // the ONLY case that sets it before the row hits the trigger.
+    } else {
+      // supplier_terms / unrecorded: a due_date sent alongside either of
+      // these is a contradiction (the mode says the date isn't a manual
+      // entry), so reject rather than silently pick one meaning over the other.
+      if (rawDueDateProvided) {
+        return NextResponse.json(
+          { error: `due_date must not be provided when due_date_mode is "${dueDateMode}"` },
+          { status: 400 },
+        );
+      }
+    }
+
+    let requestSupplierTermsMode = false;
+
+    if (dueDateMode === 'supplier_terms') {
+      // Requested (explicitly, or via the legacy-omission rule above) —
+      // confirm the supplier actually has terms so the failure is a clear
+      // 400, not a silent fall-through to "unrecorded".
+      let termsDays = cachedSupplierTermsDays;
+      if (termsDays === undefined) {
+        const { data: sup, error: supErr } = await serviceClient
+          .from('suppliers')
+          .select('payment_terms_days')
+          .eq('id', body.supplier_id)
+          .single();
+        if (supErr || !sup) {
+          return NextResponse.json({ error: 'Supplier not found' }, { status: 400 });
+        }
+        termsDays = sup.payment_terms_days;
+      }
+      if (!Number.isInteger(termsDays)) {
+        return NextResponse.json(
+          { error: 'This supplier has no recorded credit terms. Record terms on the supplier, or use "explicit" / "unrecorded" instead.' },
+          { status: 400 },
+        );
+      }
+      // Terms confirmed — leave due_date unset and instead set the internal
+      // due_date_request_mode marker so the BEFORE INSERT trigger computes
+      // the date, stamps due_date_source = 'supplier_terms', AND snapshots
+      // the terms it used into due_date_terms_days, all from the ONE
+      // authoritative read of suppliers.payment_terms_days at insert time.
+      // Computing (or snapshotting) it here too would be a second
+      // implementation that could silently drift from the trigger's.
+      requestSupplierTermsMode = shouldRequestSupplierTermsDerivation(dueDateMode);
+    }
+
     const safe = {
       supplier_id:            body.supplier_id,
-      purchase_date:          body.purchase_date || new Date().toISOString().split('T')[0],
+      purchase_date:          purchaseDate,
       items_bought:           body.items_bought?.trim() || null,
       total_amount:           totalAmount,
       invoice_path:           body.invoice_path || null,
@@ -101,6 +213,10 @@ export async function POST(request) {
       accounting_category_id: body.accounting_category_id || null,
       created_by:             user.id,
     };
+    if (explicitDueDate) safe.due_date = explicitDueDate;
+    // Internal marker only — never derived from client input, never part of
+    // shared/lib/whitelist.js. See cashflow_v0_supplier_terms.sql.
+    if (requestSupplierTermsMode) safe.due_date_request_mode = 'supplier_terms';
 
     const { data: purchase, error } = await serviceClient
       .from('supplier_purchases')

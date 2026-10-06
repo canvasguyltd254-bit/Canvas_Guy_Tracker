@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/shared/context/AuthContext";
+import { parsePaymentTermsDays, deriveDueDate, hasRecordedTerms } from "@/shared/lib/supplierTerms";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -256,6 +257,8 @@ function EditSupplierModal({ supplier, onClose, onSaved }) {
     opening_balance:       supplier.opening_balance       || "",
     opening_balance_date:  supplier.opening_balance_date  || "",
     opening_balance_notes: supplier.opening_balance_notes || "",
+    // "" and 0 are different answers — see shared/lib/supplierTerms.js
+    payment_terms_days:    supplier.payment_terms_days != null ? String(supplier.payment_terms_days) : "",
   });
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState("");
@@ -264,6 +267,10 @@ function EditSupplierModal({ supplier, onClose, onSaved }) {
 
   const save = async () => {
     if (!form.name.trim()) { setError("Supplier name is required."); return; }
+
+    const terms = parsePaymentTermsDays(form.payment_terms_days);
+    if (!terms.ok) { setError(terms.error); return; }
+
     setSaving(true);
     setError("");
     try {
@@ -275,6 +282,7 @@ function EditSupplierModal({ supplier, onClose, onSaved }) {
         materials_supplied:    form.materials_supplied.trim()    || null,
         notes:                 form.notes.trim()                 || null,
         opening_balance_notes: form.opening_balance_notes.trim() || null,
+        payment_terms_days:    terms.value,
         // Only send OB fields if not posted to GL
         ...(!obPosted && {
           opening_balance:      parseFloat(form.opening_balance)      || null,
@@ -329,6 +337,17 @@ function EditSupplierModal({ supplier, onClose, onSaved }) {
           <div style={{ gridColumn: "1 / -1" }}>
             <label style={ss.label}>Materials supplied</label>
             <input style={inputStyle} type="text" value={form.materials_supplied} onChange={e => set("materials_supplied", e.target.value)} placeholder="e.g. Timber, MDF, Upholstery fabric" />
+          </div>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <label style={ss.label}>Credit terms (days)</label>
+            <input style={inputStyle} type="number" min="0" max="365" step="1"
+              value={form.payment_terms_days}
+              onChange={e => set("payment_terms_days", e.target.value)}
+              placeholder="e.g. 30 — leave blank if not agreed" />
+            <div style={{ fontSize: 11, color: "#6b7280", marginTop: 5, lineHeight: 1.45 }}>
+              Sets the payment due date on new purchases. <strong>Blank</strong> means no terms agreed, so Cashflow
+              assumes a default and flags the date as an assumption. Enter <strong>0</strong> for cash on delivery.
+            </div>
           </div>
           <div style={{ gridColumn: "1 / -1" }}>
             <label style={ss.label}>Notes</label>
@@ -402,6 +421,9 @@ function EditSupplierModal({ supplier, onClose, onSaved }) {
 
 const EMPTY_ADD_PURCHASE = {
   purchase_date: new Date().toISOString().split("T")[0],
+  // due_date is a display value only, kept in step with due_date_mode. What
+  // reaches the API is decided entirely by due_date_mode — see save() below.
+  due_date: "", due_date_mode: "unrecorded",
   items_bought: "",
   total_amount: "",
   amount_paid: "",
@@ -413,7 +435,17 @@ const EMPTY_ADD_PURCHASE = {
 };
 
 function AddPurchaseModal({ supplier, onClose, onSaved }) {
-  const [form, setForm] = useState({ ...EMPTY_ADD_PURCHASE });
+  // The supplier is already known when this modal opens, so the due-date
+  // mode can be recommended immediately: supplier_terms if they have terms
+  // recorded (including 0 — cash on delivery), unrecorded otherwise. This is
+  // only the STARTING value — the mode buttons below simply set form state
+  // on click, and nothing here re-runs after mount, so a user's manual
+  // choice is never overridden. Lazy initializer: read supplier's terms
+  // once, at the moment this modal is created for this supplier.
+  const [form, setForm] = useState(() => ({
+    ...EMPTY_ADD_PURCHASE,
+    due_date_mode: hasRecordedTerms(supplier?.payment_terms_days) ? "supplier_terms" : "unrecorded",
+  }));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [categories, setCategories] = useState([]);
@@ -437,11 +469,26 @@ function AddPurchaseModal({ supplier, onClose, onSaved }) {
     setError("");
     if (!form.total_amount || totalAmt <= 0) { setError("Total amount must be greater than zero."); return; }
     if (paidAmt > totalAmt + 0.01) { setError("Amount paid cannot exceed total amount."); return; }
+
+    const dueMode = form.due_date_mode || "unrecorded";
+    let dueDatePayload = { due_date_mode: dueMode };
+    if (dueMode === "explicit") {
+      const raw = String(form.due_date || "").trim();
+      if (!raw) { setError("Enter a payment due date, or choose a different option."); return; }
+      dueDatePayload.due_date = raw;
+    } else if (dueMode === "supplier_terms" && !hasRecordedTerms(supplier.payment_terms_days)) {
+      setError("This supplier has no recorded credit terms. Record terms on the supplier, or choose a different option.");
+      return;
+    }
+    // supplier_terms / unrecorded send no due_date — the server derives and
+    // records the source itself (see /api/purchases POST).
+
     setSaving(true);
     try {
       const body = {
         supplier_id:                supplier.id,
         purchase_date:              form.purchase_date,
+        ...dueDatePayload,
         items_bought:               form.items_bought.trim() || null,
         total_amount:               totalAmt,
         amount_paid:                paidAmt,
@@ -491,6 +538,65 @@ function AddPurchaseModal({ supplier, onClose, onSaved }) {
             <label style={ss.label}>Purchase date</label>
             <input style={ss.input} type="date" value={form.purchase_date} onChange={e => setForm({ ...form, purchase_date: e.target.value })} />
           </div>
+
+          {/* Payment due date — due_date_mode decides what's saved, not the date
+              field's contents. Explicit is the only mode that sends a date; the
+              other two leave the server to derive both the value and its
+              recorded source (P0: provenance is a fact recorded once, never
+              re-inferred later from the supplier's current terms). */}
+          {(() => {
+            const terms    = supplier.payment_terms_days;
+            const hasTerms = hasRecordedTerms(terms);
+            const preview  = deriveDueDate(form.purchase_date, terms) || "";
+            const mode     = form.due_date_mode || "unrecorded";
+
+            const setMode = (nextMode) =>
+              setForm({ ...form, due_date_mode: nextMode, due_date: nextMode === "supplier_terms" ? preview : form.due_date });
+
+            const modeBtn = (key, label, disabled) => (
+              <button type="button" disabled={disabled}
+                onClick={() => setMode(key)}
+                style={{
+                  fontSize: 12, padding: "9px 12px", borderRadius: 8, cursor: disabled ? "not-allowed" : "pointer",
+                  border: `1.5px solid ${mode === key ? "#E8512A" : "#e7e3de"}`,
+                  background: mode === key ? "#fde8e2" : "#fff",
+                  color: mode === key ? "#E8512A" : disabled ? "#9ca3af" : "#181818",
+                  fontWeight: mode === key ? 700 : 400,
+                }}>
+                {label}
+              </button>
+            );
+
+            return (
+              <div style={{ gridColumn: "1 / -1" }}>
+                <label style={ss.label}>Payment due date</label>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                  {modeBtn("explicit", "Explicit date")}
+                  {modeBtn("supplier_terms", hasTerms ? `Supplier terms · ${terms}d` : "Supplier terms", !hasTerms)}
+                  {modeBtn("unrecorded", "Unrecorded")}
+                </div>
+
+                {mode === "explicit" && (
+                  <input style={ss.input} type="date"
+                    value={form.due_date} min={form.purchase_date || undefined}
+                    onChange={e => setForm({ ...form, due_date: e.target.value })} />
+                )}
+
+                <div style={{ fontSize: 11, marginTop: 8, lineHeight: 1.5, color: mode === "unrecorded" ? "#96620a" : "#6b7280" }}>
+                  {mode === "explicit" ? (
+                    "A negotiated date, recorded as an explicit entry — not re-derived if the supplier's terms change later."
+                  ) : mode === "supplier_terms" ? (
+                    terms === 0
+                      ? <><strong>{supplier.name}</strong> is cash on delivery: due on the purchase date.</>
+                      : <>Computed from <strong>{supplier.name}</strong>&rsquo;s {terms}-day terms as of today: <strong>{preview || "—"}</strong>. Recorded as &ldquo;Supplier terms · {terms} days&rdquo;.</>
+                  ) : (
+                    <>No due date will be recorded.{hasTerms ? "" : ` ${supplier.name} has no credit terms on file.`} Cashflow will apply its
+                      configured default and label the date &ldquo;Assumed by Cashflow&rdquo; rather than show it as fact.</>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Items bought */}
           <div style={{ gridColumn: "1 / -1" }}>

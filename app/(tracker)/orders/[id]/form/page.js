@@ -378,6 +378,8 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
   const [amt, setAmt]                 = useState('');
   const [desc, setDesc]               = useState('');
   const [payDate, setPayDate]         = useState(new Date().toISOString().split('T')[0]);
+  const [payMethod, setPayMethod]     = useState('');   // Cashflow R2: cash | mpesa | bank | cheque
+  const [bankedDate, setBankedDate]   = useState('');   // cash/mpesa only; blank = not banked yet
   const [adding, setAdding]           = useState(false);
   const [addError, setAddError]       = useState('');
   const [pendingDelete, setPendingDelete] = useState(null); // payment obj awaiting reason
@@ -423,15 +425,17 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
     }
 
     setAdding(true);
-    const tempPayment = { id: `temp-${Date.now()}`, amount: a, description: desc.trim(), payment_date: payDate };
+    const sentMethod = payMethod;
+    const sentBanked = (sentMethod === 'cash' || sentMethod === 'mpesa') ? (bankedDate || null) : null;
+    const tempPayment = { id: `temp-${Date.now()}`, amount: a, description: desc.trim(), payment_date: payDate, payment_method: sentMethod, banked_date: sentBanked };
     setPayments(prev => [...prev, tempPayment]);
-    setAmt(''); setDesc(''); setPayDate(new Date().toISOString().split('T')[0]);
+    setAmt(''); setDesc(''); setPayDate(new Date().toISOString().split('T')[0]); setPayMethod(''); setBankedDate('');
 
     try {
       const res = await fetch(`/api/orders/${orderId}/payments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount: a, description: tempPayment.description, payment_date: payDate }),
+        body: JSON.stringify({ amount: a, description: tempPayment.description, payment_date: payDate, payment_method: sentMethod || null, banked_date: sentBanked }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -617,6 +621,40 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
                 </div>
                 {/* Row 2: description */}
                 <div className="phc-desc" style={{ fontSize: '13px', color: isReversed ? '#9ca3af' : '#374151', marginTop: '4px' }}>{p.description}</div>
+                {!isReversed && (() => {
+                  const m = p.payment_method;
+                  const label = { cash: 'Cash', mpesa: 'M-PESA', bank: 'Bank', cheque: 'Cheque' }[m];
+                  const needsBanking = (m === 'cash' || m === 'mpesa') && !p.banked_date;
+                  return (
+                    <div style={{ marginTop: '4px', display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap', fontSize: '11px' }}>
+                      <span style={{ fontWeight: 700, color: m ? '#374151' : '#9ca3af', background: '#f3f4f6', borderRadius: '4px', padding: '2px 6px' }}>
+                        {label || 'Method not recorded'}
+                      </span>
+                      {(m === 'cash' || m === 'mpesa') && (
+                        p.banked_date
+                          ? <span style={{ color: '#16a34a', fontWeight: 600 }}>Banked {fmtDate(p.banked_date)}</span>
+                          : <span style={{ color: '#b45309', fontWeight: 700 }}>Not banked</span>
+                      )}
+                      {needsBanking && canDelete && !String(p.id).startsWith('temp-') && (
+                        <button
+                          onClick={async () => {
+                            const d = window.prompt('Date banked (YYYY-MM-DD)', new Date().toISOString().split('T')[0]);
+                            if (!d) return;
+                            const res = await fetch(`/api/orders/${orderId}/payments?payment_id=${p.id}`, {
+                              method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ banked_date: d }),
+                            });
+                            if (!res.ok) { const j = await res.json().catch(() => ({})); setAddError(j.error || 'Failed to mark as banked'); return; }
+                            await loadPayments();
+                          }}
+                          style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: '11px', fontWeight: 700, padding: '2px 0' }}
+                        >
+                          Mark banked
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
                 {/* Row 3: action */}
                 {showControl && (
                   <div className="phc-actions" style={{ marginTop: '6px' }}>
@@ -662,11 +700,29 @@ function PaymentPanel({ orderId, contractTotal, itemsSubtotal, chargeItems, user
               <input type="date" value={payDate} onChange={e => setPayDate(e.target.value)}
                 style={{ width: '100%', padding: '8px 10px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }} />
             </div>
-            <button onClick={addPayment} disabled={!amt || !desc.trim() || adding} className="payment-add-btn" style={{
+            <div style={{ flex: '0 0 120px' }}>
+              <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '4px' }}>Method</div>
+              <select value={payMethod} onChange={e => { setPayMethod(e.target.value); if (e.target.value !== 'cash' && e.target.value !== 'mpesa') setBankedDate(''); }}
+                style={{ width: '100%', padding: '8px 10px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', outline: 'none', boxSizing: 'border-box', background: '#fff' }}>
+                <option value="">Select…</option>
+                <option value="cash">Cash</option>
+                <option value="mpesa">M-PESA</option>
+                <option value="bank">Bank transfer</option>
+                <option value="cheque">Cheque</option>
+              </select>
+            </div>
+            {(payMethod === 'cash' || payMethod === 'mpesa') && (
+              <div style={{ flex: '0 0 150px' }}>
+                <div style={{ fontSize: '10px', fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', marginBottom: '4px' }}>Banked on (optional)</div>
+                <input type="date" value={bankedDate} min={payDate} onChange={e => setBankedDate(e.target.value)}
+                  style={{ width: '100%', padding: '8px 10px', border: '1.5px solid #e0e0e0', borderRadius: '7px', fontSize: '13px', outline: 'none', boxSizing: 'border-box' }} />
+              </div>
+            )}
+            <button onClick={addPayment} disabled={!amt || !desc.trim() || !payMethod || adding} className="payment-add-btn" style={{
               padding: '9px 18px', borderRadius: '7px', border: 'none',
-              background: amt && desc.trim() && !adding ? '#16a34a' : '#e0e0e0',
-              color: amt && desc.trim() && !adding ? '#fff' : '#aaa',
-              fontWeight: 700, fontSize: '13px', cursor: amt && desc.trim() ? 'pointer' : 'default',
+              background: amt && desc.trim() && payMethod && !adding ? '#16a34a' : '#e0e0e0',
+              color: amt && desc.trim() && payMethod && !adding ? '#fff' : '#aaa',
+              fontWeight: 700, fontSize: '13px', cursor: amt && desc.trim() && payMethod ? 'pointer' : 'default',
               whiteSpace: 'nowrap', flex: '0 0 auto', minHeight: 44,
             }}>
               {adding ? '...' : '+ Add Payment'}
@@ -1222,6 +1278,7 @@ function PnLTab({ orderId, orderNum, contractTotal, itemsSubtotal, chargeItems, 
           {tabBtn('supplier', 'Supplier Costs', purchases.length + labourAllocations.length)}
           {tabBtn('expenses', 'Direct Expenses', directExpenses.length)}
           {tabBtn('summary',  'Profit Summary')}
+          {['admin', 'production_manager'].includes(userRole) && tabBtn('production', 'Production costing')}
         </div>
         {PDF_ALLOWED_ROLES.includes(userRole) && (
           <button onClick={exportPdf} disabled={pdfLoading} className="pnl-export-btn"
@@ -1278,7 +1335,6 @@ function PnLTab({ orderId, orderNum, contractTotal, itemsSubtotal, chargeItems, 
                   <span style={{ fontFamily: 'monospace' }}>KES {Math.round(totals.totalPurchaseCost || 0).toLocaleString('en-KE')}</span>
                 </div>
                 {totals.outstandingAP > 0.01 && (
-          {['admin', 'production_manager'].includes(userRole) && tabBtn('production', 'Production costing')}
                   <div style={{ marginTop: 10, fontSize: 12, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '8px 12px' }}>
                     ⚠ KES {Math.round(totals.outstandingAP).toLocaleString('en-KE')} still owed to suppliers (outstanding AP)
                   </div>
@@ -1407,6 +1463,8 @@ function PnLTab({ orderId, orderNum, contractTotal, itemsSubtotal, chargeItems, 
       )}
 
       {/* ── PROFIT SUMMARY ── */}
+      {subTab === 'production' && ['admin', 'production_manager'].includes(userRole) && <OrderCostingPanel orderId={orderId} />}
+
       {subTab === 'summary' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ background: '#fff', border: '1px solid #e8e8e5', borderRadius: 10, overflow: 'hidden' }}>
@@ -1463,8 +1521,6 @@ function PnLTab({ orderId, orderNum, contractTotal, itemsSubtotal, chargeItems, 
     </div>
   );
 }
-      {subTab === 'production' && ['admin', 'production_manager'].includes(userRole) && <OrderCostingPanel orderId={orderId} />}
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN PAGE

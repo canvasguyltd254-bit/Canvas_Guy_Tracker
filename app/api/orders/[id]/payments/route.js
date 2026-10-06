@@ -2,7 +2,8 @@
  * app/api/orders/[id]/payments/route.js
  *
  * GET    /api/orders/:id/payments           — list all payments (any authenticated user)
- * POST   /api/orders/:id/payments           — add payment
+ * POST   /api/orders/:id/payments           — add payment (optional payment_method, banked_date)
+ * PATCH  /api/orders/:id/payments?payment_id — set payment_method / banked_date only
  * DELETE /api/orders/:id/payments?payment_id — delete payment (admin, head_of_sales) with required reason; logs to order_activities
  */
 
@@ -12,6 +13,29 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
 import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
+import { isValidIsoDate, compareIsoDates } from '@/shared/lib/isoDate';
+
+const RECEIPT_METHODS = ['cash', 'mpesa', 'bank', 'cheque'];
+
+/**
+ * Validates the Cashflow R2 fields. Returns an error string or null.
+ * Rules: method must be one of the four values; banked_date needs a method,
+ * must be a real date, and cannot precede the payment date. Unknown stays
+ * unknown — nothing is defaulted here.
+ */
+function validateReceiptFields({ payment_method, banked_date, payment_date }) {
+  if (payment_method != null && !RECEIPT_METHODS.includes(payment_method)) {
+    return `payment_method must be one of: ${RECEIPT_METHODS.join(', ')}`;
+  }
+  if (banked_date != null) {
+    if (payment_method == null) return 'banked_date requires payment_method';
+    if (!isValidIsoDate(banked_date)) return 'banked_date must be a valid YYYY-MM-DD date';
+    if (isValidIsoDate(payment_date) && compareIsoDates(banked_date, payment_date) < 0) {
+      return 'banked_date cannot be before the payment date';
+    }
+  }
+  return null;
+}
 
 export async function GET(request, props) {
   const params = await props.params;
@@ -73,6 +97,13 @@ export async function POST(request, props) {
       return NextResponse.json({ error: 'amount must be a positive number' }, { status: 400 });
     }
 
+    // Cashflow R2: normalise empty strings to NULL (= unknown), then validate.
+    for (const f of ['payment_method', 'banked_date']) {
+      if (safePayment[f] === '' || safePayment[f] === undefined) safePayment[f] = null;
+    }
+    const receiptErr = validateReceiptFields(safePayment);
+    if (receiptErr) return NextResponse.json({ error: receiptErr }, { status: 400 });
+
     // 4. Insert
     const { data, error } = await serviceClient
       .from('order_payments')
@@ -116,6 +147,67 @@ export async function POST(request, props) {
 
   } catch (err) {
     console.error('POST /api/orders/[id]/payments:', err);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+/**
+ * PATCH /api/orders/:id/payments?payment_id=…
+ * Body: { payment_method?, banked_date? }
+ *
+ * Narrow, metadata-only update for Cashflow R2: record how a receipt was paid
+ * and when it reached the bank. Amount, date and description stay immutable
+ * (delete + re-add), and nothing is posted to the ledger. Reversed payments
+ * are refused.
+ */
+export async function PATCH(request, props) {
+  const params = await props.params;
+  try {
+    const orderId = params.id;
+    const paymentId = new URL(request.url).searchParams.get('payment_id');
+    if (!paymentId) return NextResponse.json({ error: 'Missing payment_id query param' }, { status: 400 });
+
+    const { user, role } = await getAuthContext();
+    const authError = requireRole(user, role, ['admin', 'head_of_sales']);
+    if (authError) return authError;
+
+    const suspendedErr = await checkOrderSuspended(orderId);
+    if (suspendedErr) return suspendedErr;
+
+    let body;
+    try { body = await request.json(); } catch {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
+
+    const { data: existing } = await serviceClient
+      .from('order_payments')
+      .select('id, order_id, payment_date, payment_method, banked_date, reversed_at')
+      .eq('id', paymentId)
+      .eq('order_id', orderId)
+      .single();
+    if (!existing) return NextResponse.json({ error: 'Payment not found' }, { status: 404 });
+    if (existing.reversed_at) return NextResponse.json({ error: 'Reversed payments cannot be edited' }, { status: 409 });
+
+    const next = {
+      payment_method: 'payment_method' in body ? (body.payment_method || null) : existing.payment_method,
+      banked_date:    'banked_date'    in body ? (body.banked_date    || null) : existing.banked_date,
+    };
+    const err = validateReceiptFields({ ...next, payment_date: existing.payment_date });
+    if (err) return NextResponse.json({ error: err }, { status: 400 });
+
+    const { data, error } = await serviceClient
+      .from('order_payments')
+      .update(next)
+      .eq('id', paymentId)
+      .select()
+      .single();
+    if (error) {
+      console.error('PATCH /api/orders/[id]/payments:', error);
+      return NextResponse.json({ error: 'Failed to update payment' }, { status: 500 });
+    }
+    return NextResponse.json({ success: true, data });
+  } catch (err) {
+    console.error('PATCH /api/orders/[id]/payments:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

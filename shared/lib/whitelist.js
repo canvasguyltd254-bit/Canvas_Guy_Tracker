@@ -152,6 +152,8 @@ export const ALLOWED_FIELDS = {
       'amount',
       'description',
       'payment_date',
+      'payment_method',
+      'banked_date',
     ],
     // Payments are immutable — no update allowed. Delete + re-add only.
   },
@@ -311,6 +313,7 @@ export const ALLOWED_FIELDS = {
       'opening_balance',
       'opening_balance_date',
       'opening_balance_notes',
+      'payment_terms_days',   // NULL = not recorded; Cashflow assumes a default
       'notes',
     ],
     update: [
@@ -322,6 +325,7 @@ export const ALLOWED_FIELDS = {
       'opening_balance',
       'opening_balance_date',
       'opening_balance_notes',
+      'payment_terms_days',
       'notes',
     ],
   },
@@ -470,6 +474,8 @@ export const ALLOWED_FIELDS = {
       'invoice_path',
       'invoice_name',
       'notes',
+      'due_date',                // meaning depends on due_date_mode — see route
+      'due_date_mode',           // 'explicit' | 'supplier_terms' | 'unrecorded'
       'accounting_category_id',  // optional; drives journal DR account
     ],
     update: [
@@ -481,8 +487,25 @@ export const ALLOWED_FIELDS = {
       'invoice_path',
       'invoice_name',
       'notes',
+      'due_date',                // meaning depends on due_date_mode — see route
+      'due_date_mode',           // explicit edit only; the trigger is INSERT-only
       'accounting_category_id',  // blocked via API if journal_entry_id IS NOT NULL
     ],
+    // due_date_source and due_date_terms_days are NEVER listed here. They are
+    // computed server-side (by the BEFORE INSERT trigger on create, by the
+    // route itself on update) from due_date_mode — never taken directly from
+    // the request body, so a client cannot claim "supplier_terms" provenance
+    // for a date it typed in by hand.
+    //
+    // due_date_request_mode is NEVER listed here, on either side, on purpose.
+    // It is an internal signal the POST route sets on the insert payload it
+    // builds itself (see app/api/purchases/route.js) for the trigger in
+    // cashflow_v0_supplier_terms.sql to consume — not a field any client
+    // request is allowed to set. If this table's routes ever switch to
+    // building their insert/update payload via pick()/ALLOWED_FIELDS instead
+    // of a hand-built object, due_date_source, due_date_terms_days and
+    // due_date_request_mode must stay off both lists above.
+    //
     // journal_entry_id: written server-side only after journal commit — never in body
   },
 
@@ -556,6 +579,7 @@ export const ALLOWED_FIELDS = {
       'prospect_name',
       'prospect_contact',
       'source',
+      'brand',
       'category',
       'description',
       'estimated_value',
@@ -569,6 +593,7 @@ export const ALLOWED_FIELDS = {
       'prospect_name',
       'prospect_contact',
       'source',
+      'brand',
       'category',
       'description',
       'estimated_value',

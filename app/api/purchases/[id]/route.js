@@ -10,6 +10,8 @@ export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { isValidIsoDate, compareIsoDates } from '@/shared/lib/isoDate';
+import { deriveDueDate, buildDueDateFields } from '@/shared/lib/supplierTerms';
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales'];
 
@@ -60,7 +62,7 @@ export async function PATCH(request, props) {
     // Fetch current record to merge amounts correctly
     const { data: current } = await serviceClient
       .from('supplier_purchases')
-      .select('total_amount, amount_paid, journal_entry_id')
+      .select('supplier_id, total_amount, amount_paid, journal_entry_id, purchase_date, due_date, due_date_source, due_date_terms_days')
       .eq('id', params.id)
       .single();
 
@@ -88,7 +90,12 @@ export async function PATCH(request, props) {
 
     const safe = {};
     if (body.supplier_id !== undefined)               safe.supplier_id    = body.supplier_id;
-    if (body.purchase_date !== undefined)             safe.purchase_date  = body.purchase_date;
+    if (body.purchase_date !== undefined) {
+      if (!isValidIsoDate(body.purchase_date)) {
+        return NextResponse.json({ error: 'purchase_date must be a valid date in YYYY-MM-DD format' }, { status: 400 });
+      }
+      safe.purchase_date = body.purchase_date;
+    }
     if (body.items_bought !== undefined)              safe.items_bought   = body.items_bought?.trim() || null;
     if (body.total_amount !== undefined)              safe.total_amount   = parseFloat(body.total_amount) || 0;
     if (body.invoice_path !== undefined)              safe.invoice_path   = body.invoice_path || null;
@@ -97,12 +104,127 @@ export async function PATCH(request, props) {
     if (body.notes !== undefined)                     safe.notes          = body.notes?.trim() || null;
     if (body.accounting_category_id !== undefined)    safe.accounting_category_id = body.accounting_category_id || null;
 
+    // due_date / due_date_source / due_date_terms_days are intentionally NOT
+    // in POSTED_LOCKED_FIELDS above: they carry no accounting meaning and
+    // never appear in the journal, so renegotiating a payment date does not
+    // put the record at odds with a posted entry.
+    //
+    // The resolve_purchase_due_date() trigger is BEFORE INSERT only — it does
+    // not run on UPDATE — so this route is the only place that sets
+    // due_date_source / due_date_terms_days after creation, and it must set
+    // all three columns together, every time, so the provenance CHECK
+    // constraint never has to reject an update this route itself produced.
+    //
+    // Unlike POST, an OMITTED due_date_mode here means "leave the due date
+    // alone" (ordinary partial-update semantics), not "infer a mode". PATCH
+    // touches an EXISTING row — silently re-deriving its due date from the
+    // supplier's current terms just because the caller updated some
+    // unrelated field (e.g. notes) would be a worse version of the exact bug
+    // this file was rewritten to fix: a date changing on its own, with no
+    // explicit request behind it. The legacy-omission inference rule applies
+    // to POST (a brand-new row that needs some decision made), not here.
+    const dueDateMode = body.due_date_mode;
+    const VALID_DUE_DATE_MODES = ['explicit', 'supplier_terms', 'unrecorded'];
+
+    if (dueDateMode !== undefined) {
+      if (!VALID_DUE_DATE_MODES.includes(dueDateMode)) {
+        return NextResponse.json(
+          { error: `due_date_mode must be one of: ${VALID_DUE_DATE_MODES.join(', ')}` },
+          { status: 400 },
+        );
+      }
+
+      if (dueDateMode === 'explicit') {
+        const raw = String(body.due_date ?? '').trim();
+        if (!raw) {
+          return NextResponse.json({ error: 'due_date is required when due_date_mode is "explicit"' }, { status: 400 });
+        }
+        if (!isValidIsoDate(raw)) {
+          return NextResponse.json({ error: 'due_date must be a valid date in YYYY-MM-DD format' }, { status: 400 });
+        }
+        Object.assign(safe, buildDueDateFields('explicit', { explicitDate: raw }));
+      } else {
+        // supplier_terms / unrecorded: an accompanying due_date contradicts
+        // the mode (the date isn't a manual entry in either case) — reject
+        // rather than silently choosing one meaning over the other.
+        if (String(body.due_date ?? '').trim()) {
+          return NextResponse.json(
+            { error: `due_date must not be provided when due_date_mode is "${dueDateMode}"` },
+            { status: 400 },
+          );
+        }
+
+        if (dueDateMode === 'supplier_terms') {
+          const effectiveSupplierId = safe.supplier_id !== undefined ? safe.supplier_id : current.supplier_id;
+          const { data: sup, error: supErr } = await serviceClient
+            .from('suppliers')
+            .select('payment_terms_days')
+            .eq('id', effectiveSupplierId)
+            .single();
+          if (supErr || !sup) {
+            return NextResponse.json({ error: 'Supplier not found' }, { status: 400 });
+          }
+          if (!Number.isInteger(sup.payment_terms_days)) {
+            return NextResponse.json(
+              { error: 'This supplier has no recorded credit terms. Record terms on the supplier, or use "explicit" / "unrecorded" instead.' },
+              { status: 400 },
+            );
+          }
+          const effectivePurchaseDate = safe.purchase_date !== undefined ? safe.purchase_date : current.purchase_date;
+          const derived = deriveDueDate(effectivePurchaseDate, sup.payment_terms_days);
+          // deriveDueDate only returns null for inputs already rejected above
+          // (invalid date, unrecorded terms) — this is a defensive backstop,
+          // not an expected path.
+          if (!derived) {
+            return NextResponse.json({ error: 'Could not derive a due date from the supplier\'s terms' }, { status: 400 });
+          }
+          // Snapshot the terms USED, not a pointer back to the supplier row —
+          // this is what makes the label stable if the supplier's terms
+          // change again later. See shared/lib/supplierTerms.js.
+          Object.assign(safe, buildDueDateFields('supplier_terms', {
+            derivedDate: derived,
+            supplierTermsDays: sup.payment_terms_days,
+          }));
+        } else {
+          // unrecorded — always clears all three, regardless of whether the
+          // supplier currently has terms. Matches POST's "unrecorded" exactly.
+          Object.assign(safe, buildDueDateFields('unrecorded'));
+        }
+      }
+    } else if (body.due_date !== undefined) {
+      // Back-compat for a caller that sends a raw due_date with no mode.
+      // Both form call sites in this codebase now always send due_date_mode;
+      // this branch exists only as a safety net, not a supported contract.
+      const v = String(body.due_date ?? '').trim();
+      if (v) {
+        if (!isValidIsoDate(v)) {
+          return NextResponse.json({ error: 'due_date must be a valid date in YYYY-MM-DD format' }, { status: 400 });
+        }
+        Object.assign(safe, buildDueDateFields('explicit', { explicitDate: v }));
+      } else {
+        Object.assign(safe, buildDueDateFields('unrecorded'));
+      }
+    }
+
     // Recalculate status from the merged totals
     const finalTotal = safe.total_amount ?? parseFloat(current.total_amount);
     const finalPaid  = safe.amount_paid  ?? parseFloat(current.amount_paid);
 
     if (finalPaid > finalTotal) {
       return NextResponse.json({ error: 'amount_paid cannot exceed total_amount' }, { status: 400 });
+    }
+
+    // due_date >= purchase_date, checked against the merged state so an edit to
+    // either field alone cannot slip an invalid pair past the DB constraint.
+    // Both sides are already validated ISO strings by this point, so a plain
+    // string comparison via compareIsoDates is safe.
+    const finalDue      = safe.due_date      !== undefined ? safe.due_date      : current.due_date;
+    const finalPurchase = safe.purchase_date !== undefined ? safe.purchase_date : current.purchase_date;
+    if (finalDue && finalPurchase && compareIsoDates(finalDue, finalPurchase) < 0) {
+      return NextResponse.json(
+        { error: 'due_date cannot be earlier than purchase_date' },
+        { status: 400 },
+      );
     }
 
     safe.payment_status = deriveStatus(finalTotal, finalPaid);

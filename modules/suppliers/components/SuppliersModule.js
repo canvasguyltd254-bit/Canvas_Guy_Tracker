@@ -9,6 +9,8 @@ import {
   Field, TInput, TSelect, TArea,
   Notice, Empty, Loading, Mono, fmtKes,
 } from "@/shared/ui/ds";
+import { parsePaymentTermsDays, deriveDueDate, hasRecordedTerms } from "@/shared/lib/supplierTerms";
+import { isValidIsoDate } from "@/shared/lib/isoDate";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -24,12 +26,19 @@ const EMPTY_SUPPLIER = {
   name: "", contact_person: "", phone: "", email: "",
   materials_supplied: "", notes: "",
   opening_balance: "", opening_balance_date: "", opening_balance_notes: "",
+  payment_terms_days: "",
 };
 
 const EMPTY_PURCHASE = {
   supplier_id: "", order_ids: [], purchase_date: new Date().toISOString().split("T")[0],
   items_bought: "", total_amount: "", amount_paid: "", notes: "",
   accounting_category_id: "", initial_payment_method: "Cash", initial_payment_reference: "",
+  // due_date is a DISPLAY value only, kept in sync with due_date_mode for the
+  // form's date input. What actually gets sent to the API is decided by
+  // due_date_mode: 'explicit' sends due_date as typed; 'supplier_terms' sends
+  // no date at all and lets the server recompute + record provenance itself;
+  // 'unrecorded' sends neither. See save().
+  due_date: "", due_date_mode: "unrecorded",
 };
 
 const PAYMENT_METHODS = ["Cash", "M-Pesa", "Bank Transfer", "Cheque", "Other"];
@@ -115,6 +124,15 @@ export default function SuppliersModule({ refreshKey = 0 } = {}) {
   const [editingPurchaseId, setEditingPurchaseId] = useState(null);
   const [purchaseForm, setPurchaseForm] = useState(EMPTY_PURCHASE);
   const [savingPurchase, setSavingPurchase] = useState(false);
+  // Whether the user has manually picked a due-date mode for the purchase
+  // currently open in the form. Until they do, selecting a supplier
+  // auto-recommends a mode (supplier_terms if the supplier has terms
+  // recorded, unrecorded otherwise) — see recommendedDueDateMode below.
+  // Once touched, the user's choice is never silently overridden by a later
+  // supplier change. Reset on every open (new or edit); forced true when
+  // opening an edit, since the mode there reflects stored provenance, not a
+  // recommendation, and must not be re-derived.
+  const [dueDateModeTouched, setDueDateModeTouched] = useState(false);
 
   // Supplier picker modal
   const [showSupplierPicker, setShowSupplierPicker] = useState(false);
@@ -236,6 +254,8 @@ export default function SuppliersModule({ refreshKey = 0 } = {}) {
       opening_balance: s.opening_balance != null ? String(s.opening_balance) : "",
       opening_balance_date: s.opening_balance_date || "",
       opening_balance_notes: s.opening_balance_notes || "",
+      // "" and 0 are different answers: "" = not recorded, 0 = cash on delivery.
+      payment_terms_days: s.payment_terms_days != null ? String(s.payment_terms_days) : "",
     });
     setEditingSupplierId(s.id);
     setShowSupplierForm(true);
@@ -243,11 +263,18 @@ export default function SuppliersModule({ refreshKey = 0 } = {}) {
 
   const saveSupplier = async () => {
     if (!supplierForm.name.trim()) { alert("Supplier name is required."); return; }
+
+    // Same parser the API uses, so client and server cannot disagree about what
+    // blank means versus what 0 means.
+    const terms = parsePaymentTermsDays(supplierForm.payment_terms_days);
+    if (!terms.ok) { alert(terms.error); return; }
+
     setSavingSupplier(true);
     try {
       const url    = editingSupplierId ? `/api/suppliers/${editingSupplierId}` : "/api/suppliers";
       const method = editingSupplierId ? "PATCH" : "POST";
-      const res    = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(supplierForm) });
+      const payload = { ...supplierForm, payment_terms_days: terms.value };
+      const res    = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const json   = await res.json();
       if (!json.success) throw new Error(json.error || "Save failed");
       setShowSupplierForm(false);
@@ -261,14 +288,37 @@ export default function SuppliersModule({ refreshKey = 0 } = {}) {
 
   // ── Purchase CRUD ──────────────────────────────────────────────────────────
 
+  // The UX recommendation from the P0 review: supplier terms recorded
+  // (including 0 — cash on delivery) recommends "supplier_terms"; no terms
+  // recommends "unrecorded". This is a starting point the user can always
+  // override — see dueDateModeTouched above — never a silent write.
+  const recommendedDueDateMode = (supplierId) => {
+    const sup = suppliers.find(s => s.id === supplierId);
+    return hasRecordedTerms(sup?.payment_terms_days) ? "supplier_terms" : "unrecorded";
+  };
+
   const openAddPurchase = (presetSupplierId = "") => {
-    setPurchaseForm({ ...EMPTY_PURCHASE, supplier_id: presetSupplierId, purchase_date: new Date().toISOString().split("T")[0] });
+    setDueDateModeTouched(false);
+    setPurchaseForm({
+      ...EMPTY_PURCHASE,
+      supplier_id: presetSupplierId,
+      purchase_date: new Date().toISOString().split("T")[0],
+      // The supplier is already known when opened from a supplier's own
+      // card (presetSupplierId) — recommend immediately. Opened generically
+      // (no preset), the recommendation happens when a supplier is first
+      // picked below.
+      due_date_mode: presetSupplierId ? recommendedDueDateMode(presetSupplierId) : "unrecorded",
+    });
     setEditingPurchaseId(null);
     setShowPurchaseForm(true);
   };
 
   const openEditPurchase = (p, e) => {
     e.stopPropagation();
+    // Editing an existing purchase: due_date_mode below reflects the STORED
+    // provenance fact, not a recommendation. Mark it touched immediately so
+    // nothing in this form can override it if the user re-picks the supplier.
+    setDueDateModeTouched(true);
     setPurchaseForm({
       supplier_id:             p.supplier_id || "",
       order_ids:               (p.purchase_order_links || []).map(l => l.order_id),
@@ -277,6 +327,14 @@ export default function SuppliersModule({ refreshKey = 0 } = {}) {
       total_amount:            p.total_amount || "",
       amount_paid:             p.amount_paid || "",
       notes:                   p.notes || "",
+      // due_date_mode reflects the STORED provenance, not a guess — 'explicit'
+      // or 'supplier_terms' if the row has that source recorded, 'unrecorded'
+      // if neither field is set. This is exactly the P0 fix: read the fact
+      // that was written down, never re-infer it from today's supplier terms.
+      due_date:                p.due_date || "",
+      due_date_mode:           p.due_date_source === "explicit"       ? "explicit"
+                              : p.due_date_source === "supplier_terms" ? "supplier_terms"
+                              : "unrecorded",
       accounting_category_id:  p.accounting_category_id || "",
       initial_payment_method:  "Cash",
       initial_payment_reference: "",
@@ -288,13 +346,42 @@ export default function SuppliersModule({ refreshKey = 0 } = {}) {
   const savePurchase = async () => {
     if (!purchaseForm.supplier_id) { alert("Please select a supplier."); return; }
     if (!purchaseForm.total_amount || parseFloat(purchaseForm.total_amount) <= 0) { alert("Total amount must be greater than zero."); return; }
+
+    const mode = purchaseForm.due_date_mode || "unrecorded";
+
+    // Build the due-date payload from the mode, not from the raw field —
+    // the field is only ever a display value now. Explicit is the one case
+    // that sends an actual date; the other two modes send none at all and
+    // let the server (trigger on create, explicit lookup on update) decide
+    // both the date and its recorded source.
+    let dueDatePayload = { due_date_mode: mode };
+    if (mode === "explicit") {
+      const raw = String(purchaseForm.due_date ?? "").trim();
+      if (!raw) { alert("Enter a payment due date, or choose a different option."); return; }
+      if (!isValidIsoDate(raw)) { alert("Payment due date is not a valid date."); return; }
+      if (purchaseForm.purchase_date && raw < purchaseForm.purchase_date) {
+        alert("Payment due date cannot be earlier than the purchase date.");
+        return;
+      }
+      dueDatePayload.due_date = raw;
+    } else if (mode === "supplier_terms") {
+      const sup = suppliers.find(s => s.id === purchaseForm.supplier_id);
+      if (!hasRecordedTerms(sup?.payment_terms_days)) {
+        alert("This supplier has no recorded credit terms. Record terms on the supplier, or choose a different option.");
+        return;
+      }
+      // No due_date sent — the server computes and records the source itself.
+    }
+
     setSavingPurchase(true);
     try {
       const url    = editingPurchaseId ? `/api/purchases/${editingPurchaseId}` : "/api/purchases";
       const method = editingPurchaseId ? "PATCH" : "POST";
 
-      // For posted purchases, only send editable fields — locked fields are rejected with 409
-      let body = purchaseForm;
+      // For posted purchases, only send editable fields — locked fields are rejected with 409.
+      // due_date/due_date_mode are included: they carry no accounting meaning
+      // and do not affect the journal, so they stay editable after posting.
+      let body = { ...purchaseForm, ...dueDatePayload };
       if (editingPurchaseId) {
         const existing = purchases.find(p => p.id === editingPurchaseId);
         if (existing?.journal_entry_id) {
@@ -302,6 +389,7 @@ export default function SuppliersModule({ refreshKey = 0 } = {}) {
             items_bought: purchaseForm.items_bought,
             notes:        purchaseForm.notes,
             order_ids:    purchaseForm.order_ids,
+            ...dueDatePayload,
           };
         }
       }
@@ -715,6 +803,19 @@ export default function SuppliersModule({ refreshKey = 0 } = {}) {
             <Field label="Materials supplied" full>
               <TInput value={supplierForm.materials_supplied} onChange={e => setSupplierForm({ ...supplierForm, materials_supplied: e.target.value })} placeholder="e.g. Mahogany, MDF, Plywood" />
             </Field>
+            <Field label="Credit terms (days)" full>
+              <TInput
+                type="number" min="0" max="365" step="1"
+                value={supplierForm.payment_terms_days}
+                onChange={e => setSupplierForm({ ...supplierForm, payment_terms_days: e.target.value })}
+                placeholder="e.g. 30 — leave blank if not agreed"
+              />
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.45 }}>
+                Sets the payment due date on new purchases from this supplier.
+                {" "}<strong>Blank</strong> is not the same as <strong>0</strong>: blank means no terms agreed, so Cashflow
+                assumes a default and flags the date as an assumption. Enter <strong>0</strong> for cash on delivery.
+              </div>
+            </Field>
             <Field label="Notes" full>
               <TArea value={supplierForm.notes} onChange={e => setSupplierForm({ ...supplierForm, notes: e.target.value })} placeholder="e.g. Best pricing on bulk orders above 50 boards" />
             </Field>
@@ -831,6 +932,83 @@ export default function SuppliersModule({ refreshKey = 0 } = {}) {
             <Field label="Purchase date" full>
               <TInput type="date" value={purchaseForm.purchase_date} onChange={e => setPurchaseForm({ ...purchaseForm, purchase_date: e.target.value })} />
             </Field>
+
+            {/* Payment due date — the field's meaning is decided by due_date_mode, not
+                by whatever string happens to sit in the date input. Explicit is the
+                only mode that sends a date at all; the other two send neither date
+                nor a client-guessed source, so the server is always the one that
+                records provenance (P0: due_date_source must be a recorded fact, never
+                something inferred later by comparing against the supplier's current
+                terms, which can have changed). */}
+            {(() => {
+              const sup      = suppliers.find(s => s.id === purchaseForm.supplier_id);
+              const terms    = sup?.payment_terms_days;
+              const hasTerms = hasRecordedTerms(terms); // not truthiness: 0 = cash on delivery, a real answer
+              const preview  = deriveDueDate(purchaseForm.purchase_date, terms) || "";
+              const mode     = purchaseForm.due_date_mode || "unrecorded";
+
+              const setMode = (nextMode, nextDate = "") => {
+                // A manual click always counts as "touched", even if it
+                // happens to land on the same mode that was recommended —
+                // the point is that the user made the choice, not that the
+                // value changed.
+                setDueDateModeTouched(true);
+                setPurchaseForm({ ...purchaseForm, due_date_mode: nextMode, due_date: nextDate });
+              };
+
+              const modeBtn = (key, label, disabled) => (
+                <button type="button" disabled={disabled}
+                  onClick={() => setMode(key, key === "supplier_terms" ? preview : purchaseForm.due_date)}
+                  style={{
+                    fontSize: 12, padding: "8px 12px", borderRadius: 8, cursor: disabled ? "not-allowed" : "pointer",
+                    border: `1.5px solid ${mode === key ? C.coral : C.line}`,
+                    background: mode === key ? C.coralBg : C.card,
+                    color: mode === key ? C.coral : disabled ? C.faint : C.ink,
+                    fontWeight: mode === key ? 700 : 400,
+                  }}>
+                  {label}
+                </button>
+              );
+
+              return (
+                <Field label="Payment due date" full>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                    {modeBtn("explicit", "Explicit date")}
+                    {modeBtn("supplier_terms", hasTerms ? `Supplier terms · ${terms}d` : "Supplier terms", !hasTerms)}
+                    {modeBtn("unrecorded", "Unrecorded")}
+                  </div>
+
+                  {mode === "explicit" && (
+                    <TInput
+                      type="date"
+                      value={purchaseForm.due_date}
+                      min={purchaseForm.purchase_date || undefined}
+                      onChange={e => setPurchaseForm({ ...purchaseForm, due_date: e.target.value })}
+                    />
+                  )}
+
+                  <div style={{ fontSize: 11, marginTop: 8, lineHeight: 1.5 }}>
+                    {!purchaseForm.supplier_id ? (
+                      <span style={{ color: C.muted }}>Select a supplier to see the date their credit terms would give.</span>
+                    ) : mode === "explicit" ? (
+                      <span style={{ color: C.muted }}>A negotiated date, recorded as an explicit entry — not re-derived if the supplier's terms change later.</span>
+                    ) : mode === "supplier_terms" ? (
+                      <span style={{ color: C.muted }}>
+                        {terms === 0
+                          ? <><strong>{sup.name}</strong> is cash on delivery: due on the purchase date.</>
+                          : <>Computed from <strong>{sup.name}</strong>&rsquo;s {terms}-day terms as of today: <strong>{preview || "—"}</strong>. Recorded as &ldquo;Supplier terms · {terms} days&rdquo;.</>}
+                      </span>
+                    ) : (
+                      <span style={{ color: C.amber }}>
+                        No due date will be recorded.{hasTerms ? "" : ` ${sup.name} has no credit terms on file.`} Cashflow will apply its
+                        configured default and label the date &ldquo;Assumed by Cashflow&rdquo; rather than show it as fact.
+                      </span>
+                    )}
+                  </div>
+                </Field>
+              );
+            })()}
+
             <Field label="Items bought" full>
               <TArea value={purchaseForm.items_bought} onChange={e => setPurchaseForm({ ...purchaseForm, items_bought: e.target.value })} placeholder="e.g. 20 boards Mahogany 2×4, 5 sheets MDF 18mm" rows={3} />
             </Field>
@@ -910,7 +1088,18 @@ export default function SuppliersModule({ refreshKey = 0 } = {}) {
                 );
                 return filt.map(s => (
                   <button key={s.id} type="button"
-                    onClick={() => { setPurchaseForm({ ...purchaseForm, supplier_id: s.id }); setShowSupplierPicker(false); }}
+                    onClick={() => {
+                      // First selection (untouched): recommend a mode from this
+                      // supplier's terms and clear any stale date. Once the user
+                      // has manually chosen a mode, picking a different supplier
+                      // never overrides that choice — only supplier_id changes.
+                      setPurchaseForm(prev => ({
+                        ...prev,
+                        supplier_id: s.id,
+                        ...(dueDateModeTouched ? {} : { due_date_mode: recommendedDueDateMode(s.id), due_date: "" }),
+                      }));
+                      setShowSupplierPicker(false);
+                    }}
                     style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", padding: "12px 20px", border: "none", borderBottom: `1px solid ${C.line}`, background: "none", cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}
                     onMouseEnter={e => e.currentTarget.style.background = "#f9f9f7"}
                     onMouseLeave={e => e.currentTarget.style.background = "none"}>

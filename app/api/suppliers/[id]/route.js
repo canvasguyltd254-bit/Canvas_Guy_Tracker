@@ -12,6 +12,7 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
 import { postOpeningBalanceJournal } from '@/shared/lib/accountingService';
+import { parsePaymentTermsDays } from '@/shared/lib/supplierTerms';
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales'];
 
@@ -135,6 +136,16 @@ export async function PATCH(request, props) {
     if (safe.opening_balance_date !== undefined) {
       const v = String(safe.opening_balance_date || '').trim();
       safe.opening_balance_date = v || null;
+    }
+
+    // Credit terms — blank clears to null (not recorded); 0 is a real value
+    // meaning cash on delivery and must survive as 0, not be coerced to null.
+    if (safe.payment_terms_days !== undefined) {
+      const terms = parsePaymentTermsDays(safe.payment_terms_days);
+      if (!terms.ok) {
+        return NextResponse.json({ error: terms.error }, { status: 400 });
+      }
+      safe.payment_terms_days = terms.value;
     }
 
     if (Object.keys(safe).length === 0) {

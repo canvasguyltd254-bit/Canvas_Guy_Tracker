@@ -8,4 +8,5 @@ export { default as suppliers } from "./suppliers/config";
 export { default as accounting } from "./accounting/config";
 export { default as admin } from "./admin/config";
 export { default as payroll } from "./payroll/config";
+export { default as cashflow } from "./cashflow/config";
 export { default as crm } from "./crm/config";
