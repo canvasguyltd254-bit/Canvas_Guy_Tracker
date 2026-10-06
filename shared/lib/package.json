@@ -1,0 +1,5 @@
+{
+  "type": "module",
+  "private": true,
+  "_comment": "Scoped to this directory only (Node resolves \"type\" from the nearest package.json). Lets shared/lib/*.js and shared/lib/__tests__/*.test.js run directly under `node --test` using their existing import/export syntax, without setting \"type\": \"module\" at the project root — which would break the CommonJS scripts under scripts/ that Next spawns as child processes (scripts/build_report.js, scripts/run_report.js) and are unrelated to this directory. Next.js itself ignores this file: it compiles all source through its own SWC pipeline regardless of Node's module-type resolution, so imports of shared/lib from route handlers via the @/ alias are unaffected."
+}
