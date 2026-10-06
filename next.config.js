@@ -55,6 +55,8 @@ const nextConfig = {
       '/api/crm/quotations/[id]/pdf':          PDF_ROUTES_INCLUDES,
       '/api/crm/invoices/[id]/pdf':           PDF_ROUTES_INCLUDES,
       '/api/crm/enquiries/report':            PDF_ROUTES_INCLUDES,
+      '/api/payroll/runs/[id]/pdf':           PDF_ROUTES_INCLUDES,
+      '/api/payroll/employees/[id]/report/pdf': PDF_ROUTES_INCLUDES,
   },
 };
 
