@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import calcTotals from '@/shared/lib/calcTotals';
 import LineItemEditor, { BLANK_ITEM, BLANK_CHARGE } from '@/shared/components/LineItemEditor';
@@ -1991,8 +1991,476 @@ function InsightsTab({ refreshKey = 0 }) {
   );
 }
 
+// ─── Email Inbox tab (holding queue for enquiry emails) ──────────────────────
+// Nothing here creates an enquiry on its own — a human converts or dismisses
+// each row explicitly. Mirrors EnquiriesTab's structure and primitives so it
+// reads as part of the same module, not a bolted-on feature.
+//
+// SECURITY: inbound_emails.body_text is untrusted content from unvetted
+// external senders. It is only ever fetched from mailparser's plain-text
+// part (see parseInboundMessage.js — no body_html is stored anywhere), and
+// it must only ever be rendered as a plain React text node (as it is
+// below and in ConvertEmailModal's textarea). Never wrap it in
+// dangerouslySetInnerHTML, a markdown renderer, or an autolinker — any of
+// those would turn a phished/spoofed link in someone's inbox message into
+// a clickable one inside the CRM. detectUrls() below is display-only: it
+// surfaces that a link exists (and its literal text) without ever
+// producing a real <a href>.
+const brandLabel = { canvas_guy: 'Canvas Guy', seating_company: 'Seating Company' };
+const brandColor = { canvas_guy: 'blue', seating_company: 'amber' };
+
+const URL_RE = /\bhttps?:\/\/[^\s<>"')\]]+/gi;
+
+/** Plain-text URL detection for display only — see SECURITY note above. Never used to build a link. */
+function detectUrls(text) {
+  if (!text) return [];
+  const found = text.match(URL_RE) || [];
+  return [...new Set(found)];
+}
+
+function hoursSince(iso) {
+  if (!iso) return null;
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return null;
+  return ms / 3_600_000;
+}
+
+/** Aging badge for a still-pending row — a holding queue only works if nothing sits unreviewed. */
+function AgingBadge({ receivedAt, status }) {
+  if (status !== 'pending') return null;
+  const hrs = hoursSince(receivedAt);
+  if (hrs == null) return null;
+  if (hrs >= 72) return <Badge color="red">3+ days old</Badge>;
+  if (hrs >= 24) return <Badge color="amber">1+ day old</Badge>;
+  return null;
+}
+
+const STATUS_LABEL = { pending: 'Pending', converted: 'Converted', dismissed: 'Dismissed' };
+const STATUS_COLOR = { pending: 'amber', converted: 'green', dismissed: 'gray' };
+
+/** Read-only full view of one email — plain text throughout, no clickable links. See SECURITY note above. */
+function EmailPreviewModal({ email, onClose, onConvert, onDismiss, dismissing }) {
+  const urls = useMemo(() => detectUrls(email.body_text), [email.body_text]);
+  return (
+    <Modal
+      title={email.subject || '(no subject)'}
+      onClose={onClose}
+      footer={
+        <>
+          <Btn onClick={onClose}>Close</Btn>
+          {email.status === 'pending' && (
+            <>
+              <Btn disabled={dismissing} onClick={() => onDismiss(email.id)}>{dismissing ? '…' : 'Dismiss'}</Btn>
+              <Btn primary onClick={() => onConvert(email)}>Convert to Enquiry</Btn>
+            </>
+          )}
+        </>
+      }
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+        <Badge color={brandColor[email.brand] || 'gray'}>{brandLabel[email.brand] || email.brand}</Badge>
+        <Badge color={STATUS_COLOR[email.status] || 'gray'}>{STATUS_LABEL[email.status] || email.status}</Badge>
+        <AgingBadge receivedAt={email.received_at} status={email.status} />
+        <span style={{ fontSize: 11.5, color: C.muted }}>via {email.mailbox}</span>
+      </div>
+      <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 12 }}>
+        From <strong style={{ color: C.ink }}>{email.from_name || 'Unknown sender'}</strong>
+        {email.from_address ? ` <${email.from_address}>` : ''} · {fmtDate(email.received_at)}
+      </div>
+      {urls.length > 0 && (
+        <Notice color="amber" style={{ marginBottom: 12 }}>
+          This message contains {urls.length === 1 ? 'a link' : `${urls.length} links`} — shown as plain text below,
+          not clickable. Verify a sender independently before visiting any link from an unsolicited email.
+          <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {urls.map((u, i) => (
+              <code key={i} style={{ fontSize: 11, wordBreak: 'break-all', userSelect: 'text' }}>{u}</code>
+            ))}
+          </div>
+        </Notice>
+      )}
+      <div
+        style={{
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          fontSize: 13,
+          lineHeight: 1.55,
+          color: C.ink,
+          background: C.bg,
+          border: `1px solid ${C.line}`,
+          borderRadius: 8,
+          padding: 14,
+          maxHeight: 420,
+          overflowY: 'auto',
+        }}
+      >
+        {email.body_text || <span style={{ color: C.muted }}>(no text content)</span>}
+      </div>
+    </Modal>
+  );
+}
+
+function ConvertEmailModal({ email, onSave, onClose }) {
+  const [form, setForm] = useState({
+    prospect_name: email.from_name || email.from_address || '',
+    prospect_contact: email.from_address || '',
+    category: '',
+    description: [email.subject, email.body_text].filter(Boolean).join('\n\n'),
+    estimated_value: '',
+  });
+  const [saving, setSaving] = useState(false);
+  const [err, setErr]       = useState('');
+  const f = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }));
+
+  const submit = async () => {
+    setErr('');
+    if (!form.prospect_name?.trim()) { setErr('A name is required'); return; }
+    if (!form.description?.trim())   { setErr('Please keep a description of what they need'); return; }
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/email-intake/${email.id}/convert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prospect_name:    form.prospect_name.trim(),
+          prospect_contact: form.prospect_contact.trim() || undefined,
+          category:         form.category.trim() || undefined,
+          description:      form.description.trim(),
+          estimated_value:  form.estimated_value ? parseInt(form.estimated_value, 10) : 0,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) { setErr(json.error || 'Failed to create enquiry'); return; }
+      onSave();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title="Convert to Enquiry" onClose={onClose}
+      footer={<><Btn onClick={onClose}>Cancel</Btn><Btn primary onClick={submit} disabled={saving}>{saving ? 'Creating…' : 'Create Enquiry'}</Btn></>}>
+      {err && <Notice color="red" style={{ marginBottom: 12 }}>{err}</Notice>}
+      <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Badge color={brandColor[email.brand] || 'gray'}>{brandLabel[email.brand] || email.brand}</Badge>
+        <span style={{ fontSize: 11.5, color: C.muted }}>from {email.mailbox}</span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <Field label="Customer or prospect name *"><Fi value={form.prospect_name} onChange={f('prospect_name')} /></Field>
+        <Field label="Contact"><Fi value={form.prospect_contact} onChange={f('prospect_contact')} placeholder="Email or phone" /></Field>
+        <Field label="What are they enquiring about? *" full><Fta rows={5} value={form.description} onChange={f('description')} /></Field>
+        <Field label="Category"><Fi value={form.category} onChange={f('category')} placeholder="Mirror, furniture, frames…" /></Field>
+        <Field label="Estimated value (KES)"><Fi type="number" value={form.estimated_value} onChange={f('estimated_value')} /></Field>
+      </div>
+    </Modal>
+  );
+}
+
+function MailboxSettingsModal({ onClose, onSaved }) {
+  const [data, setData]       = useState(null);   // { mailboxes, encryption_configured }
+  const [loadErr, setLoadErr] = useState('');
+  const [forms, setForms]     = useState({});     // brand -> { host, port, username, password }
+  const [busy, setBusy]       = useState('');     // `${brand}:save|test|remove`
+  const [msg, setMsg]         = useState({});     // brand -> { kind, text }
+
+  const load = useCallback(async () => {
+    const res = await fetch('/api/email-intake/settings');
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) { setLoadErr(json.error || 'Could not load mailbox settings'); return; }
+    setData(json.data);
+    setForms(prev => {
+      const next = { ...prev };
+      for (const m of json.data.mailboxes) {
+        if (!next[m.brand]) next[m.brand] = { host: m.host || '', port: m.port || 993, username: m.mailbox || '', password: '' };
+      }
+      return next;
+    });
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const set = (brand, k) => (e) => setForms(p => ({ ...p, [brand]: { ...p[brand], [k]: e.target.value } }));
+  const say = (brand, kind, text) => setMsg(p => ({ ...p, [brand]: { kind, text } }));
+
+  const save = async (brand) => {
+    setBusy(`${brand}:save`); say(brand, null, '');
+    try {
+      const f = forms[brand];
+      const res = await fetch('/api/email-intake/settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brand, host: f.host, port: Number(f.port), username: f.username, password: f.password }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) { say(brand, 'red', json.error || 'Failed to save'); return; }
+      setForms(p => ({ ...p, [brand]: { ...p[brand], password: '' } }));
+      say(brand, 'blue', 'Saved. Use "Test login" to confirm it works.');
+      await load(); onSaved();
+    } finally { setBusy(''); }
+  };
+
+  const test = async (brand) => {
+    setBusy(`${brand}:test`); say(brand, null, '');
+    try {
+      const res = await fetch('/api/email-intake/settings/test', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ brand }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) { say(brand, 'red', json.error || 'Test failed'); return; }
+      say(brand, json.data.ok ? 'green' : 'red', json.data.ok ? 'Login works. Inbox reached.' : json.data.message);
+    } finally { setBusy(''); }
+  };
+
+  const remove = async (brand) => {
+    if (!window.confirm('Remove the saved login for this mailbox? The inbox will stop receiving mail unless environment variables are set.')) return;
+    setBusy(`${brand}:remove`);
+    try {
+      const res = await fetch(`/api/email-intake/settings?brand=${brand}`, { method: 'DELETE' });
+      if (res.ok) { setForms(p => { const n = { ...p }; delete n[brand]; return n; }); await load(); onSaved(); }
+      else say(brand, 'red', 'Failed to remove');
+    } finally { setBusy(''); }
+  };
+
+  return (
+    <Modal title="Mailbox logins" onClose={onClose} footer={<Btn onClick={onClose}>Close</Btn>}>
+      {loadErr && <Notice color="red" style={{ marginBottom: 12 }}>{loadErr}</Notice>}
+      {!data && !loadErr && <div style={{ color: C.muted, fontSize: 12.5 }}>Loading…</div>}
+      {data && !data.encryption_configured && (
+        <Notice color="red" style={{ marginBottom: 12 }}>
+          Passwords cannot be saved yet: set EMAIL_CREDENTIALS_KEY on the server (a random 32-byte base64 key). Passwords are encrypted with it and never shown again.
+        </Notice>
+      )}
+      {data?.mailboxes.map(m => {
+        const f = forms[m.brand] || { host: '', port: 993, username: '', password: '' };
+        const note = msg[m.brand];
+        return (
+          <div key={m.brand} style={{ border: `1px solid ${C.line}`, borderRadius: 9, padding: 14, marginBottom: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+              <strong style={{ fontSize: 13 }}>{m.label}</strong>
+              <Badge color={m.configured ? 'green' : (m.error ? 'red' : 'amber')}>
+                {m.configured ? (m.source === 'database' ? 'Saved login' : 'From environment') : (m.error ? 'Needs attention' : 'Not connected')}
+              </Badge>
+            </div>
+            {m.error && <Notice color="red" style={{ marginBottom: 10 }}>{m.error}</Notice>}
+            {m.source === 'environment' && <Notice color="blue" style={{ marginBottom: 10 }}>Currently using environment variables. Saving a login here will take over from them.</Notice>}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px', gap: 10 }}>
+              <Field label="IMAP server"><Fi value={f.host} onChange={set(m.brand, 'host')} placeholder="imap.gmail.com" /></Field>
+              <Field label="Port">
+                <select value={f.port} onChange={set(m.brand, 'port')} style={{ width: '100%', padding: '8px 10px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 13, background: '#fff' }}>
+                  <option value={993}>993 SSL</option><option value={143}>143</option>
+                </select>
+              </Field>
+              <Field label="Username (email)"><Fi value={f.username} onChange={set(m.brand, 'username')} placeholder="holla@canvasguy.co.ke" /></Field>
+              <Field label=" "><span /></Field>
+              <Field label={m.source === 'database' ? 'Password (leave blank to keep current)' : 'Password / app password'} full>
+                <Fi type="password" autoComplete="new-password" value={f.password} onChange={set(m.brand, 'password')} placeholder={m.source === 'database' ? '••••••••' : ''} />
+              </Field>
+            </div>
+            {note?.text && <Notice color={note.kind} style={{ marginTop: 10 }}>{note.text}</Notice>}
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <Btn primary onClick={() => save(m.brand)} disabled={!!busy || !data.encryption_configured}>{busy === `${m.brand}:save` ? 'Saving…' : 'Save'}</Btn>
+              <Btn onClick={() => test(m.brand)} disabled={!!busy || !m.configured}>{busy === `${m.brand}:test` ? 'Testing…' : 'Test login'}</Btn>
+              {m.source === 'database' && <Btn danger onClick={() => remove(m.brand)} disabled={!!busy}>Remove</Btn>}
+            </div>
+          </div>
+        );
+      })}
+      <div style={{ fontSize: 11.5, color: C.muted }}>Testing logs in and out only; it does not read or mark any email. For Gmail or Google Workspace, use an app password, not your normal password.</div>
+    </Modal>
+  );
+}
+
+function EmailInboxTab({ onRefresh, refreshKey = 0 }) {
+  const [emails, setEmails]         = useState([]);
+  const [loading, setLoading]       = useState(true);
+  const [brand, setBrand]           = useState('');
+  const [status, setStatus]         = useState('pending');
+  const [searchInput, setSearchInput] = useState(''); // updates on every keystroke, for a responsive box
+  const [search, setSearch]         = useState('');   // debounced value that actually triggers a fetch
+  const [sortDir, setSortDir]       = useState('desc'); // 'desc' = newest first
+  const [converting, setConverting] = useState(null); // the email row being converted
+  const [previewing, setPreviewing] = useState(null);  // the email row being read in full
+  const [dismissing, setDismissing] = useState(null); // email id mid-dismiss
+  const [setup, setSetup]           = useState(null);   // mailbox config status (names only, no secrets)
+  const [showSettings, setShowSettings] = useState(false);
+  const [setupKey, setSetupKey]     = useState(0);
+  const { userRole } = useAuth();
+
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/email-intake/status')
+      .then(r => r.ok ? r.json() : null)
+      .then(j => { if (alive && j?.data) setSetup(j.data); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [refreshKey]);
+
+  // Debounce the search box so typing doesn't fire a request per keystroke —
+  // the actual filtering now happens server-side (see the route comment),
+  // so this is purely about not hammering the API while someone is typing.
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput), 350);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const params = new URLSearchParams({ status });
+    if (brand) params.set('brand', brand);
+    if (search.trim()) params.set('q', search.trim());
+    const res = await fetch(`/api/email-intake?${params}`);
+    const json = await res.json();
+    setEmails(json.data || []);
+    setLoading(false);
+  }, [brand, status, search, refreshKey]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const dismiss = async (id) => {
+    if (!window.confirm('Dismiss this email? It will not become an enquiry.')) return;
+    setDismissing(id);
+    try {
+      const res = await fetch(`/api/email-intake/${id}/dismiss`, { method: 'POST' });
+      if (res.ok) { setPreviewing(null); load(); onRefresh(); }
+    } finally {
+      setDismissing(null);
+    }
+  };
+
+  // The search itself is server-side now (see the route) so it covers every
+  // matching row, not just whichever page happened to already be fetched.
+  // This only re-sorts the rows already on hand — sort is a display
+  // preference over the current page, not a correctness concern the way an
+  // incomplete search would be.
+  const visible = useMemo(() => {
+    return [...emails].sort((a, b) => {
+      const ta = a.received_at ? new Date(a.received_at).getTime() : 0;
+      const tb = b.received_at ? new Date(b.received_at).getTime() : 0;
+      return sortDir === 'asc' ? ta - tb : tb - ta;
+    });
+  }, [emails, sortDir]);
+
+  const agingCount = useMemo(
+    () => emails.filter(e => e.status === 'pending' && (hoursSince(e.received_at) ?? 0) >= 24).length,
+    [emails]
+  );
+
+  return (
+    <div>
+      <Panel>
+        <PanelHead title="Email Inbox" sub="Enquiry emails from the Canvas Guy and Seating Company mailboxes, waiting for review. Nothing here becomes an enquiry until you convert it." />
+        {userRole === 'admin' && (
+          <div style={{ marginBottom: 12 }}>
+            <Btn small onClick={() => setShowSettings(true)}>Mailbox logins</Btn>
+          </div>
+        )}
+        {setup && !setup.cron_secret_configured && (
+          <Notice color="red" style={{ marginBottom: 12 }}>
+            CRON_SECRET is not set, so the mailbox poll refuses to run and no new emails will arrive. Add it in your environment variables.
+          </Notice>
+        )}
+        {setup?.mailboxes?.map(m => (
+          <Notice key={m.brand} color={m.configured ? 'blue' : 'amber'} style={{ marginBottom: 12 }}>
+            {m.error ? `${m.label}: ${m.error}` : m.configured
+              ? `${m.label}: login configured (${m.mailbox}). ${m.last_queued_at ? `Last email queued ${new Date(m.last_queued_at).toLocaleString('en-KE')}.` : 'No emails queued yet.'} This only confirms the settings exist, not that the login works.`
+              : `${m.label}: not connected — ${userRole === 'admin' ? 'use "Mailbox logins" to add one' : 'ask an admin to add a login'}.`}
+          </Notice>
+        ))}
+        {showSettings && <MailboxSettingsModal onClose={() => setShowSettings(false)} onSaved={() => setSetupKey(k => k + 1)} />}
+        {status === 'pending' && agingCount > 0 && (
+          <Notice color="amber" style={{ marginBottom: 12 }}>
+            {agingCount} pending {agingCount === 1 ? 'email has' : 'emails have'} been waiting a day or more — worth clearing before they get missed.
+          </Notice>
+        )}
+        <Toolbar>
+          <TInput value={searchInput} onChange={e => setSearchInput(e.target.value)} placeholder="Search subject, sender, mailbox…" />
+          <TSelect value={brand} onChange={e => setBrand(e.target.value)}>
+            <option value="">All brands</option>
+            <option value="canvas_guy">Canvas Guy</option>
+            <option value="seating_company">Seating Company</option>
+          </TSelect>
+          <TSelect value={status} onChange={e => setStatus(e.target.value)}>
+            <option value="pending">Pending</option>
+            <option value="converted">Converted</option>
+            <option value="dismissed">Dismissed</option>
+            <option value="all">All statuses</option>
+          </TSelect>
+          <Btn small onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}>
+            {sortDir === 'desc' ? 'Newest first ↓' : 'Oldest first ↑'}
+          </Btn>
+        </Toolbar>
+        {loading ? (
+          <div style={{ textAlign: 'center', padding: '40px 0', color: C.muted, fontSize: 13 }}>Loading…</div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+              <thead>
+                <tr>{['Brand', 'From', 'Subject', 'Received', ''].map(h => <Th key={h}>{h}</Th>)}</tr>
+              </thead>
+              <tbody>
+                {visible.length === 0 && (
+                  <tr><td colSpan={5} style={{ textAlign: 'center', padding: '40px 0', color: C.muted }}>
+                    {search.trim() ? 'Nothing matches this search.' : 'No emails here — the queue is empty.'}
+                  </td></tr>
+                )}
+                {visible.map(email => (
+                  <tr key={email.id} style={{ cursor: 'pointer' }} onClick={() => setPreviewing(email)}>
+                    <Td>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
+                        <Badge color={brandColor[email.brand] || 'gray'}>{brandLabel[email.brand] || email.brand}</Badge>
+                        {status === 'all' && <Badge color={STATUS_COLOR[email.status] || 'gray'}>{STATUS_LABEL[email.status] || email.status}</Badge>}
+                      </div>
+                    </Td>
+                    <Td sub={email.from_address}>{email.from_name || email.from_address || 'Unknown sender'}</Td>
+                    <Td style={{ maxWidth: 280 }}>
+                      <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>{email.subject || '(no subject)'}</div>
+                      {email.body_text && (
+                        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, color: C.muted, marginTop: 2 }}>{email.body_text}</div>
+                      )}
+                    </Td>
+                    <Td style={{ color: C.muted, whiteSpace: 'nowrap' }}>
+                      {fmtDate(email.received_at)}
+                      <div style={{ marginTop: 3 }}><AgingBadge receivedAt={email.received_at} status={email.status} /></div>
+                    </Td>
+                    <Td>
+                      <div style={{ display: 'flex', gap: 6 }} onClick={e => e.stopPropagation()}>
+                        <Btn small onClick={() => setPreviewing(email)}>View</Btn>
+                        {email.status === 'pending' && (
+                          <>
+                            <Btn small primary onClick={() => setConverting(email)}>Convert</Btn>
+                            <Btn small disabled={dismissing === email.id} onClick={() => dismiss(email.id)}>
+                              {dismissing === email.id ? '…' : 'Dismiss'}
+                            </Btn>
+                          </>
+                        )}
+                      </div>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+      {previewing && (
+        <EmailPreviewModal
+          email={previewing}
+          dismissing={dismissing === previewing.id}
+          onClose={() => setPreviewing(null)}
+          onConvert={(email) => { setPreviewing(null); setConverting(email); }}
+          onDismiss={dismiss}
+        />
+      )}
+      {converting && (
+        <ConvertEmailModal
+          email={converting}
+          onSave={() => { setConverting(null); load(); onRefresh(); }}
+          onClose={() => setConverting(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 // ─── Root component ───────────────────────────────────────────────────────────
-const TABS = ['Pipeline', 'Enquiries', 'Quotations', 'Invoices', 'Follow-ups', 'Insights'];
+const TABS = ['Pipeline', 'Email Inbox', 'Enquiries', 'Quotations', 'Invoices', 'Follow-ups', 'Insights'];
 
 export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnquiryId, workspaceActive = true, actionNonce, refreshKey = 0 } = {}) {
   const containerRef = useRef(null);
@@ -2138,6 +2606,9 @@ export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnq
         {enqLoading
           ? <div style={{ textAlign: 'center', padding: '60px 0', color: C.muted }}>Loading…</div>
           : <PipelineTab enquiries={enquiries} stats={stats} />}
+      </CrmTabPane>
+      <CrmTabPane name="Email Inbox" activeTab={tab} workspaceActive={workspaceActive} visited={visited.has('Email Inbox')}>
+        <EmailInboxTab onRefresh={refresh} refreshKey={tabState['Email Inbox'].key} />
       </CrmTabPane>
       <CrmTabPane name="Enquiries" activeTab={tab} workspaceActive={workspaceActive} visited={visited.has('Enquiries')}>
         <EnquiriesTab onRefresh={refresh} refreshKey={tabState.Enquiries.key} />
