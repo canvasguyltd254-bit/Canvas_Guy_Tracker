@@ -31,6 +31,9 @@ export const C = {
   line:     '#e7e3de',
   bg:       '#f7f6f3',
   card:     '#ffffff',
+  sunken:   '#efede8',   // non-working days, inactive bars
+  sunkenBd: '#d9d5cd',   // neutral bar / overall span
+  lane:     '#fcfbf9',   // expanded sub-rows
 
   // Semantic
   green:    '#16794a', greenBg:  '#eaf7ef', greenBd:  '#c6e7d4',
