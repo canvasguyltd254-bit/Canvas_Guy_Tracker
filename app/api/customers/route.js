@@ -9,7 +9,7 @@ export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
-import { calcCustomerStats } from '@/shared/lib/customerBalance';
+import { calcCustomerStats, isInvoiceRecognised } from '@/shared/lib/customerBalance';
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales', 'sales'];
 
@@ -49,7 +49,7 @@ export async function GET(request) {
     const [{ data: orders }, { data: payments }] = await Promise.all([
       serviceClient
         .from('orders')
-        .select('id, customer_id, total_value, status, payment_due_date, created_at')
+        .select('id, customer_id, total_value, status, payment_due_date, created_at, quote_id, invoice_number')
         .in('customer_id', customerIds)
         .not('status', 'eq', 'Cancelled / Refunded'),
       serviceClient
@@ -76,10 +76,19 @@ export async function GET(request) {
     }
 
     // NOTE: the orders query already excludes 'Cancelled / Refunded', so
-    // every order in cOrders is non-cancelled — pass directly to calcCustomerStats.
+    // every order in cOrders is non-cancelled.
+    //
+    // Receivable figures (sales / paid / outstanding / overdue / ageing) use
+    // only invoice-recognised orders — the same rule the customer profile
+    // applies — so the list and the profile show the same number. Work-in-hand
+    // figures still count every non-cancelled order, quotes included.
     const enriched = customers.map(c => {
-      const cOrders = ordersByCustomer[c.id] || [];
-      const { totalSales, totalPaid, outstanding, overdue, activeWorkValue, activeOrders } =
+      const cOrders    = ordersByCustomer[c.id] || [];
+      const recognised = cOrders.filter(isInvoiceRecognised);
+      const {
+        totalSales, totalPaid, outstanding, overdue, notYetDue, overdueAging, oldestOverdueDays,
+      } = calcCustomerStats(c, recognised, paymentsByOrder, today);
+      const { activeWorkValue, activeOrders } =
         calcCustomerStats(c, cOrders, paymentsByOrder, today);
       const lastOrder = [...cOrders].sort((a, b) => b.created_at > a.created_at ? 1 : -1)[0];
 
@@ -91,6 +100,9 @@ export async function GET(request) {
           total_paid:        totalPaid,
           outstanding,
           overdue,
+          not_yet_due:       notYetDue,
+          overdue_aging:     overdueAging,
+          oldest_overdue_days: oldestOverdueDays,
           active_orders:     activeOrders,
           active_work_value: activeWorkValue,
           last_order_date:   lastOrder?.created_at?.split('T')[0] || null,
