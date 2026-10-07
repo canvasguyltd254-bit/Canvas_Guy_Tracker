@@ -6,6 +6,8 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/shared/supabase/client';
 import { DrawingsUpload } from '@/modules/orders/components/DrawingsUpload';
+import { operationalCustomerName, customerNameDrifted } from '@/shared/lib/customerDisplay';
+import { buildOrderSavePayload } from '@/shared/lib/orderSavePayload';
 import DeliveryTab from '@/modules/orders/components/DeliveryTab';
 import DangerZoneTab from '@/modules/orders/components/DangerZoneTab';
 import OrderCostingPanel from '@/modules/production/components/OrderCosting';
@@ -1796,13 +1798,14 @@ export default function OrderFormPage() {
 
     setSaving(true);
     try {
-      const payload = {
+      // `client` (order-time name snapshot) is never part of an ordinary save.
+      const payload = buildOrderSavePayload({
         notes: editedNotes,
-        due_date: editedDueDate || null,
-        delivery_address: editedDeliveryAddress || null,
-        delivery_contact: editedDeliveryContact || null,
-        delivery_instructions: editedDeliveryInstructions || null,
-      };
+        dueDate: editedDueDate,
+        deliveryAddress: editedDeliveryAddress,
+        deliveryContact: editedDeliveryContact,
+        deliveryInstructions: editedDeliveryInstructions,
+      });
       if (canEditItems) {
         payload.items = changedRows;
         payload.deletedItemIds = deletedItemIds;
@@ -2104,7 +2107,7 @@ export default function OrderFormPage() {
             <div className="order-header-divider" style={{ width: '1px', height: '14px', background: '#374151', flexShrink: 0 }} />
             <div className="order-header-identity" style={{ minWidth: 0, overflow: 'hidden' }}>
               <span style={{ fontSize: '13px', fontWeight: 700, color: '#fff', fontFamily: 'monospace', letterSpacing: '-0.3px', display: 'block' }}>{order.order_num}</span>
-              <span className="order-header-client" style={{ fontSize: '12px', color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>{order.client}</span>
+              <span className="order-header-client" style={{ fontSize: '12px', color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>{operationalCustomerName(order)}</span>
             </div>
           </div>
           <div className="order-header-actions" style={{ display: 'flex', gap: '8px', flexShrink: 0, marginLeft: '12px' }}>
@@ -2344,7 +2347,13 @@ export default function OrderFormPage() {
             <div className="order-card" style={card}>
               <div style={{ fontSize: '11px', fontWeight: 700, color: '#111', textTransform: 'uppercase', marginBottom: '16px' }}>Client</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                <div><div style={fieldLabel}>Company</div><div style={fieldValue}>{order.client}</div></div>
+                <div><div style={fieldLabel}>Company</div><div style={fieldValue}>{operationalCustomerName(order)}
+                  {customerNameDrifted(order) && (
+                    <div style={{ fontSize: 10.5, fontWeight: 400, color: '#9ca3af', marginTop: 2 }} title="The name recorded on this order when it was created. Issued documents are not changed.">
+                      Order name: {order.client}
+                    </div>
+                  )}
+                </div></div>
                 {order.contact_person && <div><div style={fieldLabel}>Contact person</div><div style={fieldValue}>{order.contact_person}</div></div>}
                 {order.author && <div><div style={fieldLabel}>Sales rep</div><div style={fieldValue}>{order.author}</div></div>}
                 {order.customer_type && <div><div style={fieldLabel}>Customer type</div><div style={fieldValue}>{order.customer_type}</div></div>}

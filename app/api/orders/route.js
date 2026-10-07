@@ -16,6 +16,7 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
 import { lineTypeForCategory } from '@/shared/lib/orderLineTypes';
+import { withCustomerNames } from '@/shared/lib/customerDisplay';
 
 export async function GET(request) {
   try {
@@ -30,7 +31,7 @@ export async function GET(request) {
 
     let query = serviceClient
       .from('orders')
-      .select('id, order_num, client, due_date, status, total_value, order_type, suspended_at, created_at')
+      .select('id, order_num, client, customer_id, due_date, status, total_value, order_type, suspended_at, created_at, customers(name)')
       .order('created_at', { ascending: false })
       .limit(limit);
 
@@ -43,8 +44,17 @@ export async function GET(request) {
     }
 
     if (search) {
-      // Match order_num OR client name (case-insensitive)
-      query = query.or(`order_num.ilike.%${search}%,client.ilike.%${search}%`);
+      // Match order_num, the order-time snapshot (client), OR the customer's
+      // CURRENT name — so a renamed customer is found under either name.
+      const { data: matchedCustomers } = await serviceClient
+        .from('customers')
+        .select('id')
+        .ilike('name', `%${search}%`)
+        .limit(200);
+      const ids = (matchedCustomers || []).map(c => c.id);
+      const clauses = [`order_num.ilike.%${search}%`, `client.ilike.%${search}%`];
+      if (ids.length) clauses.push(`customer_id.in.(${ids.join(',')})`);
+      query = query.or(clauses.join(','));
     }
 
     const { data, error } = await query;
@@ -53,7 +63,9 @@ export async function GET(request) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, data: data || [] });
+    // `client` stays the order-time snapshot; the live name is returned
+    // separately so provenance is never hidden.
+    return NextResponse.json({ success: true, data: (data || []).map(withCustomerNames) });
   } catch (err) {
     console.error('GET /api/orders:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

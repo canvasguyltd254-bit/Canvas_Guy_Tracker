@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/shared/supabase/client';
 import { STATUSES, REPAIR_STATUSES, ALL_STATUS_COLORS } from '@/modules/orders/components/constants';
+import { operationalCustomerName } from '@/shared/lib/customerDisplay';
 
 const supabase = createClient();
 const ALL_STATUSES = [...new Set([...STATUSES, ...REPAIR_STATUSES])];
@@ -77,7 +78,8 @@ export default function OrdersModule({ workspaceActive = false, refreshKey = 0 }
 
     const q = searchTerm.trim().toLowerCase();
     if (q) {
-      return [o.order_num, o.client].filter(Boolean).join(' ').toLowerCase().includes(q);
+      // Match the live customer name AND the order-time snapshot
+      return [o.order_num, o.customer_name, o.client].filter(Boolean).join(' ').toLowerCase().includes(q);
     }
     return true;
   }), [orders, filterStatus, filterType, searchTerm]);
@@ -311,7 +313,7 @@ export default function OrdersModule({ workspaceActive = false, refreshKey = 0 }
                           )}
                         </div>
                         <div style={{ fontSize: '14px', fontWeight: 700, color: '#111', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {order.client}
+                          {operationalCustomerName(order)}
                         </div>
                       </div>
                       <span style={{
