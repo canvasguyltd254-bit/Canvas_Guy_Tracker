@@ -104,15 +104,26 @@ export async function POST(request, props) {
     const receiptErr = validateReceiptFields(safePayment);
     if (receiptErr) return NextResponse.json({ error: receiptErr }, { status: 400 });
 
+    // Unknown stays unknown: only send the R2 columns when a value was actually given. A payment
+    // without a method must still save on a database where cashflow_r2_r5_support.sql has not run yet.
+    const insertRow = { ...safePayment };
+    for (const f of ['payment_method', 'banked_date']) if (insertRow[f] == null) delete insertRow[f];
+
     // 4. Insert
     const { data, error } = await serviceClient
       .from('order_payments')
-      .insert(safePayment)
+      .insert(insertRow)
       .select()
       .single();
 
     if (error) {
       console.error('POST /api/orders/[id]/payments:', error);
+      if (/payment_method|banked_date/i.test(error.message || '') && /column|schema cache/i.test(error.message || '')) {
+        return NextResponse.json(
+          { error: 'Payment method and banked date need the database migration cashflow_r2_r5_support.sql. Apply it, or save without a method.' },
+          { status: 503 },
+        );
+      }
       return NextResponse.json({ error: 'Failed to add payment' }, { status: 500 });
     }
 
