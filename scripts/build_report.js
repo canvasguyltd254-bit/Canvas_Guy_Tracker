@@ -555,8 +555,9 @@ const crNum = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0;
 function buildCustomerReceivablesDoc(doc, data, ctx) {
   const { nowStr, userName } = ctx;
   const filters = data.filters || {};
-  const title   = 'Customer Receivables';
   const list    = [...data.customerReceivables].sort((a, b) => crNum(b.outstanding) - crNum(a.outstanding));
+  const single  = list.length === 1;
+  const title   = single ? 'Customer Statement' : 'Customer Receivables';
 
   const owing    = list.filter(c => crNum(c.outstanding) >= 0.5);
   const sales    = list.reduce((s, c) => s + crNum(c.total_sales), 0);
@@ -575,8 +576,11 @@ function buildCustomerReceivablesDoc(doc, data, ctx) {
     ],
   });
   y = drawCrKpis(doc, y, [
-    { label: 'Customers',   value: String(list.length), sub: `${owing.length} with a balance` },
-    { label: 'Total sales', value: `KES ${fmtKes(sales)}` },
+    single
+      ? { label: 'Terms', value: list[0].credit_terms || '—',
+          sub: crNum(list[0].credit_limit) > 0 ? `Credit limit KES ${fmtKes(list[0].credit_limit)}` : 'No credit limit' }
+      : { label: 'Customers', value: String(list.length), sub: `${owing.length} with a balance` },
+    { label: 'Total sales', value: `KES ${fmtKes(sales)}`, sub: single ? `${list[0].total_orders || 0} order${crNum(list[0].total_orders) === 1 ? '' : 's'}` : undefined },
     { label: 'Outstanding', value: `KES ${fmtKes(outst)}`, alert: outst >= 0.5 },
     { label: 'Overdue',     value: `KES ${fmtKes(overdue)}`, alert: overdue >= 0.5,
       sub: overdueN ? `${overdueN} customer${overdueN === 1 ? '' : 's'}` : 'Nothing overdue' },
@@ -614,10 +618,10 @@ function buildCustomerReceivablesDoc(doc, data, ctx) {
 
   if (y + 12 * MM > LH - LBOTTOM) newPage();
   crTotalsBar(doc, y + 2 * MM,
-    `TOTAL  |  ${list.length} customer${list.length === 1 ? '' : 's'}`,
+    single ? 'TOTAL' : `TOTAL  |  ${list.length} customer${list.length === 1 ? '' : 's'}`,
     `Total sales: KES ${fmtKes(sales)}   Outstanding: KES ${fmtKes(outst)}   Overdue: KES ${fmtKes(overdue)}`);
 
-  drawCrFooters(doc, `${title}${filters.customer && filters.customer !== 'All customers' ? ' — ' + filters.customer : ''}`);
+  drawCrFooters(doc, `${title}${single ? ' — ' + (list[0].name || '') : (filters.customer && filters.customer !== 'All customers' ? ' — ' + filters.customer : '')}`);
 }
 
 function buildCustomerOrdersDoc(doc, data, ctx) {
