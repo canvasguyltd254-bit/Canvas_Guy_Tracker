@@ -10,6 +10,7 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { spawn } from 'child_process';
 import { join } from 'path';
+import { resolveInvoiceCustomer, toPdfCustomer } from '@/shared/lib/invoiceCustomer';
 
 const ROLES_INVOICE = ['admin', 'head_of_sales', 'sales'];
 
@@ -56,10 +57,14 @@ export async function GET(request, props) {
     const items    = (order.order_items    || []).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
     const payments = (order.order_payments || []).filter(p => !p.reversed_at);
 
+    // Issued invoice → stored customer snapshot; the PDF generator reads `order.customers`,
+    // so it is replaced with the resolved identity (select('*') already carries the snapshot columns).
+    const customers = toPdfCustomer(resolveInvoiceCustomer(order, order.customers));
+
     let pdfBuffer;
     try {
       pdfBuffer = await spawnPdf({
-        invoicePdf: { order: { ...order, order_items: items, order_payments: payments } },
+        invoicePdf: { order: { ...order, customers, order_items: items, order_payments: payments } },
       });
     } catch (err) {
       console.error('invoice pdf spawn error:', err.message);

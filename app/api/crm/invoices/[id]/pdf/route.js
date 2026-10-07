@@ -20,6 +20,7 @@ import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-aut
 import { spawn } from 'child_process';
 import { join } from 'path';
 import { buildInvoiceBreakdown, loadInvoiceAdjustments } from '@/shared/lib/invoiceLines';
+import { resolveInvoiceCustomer, toPdfCustomer } from '@/shared/lib/invoiceCustomer';
 
 const ROLES_CRM = ['admin', 'head_of_sales', 'sales'];
 
@@ -67,7 +68,11 @@ export async function GET(request, props) {
         customer_type, payment_terms, payment_due_date,
         batch_delivery, deliverable_units, due_date,
         customer_id, quote_id, quote_number,
-        customers ( id, name, email, phone, tax_status )
+        invoice_journal_entry_id,
+        invoice_customer_id_snapshot, invoice_customer_name_snapshot, invoice_customer_contact_person_snapshot,
+        invoice_customer_address_snapshot, invoice_customer_email_snapshot, invoice_customer_phone_snapshot,
+        invoice_customer_tax_id_snapshot, invoice_customer_snapshot_at, invoice_customer_snapshot_source,
+        customers ( id, name, contact_person, address, kra_pin, email, phone, tax_status )
       `)
       .eq('id', orderId)
       .single();
@@ -281,7 +286,8 @@ export async function GET(request, props) {
       batch_delivery:    order.batch_delivery,
       client:            order.client,
       contact_person:    order.contact_person,
-      customer:          order.customers,
+      // Reads ONLY the issued snapshot for an issued invoice — a regenerated PDF never follows a customer edit.
+      customer:          { ...toPdfCustomer(resolveInvoiceCustomer(order, order.customers)), tax_status: order.customers?.tax_status ?? null },
       quote_id:          order.quote_id,
       quote_num:         quote?.quote_num || order.quote_number || null,
       quote_revision:    quote ? quote.revision : null,

@@ -23,6 +23,7 @@ export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { resolveInvoiceCustomer, invoiceCustomerProvenance } from '@/shared/lib/invoiceCustomer';
 
 const ROLES_CRM = ['admin', 'head_of_sales', 'sales'];
 
@@ -52,8 +53,11 @@ export async function GET(request) {
       .select(`
         id, order_num, client, status, total_value, pricing_mode,
         invoice_number, invoice_issued_at, customer_type, payment_terms,
-        customer_id, quote_id, quote_number,
-        customers ( id, name, email, phone ),
+        customer_id, quote_id, quote_number, contact_person, invoice_journal_entry_id,
+        invoice_customer_id_snapshot, invoice_customer_name_snapshot, invoice_customer_contact_person_snapshot,
+        invoice_customer_address_snapshot, invoice_customer_email_snapshot, invoice_customer_phone_snapshot,
+        invoice_customer_tax_id_snapshot, invoice_customer_snapshot_at, invoice_customer_snapshot_source,
+        customers ( id, name, email, phone, contact_person, address, kra_pin ),
         order_payments ( id, amount, reversed_at ),
         order_items ( id, quantity ),
         delivery_batches ( id, batch_number, status, deleted_at, actual_delivery_date )
@@ -172,7 +176,10 @@ export async function GET(request) {
         customer_type:    order.customer_type,
         payment_terms:    order.payment_terms,
         customer_id:      order.customer_id,
-        customer_name:    order.customers?.name || order.client,
+        // Issued invoice → the name it was issued to; unissued → current customer (invoiceCustomer.js)
+        customer_name:    resolveInvoiceCustomer(order, order.customers).name || order.client,
+        customer_name_current: order.customers?.name ?? null,   // searched too, so a renamed customer is found under either name
+        customer_identity: invoiceCustomerProvenance(resolveInvoiceCustomer(order, order.customers)),
         customer:         order.customers,
         quote_num:        quote?.quote_num || order.quote_number || null,
         quote_id:         quote?.id || null,
@@ -192,7 +199,7 @@ export async function GET(request) {
     if (customer) {
       const q = customer.toLowerCase();
       invoices = invoices.filter(i =>
-        i.customer_name?.toLowerCase().includes(q)
+        i.customer_name?.toLowerCase().includes(q) || i.customer_name_current?.toLowerCase().includes(q)
       );
     }
 
