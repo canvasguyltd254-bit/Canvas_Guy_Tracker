@@ -3,11 +3,18 @@ import { useState, useEffect, useMemo } from "react";
 import { createClient } from "@/shared/supabase/client";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/shared/context/AuthContext";
+import CustomerListView from "./CustomerListView";
+import { CustomerPicker, PeriodModal } from "./ReportControls";
 import {
   C, Btn, Badge, Modal, PageHeader, StatCard, TabBar,
   Table, Th, Td, Field, TInput, TSelect, TArea,
   Notice, Empty, Loading, Mono, fmtKes, fmtDate,
 } from "@/shared/ui/ds";
+import {
+  localDateOf, formatDay, presetRange, describePeriod, filterOrders, filterReceivables,
+  orderBalance, daysLate, orderKpis, receivableKpis,
+} from "@/shared/lib/customerReport";
+import { ageingTotals } from "@/shared/lib/customerList";
 
 const WRITE_ROLES = ["admin", "production_manager", "head_of_sales", "sales"];
 const VALID_TERMS = ["COD", "7 Days", "30 Days", "60 Days"];
@@ -45,139 +52,156 @@ function TermsBadge({ terms }) {
   return <Badge color={TERMS_COLORS[terms] || "gray"}>{terms}</Badge>;
 }
 
-function Avatar({ name, size = 38 }) {
-  const initials = (name || "?").split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase();
-  const colors = [C.coral, C.ink, C.blue, C.green, C.purple, "#DB2777"];
-  const idx = name ? name.charCodeAt(0) % colors.length : 0;
+// Wide page container: fills its parent up to 1560px. It deliberately uses no
+// viewport units or offset tricks — an earlier version that centred itself on
+// `100vw` overflowed the page horizontally when a scrollbar was showing. In the
+// workspace tabs (where Customers normally opens) the parent is full width, so
+// this is as wide as a desktop monitor allows.
+function Wide({ children }) {
   return (
-    <div style={{
-      width: size, height: size, borderRadius: "50%", background: colors[idx],
-      display: "flex", alignItems: "center", justifyContent: "center",
-      flexShrink: 0, fontSize: size * 0.38, fontWeight: 700, color: "#fff",
-    }}>
-      {initials}
+    <div className="cg-wide">
+      <style>{`
+        .cg-wide {
+          box-sizing: border-box;
+          width: 100%;
+          max-width: 1560px;
+          margin: 0 auto;
+          padding: 24px 24px 8px;
+        }
+        @media (max-width: 720px) {
+          .cg-wide { padding: 16px; }
+        }
+      `}</style>
+      {children}
     </div>
   );
 }
 
-
 // ── CUSTOMER REPORTS TAB ──────────────────────────────────────────────────────
+const REPORT_TYPES = [
+  { key: "customer-receivables", label: "Customer Receivables" },
+  { key: "customer-orders",      label: "Customer Orders" },
+];
+
+const slug = s => String(s || "").replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+
 function CustomerReportsTab({ customers }) {
   const { displayName }                   = useAuth();
+  const today                             = useMemo(() => localDateOf(new Date()), []);
   const [reportType, setReportType]       = useState("customer-receivables");
   const [orders, setOrders]               = useState([]);
   const [payTotals, setPayTotals]         = useState({});
   const [loadingOrders, setLoadingOrders] = useState(false);
-  const [customerFilter, setCustomerFilter] = useState("All");
-  const [dateFrom, setDateFrom]           = useState(() => { const d = new Date(); d.setMonth(d.getMonth() - 3); return d; });
-  const [dateTo, setDateTo]               = useState(new Date());
+  const [ordersError, setOrdersError]     = useState("");
+  const [ordersLoaded, setOrdersLoaded]   = useState(false);
+  const [customerId, setCustomerId]       = useState(null);
+  const [range, setRange]                 = useState(() => presetRange("last_3_months", localDateOf(new Date())));
+  const [showPeriod, setShowPeriod]       = useState(false);
   const [exporting, setExporting]         = useState(false);
   const [exportError, setExportError]     = useState("");
 
+  const isOrdersReport = reportType === "customer-orders";
+
   useEffect(() => {
-    if (reportType === "customer-orders") fetchOrders();
+    if (isOrdersReport && !ordersLoaded) fetchOrders();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reportType]);
 
   const fetchOrders = async () => {
     setLoadingOrders(true);
-    const supabase = createClient();
-    const { data } = await supabase
-      .from("orders")
-      .select("id, order_num, client, created_at, due_date, status, total_value, customer_id, customers(name), order_payments(amount, reversed_at)")
-      .not("customer_id", "is", null)
-      .order("created_at", { ascending: false });
-    if (data) {
+    setOrdersError("");
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("orders")
+        .select("id, order_num, client, created_at, due_date, status, total_value, customer_id, customers(name), order_payments(amount, reversed_at)")
+        .not("customer_id", "is", null)
+        .order("created_at", { ascending: false });
+      if (error) throw new Error(error.message);
       const pt = {};
-      const mapped = data.map(o => {
+      const mapped = (data || []).map(o => {
         // Reversed payments no longer count as paid — the reversal journal
         // already backs the receipt out in the GL.
-        const paid = (o.order_payments || []).filter(p => !p.reversed_at).reduce((s, p) => s + parseFloat(p.amount || 0), 0);
-        pt[o.id] = paid;
+        pt[o.id] = (o.order_payments || []).filter(p => !p.reversed_at).reduce((s, p) => s + parseFloat(p.amount || 0), 0);
         return { ...o, customer_name: o.customers?.name || o.client };
       });
       setPayTotals(pt);
       setOrders(mapped);
+      setOrdersLoaded(true);
+    } catch (err) {
+      setOrdersError(`Couldn't load orders. ${err.message}`);
     }
     setLoadingOrders(false);
   };
 
-  const isOrdersReport = reportType === "customer-orders";
+  const selectedCustomer = useMemo(() => customers.find(c => c.id === customerId) || null, [customers, customerId]);
 
-  const filtered = useMemo(() => {
-    if (isOrdersReport) {
-      return orders.filter(o => {
-        if (customerFilter !== "All" && o.customer_name !== customerFilter) return false;
-        if (dateFrom && o.created_at < dateFrom.toISOString()) return false;
-        if (dateTo) {
-          const end = new Date(dateTo); end.setDate(end.getDate() + 1);
-          if (o.created_at >= end.toISOString()) return false;
-        }
-        return true;
-      });
-    }
-    if (customerFilter !== "All") return customers.filter(c => c.name === customerFilter);
-    return customers;
-  }, [isOrdersReport, customers, orders, customerFilter, dateFrom, dateTo]);
+  const filteredOrders = useMemo(
+    () => filterOrders(orders, { customerId, from: range.from, to: range.to }),
+    [orders, customerId, range]
+  );
+  const filteredCustomers = useMemo(
+    () => [...filterReceivables(customers, { customerId })]
+      .sort((a, b) => (b._stats?.outstanding || 0) - (a._stats?.outstanding || 0)),
+    [customers, customerId]
+  );
 
-  const clientNames = useMemo(() => {
-    const names = isOrdersReport
-      ? [...new Set(orders.map(o => o.customer_name))]
-      : customers.map(c => c.name);
-    return ["All", ...names.sort()];
-  }, [isOrdersReport, customers, orders]);
+  const rows = isOrdersReport ? filteredOrders : filteredCustomers;
 
   const kpis = useMemo(() => {
     if (isOrdersReport) {
-      const tv = filtered.reduce((s, o) => s + parseFloat(o.total_value || 0), 0);
-      const tp = filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0);
-      const tb = Math.max(tv - tp, 0);
+      const k = orderKpis(filteredOrders, payTotals, today);
       return [
-        { label: "Orders",      value: filtered.length,     sub: "in range" },
-        { label: "Total Value", value: fmtKes(tv), mono: true },
-        { label: "Collected",   value: fmtKes(tp), mono: true },
-        { label: "Outstanding", value: fmtKes(tb), mono: true, alert: tb > 0 },
+        { label: "Orders",      value: k.count, sub: describePeriod(range) },
+        { label: "Total Value", value: fmtKes(k.value),     mono: true },
+        { label: "Collected",   value: fmtKes(k.collected), mono: true },
+        { label: "Outstanding", value: fmtKes(k.outstanding), mono: true, alert: k.outstanding >= 0.5,
+          sub: k.lateCount ? `${k.lateCount} late · ${fmtKes(k.lateAmount)}` : undefined },
       ];
     }
-    const to  = filtered.reduce((s, c) => s + (c._stats?.outstanding || 0), 0);
-    const tod = filtered.reduce((s, c) => s + (c._stats?.overdue || 0), 0);
-    const ts  = filtered.reduce((s, c) => s + (c._stats?.total_sales || 0), 0);
+    const k = receivableKpis(filteredCustomers);
     return [
-      { label: "Customers",   value: filtered.length },
-      { label: "Total Sales", value: fmtKes(ts),  mono: true },
-      { label: "Outstanding", value: fmtKes(to),  mono: true, alert: to > 0 },
-      { label: "Overdue",     value: fmtKes(tod), mono: true, alert: tod > 0 },
+      { label: "Customers",   value: k.count },
+      { label: "Total Sales", value: fmtKes(k.sales),       mono: true },
+      { label: "Outstanding", value: fmtKes(k.outstanding), mono: true, alert: k.outstanding >= 0.5 },
+      { label: "Overdue",     value: fmtKes(k.overdue),     mono: true, alert: k.overdue >= 0.5,
+        sub: k.overdueCustomers ? `${k.overdueCustomers} customer${k.overdueCustomers === 1 ? "" : "s"}` : undefined },
     ];
-  }, [filtered, payTotals, isOrdersReport]);
+  }, [isOrdersReport, filteredOrders, filteredCustomers, payTotals, range, today]);
 
   const handleExport = async () => {
     setExporting(true); setExportError("");
     try {
+      const customerLabel = selectedCustomer ? selectedCustomer.name : "All customers";
+      const suffix = selectedCustomer ? ` ${selectedCustomer.name}` : "";
       let body;
       if (isOrdersReport) {
         body = {
-          reportLabel: "Customer Orders",
-          customerOrders: filtered.map(o => ({
+          reportLabel: `Customer Orders${suffix}`,
+          filters: { customer: customerLabel, period: describePeriod(range) },
+          customerOrders: filteredOrders.map(o => ({
             customer_name: o.customer_name,
             order_num:     o.order_num,
-            created_at:    o.created_at,
+            created_at:    localDateOf(o.created_at),
             due_date:      o.due_date,
             status:        o.status,
             total_value:   o.total_value,
             amount_paid:   payTotals[o.id] || 0,
           })),
-          dateFrom: dateFrom ? dateFrom.toISOString() : null,
-          dateTo:   dateTo   ? dateTo.toISOString()   : null,
           userName: displayName,
         };
       } else {
         body = {
-          reportLabel: "Customer Receivables",
-          customerReceivables: filtered.map(c => ({
+          reportLabel: `Customer Receivables${suffix}`,
+          filters: { customer: customerLabel, asAt: today },
+          ageing: ageingTotals(filteredCustomers),
+          customerReceivables: filteredCustomers.map(c => ({
             name:         c.name,
             credit_terms: c.credit_terms,
             total_sales:  c._stats?.total_sales || 0,
             outstanding:  c._stats?.outstanding || 0,
             overdue:      c._stats?.overdue || 0,
+            oldest_overdue_days: c._stats?.oldest_overdue_days || 0,
             credit_limit: parseFloat(c.credit_limit || 0),
             total_orders: c._stats?.total_orders || 0,
           })),
@@ -191,14 +215,14 @@ function CustomerReportsTab({ customers }) {
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || err.error || "Export failed");
       }
       const blob = await res.blob();
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement("a");
       a.href     = url;
-      a.download = `${isOrdersReport ? "Customer_Orders" : "Customer_Receivables"}_${new Date().toISOString().split("T")[0]}.pdf`;
+      a.download = `${slug(body.reportLabel)}_${today}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
@@ -212,7 +236,7 @@ function CustomerReportsTab({ customers }) {
   const totalsBar = (items) => (
     <div style={{ display: "flex", gap: 24, padding: "12px 16px", background: C.ink, borderRadius: "0 0 12px 12px", flexWrap: "wrap" }}>
       {items.map(t => (
-        <span key={t.label} style={{ fontSize: 12, color: C.coral }}>
+        <span key={t.label || t.value} style={{ fontSize: 12, color: C.coral }}>
           {t.label
             ? <>{t.label}: <span style={{ color: "#fff", fontFamily: C.mono }}>{t.value}</span></>
             : <span style={{ color: "#fff", fontWeight: 700 }}>{t.value}</span>}
@@ -221,16 +245,16 @@ function CustomerReportsTab({ customers }) {
     </div>
   );
 
+  const ordersTotals = orderKpis(filteredOrders, payTotals, today);
+  const recTotals    = receivableKpis(filteredCustomers);
+
   return (
     <div>
       {/* Report type selector */}
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-        {[
-          { key: "customer-receivables", label: "Customer Receivables" },
-          { key: "customer-orders",      label: "Customer Orders" },
-        ].map(rt => (
+        {REPORT_TYPES.map(rt => (
           <button key={rt.key}
-            onClick={() => { setReportType(rt.key); setCustomerFilter("All"); }}
+            onClick={() => { setReportType(rt.key); setCustomerId(null); setExportError(""); }}
             style={{
               padding: "8px 16px", borderRadius: C.radiusSm,
               border: `1.5px solid ${reportType === rt.key ? C.coral : C.line}`,
@@ -245,29 +269,45 @@ function CustomerReportsTab({ customers }) {
 
       {/* Filters + Export */}
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
-        <TSelect value={customerFilter} onChange={e => setCustomerFilter(e.target.value)} style={{ minWidth: 160 }}>
-          {clientNames.map(n => <option key={n} value={n}>{n}</option>)}
-        </TSelect>
-        {isOrdersReport && (
-          <>
-            <TInput type="date"
-              value={dateFrom instanceof Date ? dateFrom.toISOString().split("T")[0] : ""}
-              onChange={e => setDateFrom(e.target.value ? new Date(e.target.value) : null)}
-              style={{ width: "auto" }} />
-            <span style={{ color: C.faint, fontSize: 13 }}>to</span>
-            <TInput type="date"
-              value={dateTo instanceof Date ? dateTo.toISOString().split("T")[0] : ""}
-              onChange={e => setDateTo(e.target.value ? new Date(e.target.value) : null)}
-              style={{ width: "auto" }} />
-          </>
+        <CustomerPicker customers={customers} value={customerId} onChange={setCustomerId} />
+
+        {isOrdersReport ? (
+          <button
+            type="button"
+            onClick={() => setShowPeriod(true)}
+            aria-haspopup="dialog"
+            style={{
+              border: `1px solid ${C.line}`, background: C.card, color: C.ink, borderRadius: C.radiusSm,
+              padding: "9px 14px", minHeight: 44, fontSize: 13, fontWeight: 600, cursor: "pointer",
+              fontFamily: "inherit", display: "inline-flex", alignItems: "center", gap: 8,
+            }}
+          >
+            <span style={{ color: C.muted, fontWeight: 700, fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em" }}>Period</span>
+            {describePeriod(range)}
+            <span aria-hidden="true" style={{ color: C.faint }}>▾</span>
+          </button>
+        ) : (
+          <span
+            title="Receivables are the current balances. Use Customer Orders to report on a date range."
+            style={{ fontSize: 12.5, color: C.muted, padding: "0 6px" }}
+          >
+            As at {formatDay(today)}
+          </span>
         )}
-        <Btn primary onClick={handleExport} disabled={exporting || filtered.length === 0 || loading}
+
+        <Btn primary onClick={handleExport} disabled={exporting || rows.length === 0 || loading}
           style={{ marginLeft: "auto" }}>
           {exporting ? "Exporting…" : "Export PDF"}
         </Btn>
       </div>
 
       {exportError && <Notice color="red" style={{ marginBottom: 12 }}>{exportError}</Notice>}
+      {ordersError && isOrdersReport && (
+        <Notice color="red" style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ flex: 1 }}>{ordersError}</span>
+          <Btn small onClick={fetchOrders}>Retry</Btn>
+        </Notice>
+      )}
 
       {/* KPI cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 16 }}>
@@ -279,8 +319,10 @@ function CustomerReportsTab({ customers }) {
       {/* Table */}
       {loading ? (
         <Loading />
-      ) : filtered.length === 0 ? (
-        <Empty message="No data for this report." />
+      ) : rows.length === 0 ? (
+        <Empty message={isOrdersReport && orders.length > 0
+          ? "No orders in this period. Try a wider date range."
+          : "No data for this report."} />
       ) : isOrdersReport ? (
         <div style={{ background: C.card, borderRadius: C.radius, border: `1px solid ${C.line}` }}>
           <Table>
@@ -297,10 +339,10 @@ function CustomerReportsTab({ customers }) {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((o) => {
+              {filteredOrders.map((o) => {
                 const paid  = payTotals[o.id] || 0;
-                const bal   = Math.max(parseFloat(o.total_value || 0) - paid, 0);
-                const isOD  = o.due_date && o.due_date < new Date().toISOString().split("T")[0] && bal > 0;
+                const bal   = orderBalance(o, payTotals);
+                const late  = daysLate(o, payTotals, today);
                 const sc    = STATUS_COLORS[o.status] || { bg: "#F3F4F6", text: "#6B7280" };
                 return (
                   <tr key={o.id}>
@@ -312,9 +354,9 @@ function CustomerReportsTab({ customers }) {
                     </Td>
                     <Td right mono>{fmtN(o.total_value)}</Td>
                     <Td right mono style={{ color: C.green }}>{fmtN(paid)}</Td>
-                    <Td right mono style={{ fontWeight: 700, color: bal > 0 ? C.amber : C.green }}>{fmtN(bal)}</Td>
-                    <Td mono style={{ color: isOD ? C.red : C.muted, fontWeight: isOD ? 700 : 400 }}>
-                      {o.due_date || "—"}{isOD && " ⚠"}
+                    <Td right mono style={{ fontWeight: 700, color: bal >= 0.5 ? C.amber : C.green }}>{fmtN(bal)}</Td>
+                    <Td mono style={{ color: late ? C.red : C.muted, fontWeight: late ? 700 : 400 }}>
+                      {o.due_date || "—"}{late > 0 && ` · ${late}d late`}
                     </Td>
                   </tr>
                 );
@@ -322,10 +364,10 @@ function CustomerReportsTab({ customers }) {
             </tbody>
           </Table>
           {totalsBar([
-            { value: `${filtered.length} Orders` },
-            { label: "Total Value", value: `KES ${fmtN(filtered.reduce((s, o) => s + parseFloat(o.total_value || 0), 0))}` },
-            { label: "Collected",   value: `KES ${fmtN(filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0))}` },
-            { label: "Outstanding", value: `KES ${fmtN(Math.max(filtered.reduce((s, o) => s + parseFloat(o.total_value || 0), 0) - filtered.reduce((s, o) => s + (payTotals[o.id] || 0), 0), 0))}` },
+            { value: `${ordersTotals.count} Order${ordersTotals.count === 1 ? "" : "s"}` },
+            { label: "Total Value", value: `KES ${fmtN(ordersTotals.value)}` },
+            { label: "Collected",   value: `KES ${fmtN(ordersTotals.collected)}` },
+            { label: "Outstanding", value: `KES ${fmtN(ordersTotals.outstanding)}` },
           ])}
         </div>
       ) : (
@@ -344,7 +386,7 @@ function CustomerReportsTab({ customers }) {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((c) => {
+              {filteredCustomers.map((c) => {
                 const stats = c._stats || {};
                 const ts    = stats.total_sales || 0;
                 const out   = stats.outstanding  || 0;
@@ -356,8 +398,8 @@ function CustomerReportsTab({ customers }) {
                     <Td style={{ fontWeight: 700 }}>{c.name}</Td>
                     <Td><TermsBadge terms={c.credit_terms} /></Td>
                     <Td right mono>{fmtN(ts)}</Td>
-                    <Td right mono style={{ fontWeight: 700, color: out > 0 ? C.amber : C.green }}>{fmtN(out)}</Td>
-                    <Td right mono style={{ color: ovd > 0 ? C.red : C.faint }}>{fmtN(ovd)}</Td>
+                    <Td right mono style={{ fontWeight: 700, color: out >= 0.5 ? C.amber : C.green }}>{fmtN(out)}</Td>
+                    <Td right mono style={{ color: ovd >= 0.5 ? C.red : C.faint }}>{fmtN(ovd)}</Td>
                     <Td right mono muted>{cl > 0 ? fmtN(cl) : "—"}</Td>
                     <Td right mono style={{ color: cl > 0 ? (avail > 0 ? C.green : C.red) : C.faint }}>{cl > 0 ? fmtN(avail) : "—"}</Td>
                     <Td muted>{stats.total_orders || 0}</Td>
@@ -367,12 +409,21 @@ function CustomerReportsTab({ customers }) {
             </tbody>
           </Table>
           {totalsBar([
-            { value: `${filtered.length} Customer${filtered.length !== 1 ? "s" : ""}` },
-            { label: "Total Sales",  value: `KES ${fmtN(filtered.reduce((s, c) => s + (c._stats?.total_sales || 0), 0))}` },
-            { label: "Outstanding",  value: `KES ${fmtN(filtered.reduce((s, c) => s + (c._stats?.outstanding || 0), 0))}` },
-            { label: "Overdue",      value: `KES ${fmtN(filtered.reduce((s, c) => s + (c._stats?.overdue || 0), 0))}` },
+            { value: `${recTotals.count} Customer${recTotals.count !== 1 ? "s" : ""}` },
+            { label: "Total Sales",  value: `KES ${fmtN(recTotals.sales)}` },
+            { label: "Outstanding",  value: `KES ${fmtN(recTotals.outstanding)}` },
+            { label: "Overdue",      value: `KES ${fmtN(recTotals.overdue)}` },
           ])}
         </div>
+      )}
+
+      {showPeriod && (
+        <PeriodModal
+          range={range}
+          today={today}
+          onClose={() => setShowPeriod(false)}
+          onApply={r => { setRange(r); setShowPeriod(false); }}
+        />
       )}
     </div>
   );
@@ -385,8 +436,8 @@ export default function CustomersModule({ defaultAction, defaultProspectName, de
   const { userRole = '', loaded: authLoaded } = useAuth();
   const [customers, setCustomers]     = useState([]);
   const [loading, setLoading]         = useState(true);
+  const [loadError, setLoadError]     = useState("");
   const [view, setView]               = useState("list");   // "list" | "reports"
-  const [search, setSearch]           = useState("");
   const [showForm, setShowForm]       = useState(false);
   const [form, setForm]               = useState(EMPTY_FORM);
   const [saving, setSaving]           = useState(false);
@@ -410,25 +461,19 @@ export default function CustomersModule({ defaultAction, defaultProspectName, de
 
   const loadCustomers = async () => {
     setLoading(true);
-    const res  = await fetch("/api/customers");
-    const json = await res.json();
-    setCustomers(json.data || []);
+    setLoadError("");
+    try {
+      const res  = await fetch("/api/customers");
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to load customers");
+      setCustomers(json.data || []);
+    } catch (err) {
+      setLoadError(`Couldn't load customers. ${err.message}`);
+    }
     setLoading(false);
   };
 
   const canWrite = WRITE_ROLES.includes(userRole);
-
-  const filtered = useMemo(() => {
-    if (!search) return customers;
-    const q = search.toLowerCase();
-    return customers.filter(c =>
-      [c.name, c.contact_person, c.phone, c.email].filter(Boolean).join(" ").toLowerCase().includes(q)
-    );
-  }, [customers, search]);
-
-  const totalWorkValue   = customers.reduce((s, c) => s + (c._stats?.active_work_value || 0), 0);
-  const totalOutstanding = customers.reduce((s, c) => s + (c._stats?.outstanding || 0), 0);
-  const totalOverdue     = customers.reduce((s, c) => s + (c._stats?.overdue || 0), 0);
 
   const handleSave = async () => {
     if (!form.name.trim()) { setFormError("Customer name is required."); return; }
@@ -447,11 +492,11 @@ export default function CustomersModule({ defaultAction, defaultProspectName, de
   };
 
   return (
-    <div style={{ maxWidth: 900, margin: "0 auto", padding: "24px 16px" }}>
+    <Wide>
 
       <PageHeader
         title="Customers"
-        description="Customer accounts and credit management"
+        description="Accounts, credit and collections"
         actions={canWrite && view === "list" && (
           <Btn primary onClick={() => { setShowForm(true); setForm(EMPTY_FORM); setFormError(""); }}>
             + Add Customer
@@ -468,96 +513,18 @@ export default function CustomersModule({ defaultAction, defaultProspectName, de
         onSelect={setView}
       />
 
-      {/* Reports view */}
       {view === "reports" ? (
         <CustomerReportsTab customers={customers} />
       ) : (
-        <>
-          {/* KPI cards */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 20 }}>
-            <StatCard label="Customers"        value={customers.length} />
-            <StatCard label="Total Work Value" value={fmtKes(totalWorkValue)}   mono />
-            <StatCard label="Outstanding"      value={fmtKes(totalOutstanding)} mono alert={totalOutstanding > 0} />
-            <StatCard label="Overdue"          value={fmtKes(totalOverdue)}     mono alert={totalOverdue > 0} />
-          </div>
-
-          {/* Search */}
-          <TInput
-            type="text" placeholder="Search customers…" value={search}
-            onChange={e => setSearch(e.target.value)}
-            style={{ marginBottom: 14 }}
-          />
-
-          {/* List */}
-          {loading ? (
-            <Loading />
-          ) : filtered.length === 0 ? (
-            <Empty
-              message={search ? "No customers match your search." : "No customers yet."}
-              action={canWrite && !search && (
-                <Btn onClick={() => setShowForm(true)}>Add first customer</Btn>
-              )}
-            />
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {filtered.map(c => {
-                const stats       = c._stats || {};
-                const outstanding = stats.outstanding || 0;
-                const overdue     = stats.overdue     || 0;
-                const creditAvail = Math.max(0, parseFloat(c.credit_limit || 0) - outstanding);
-
-                return (
-                  <div key={c.id}
-                    onClick={() => router.push(`/customers/${c.id}`)}
-                    style={{
-                      background: C.card, borderRadius: C.radius,
-                      border: `1px solid ${C.line}`,
-                      borderLeft: overdue > 0 ? `4px solid ${C.red}` : `4px solid transparent`,
-                      padding: "14px 16px", cursor: "pointer",
-                      display: "flex", alignItems: "center", gap: 14,
-                      transition: "box-shadow 0.15s",
-                    }}
-                    onMouseEnter={e => e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.08)"}
-                    onMouseLeave={e => e.currentTarget.style.boxShadow = "none"}>
-                    <Avatar name={c.name} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                        <span style={{ fontSize: 14, fontWeight: 700, color: C.ink }}>{c.name}</span>
-                        <TermsBadge terms={c.credit_terms} />
-                        {overdue > 0 && <Badge color="red">Overdue</Badge>}
-                      </div>
-                      <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>
-                        {[c.contact_person, c.phone].filter(Boolean).join(" · ")}
-                        {stats.total_orders > 0 && ` · ${stats.total_orders} order${stats.total_orders !== 1 ? "s" : ""}`}
-                        {stats.last_order_date && ` · Last: ${stats.last_order_date}`}
-                      </div>
-                    </div>
-                    <div style={{ textAlign: "right", flexShrink: 0 }}>
-                      {outstanding > 0 ? (
-                        <>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: overdue > 0 ? C.red : C.amber, fontFamily: C.mono }}>
-                            {fmtKes(outstanding)}
-                          </div>
-                          <div style={{ fontSize: 11, color: C.faint }}>outstanding</div>
-                        </>
-                      ) : (
-                        <>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: C.green }}>Nil</div>
-                          <div style={{ fontSize: 11, color: C.faint }}>outstanding</div>
-                        </>
-                      )}
-                      {parseFloat(c.credit_limit || 0) > 0 && (
-                        <div style={{ fontSize: 11, color: C.faint, marginTop: 2 }}>
-                          <Mono>{fmtKes(creditAvail)}</Mono> avail.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </>
+        <CustomerListView
+          customers={customers}
+          loading={loading}
+          loadError={loadError}
+          onRetry={loadCustomers}
+          canWrite={canWrite}
+          onAdd={() => { setShowForm(true); setForm(EMPTY_FORM); setFormError(""); }}
+          onOpen={id => router.push(`/customers/${id}`)}
+        />
       )}
 
       {/* Add Customer Modal — Modal auto-dispatches quickactions:lock/unlock */}
@@ -615,6 +582,6 @@ export default function CustomersModule({ defaultAction, defaultProspectName, de
           {formError && <Notice color="red" style={{ marginTop: 14 }}>{formError}</Notice>}
         </Modal>
       )}
-    </div>
+    </Wide>
   );
 }

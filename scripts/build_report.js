@@ -152,28 +152,6 @@ const ORDER_PNL_COLS = mmCols([
   { key: 'margin',     header: 'Margin %',        x: 248, w: 25, right: true },
 ]);
 
-const CUSTOMER_REC_COLS = mmCols([
-  { key: 'name',         header: 'Customer',          x:   0, w: 55, bold: true },
-  { key: 'terms',        header: 'Terms',             x:  55, w: 20 },
-  { key: 'total_sales',  header: 'Total Sales (KES)', x:  75, w: 40, right: true },
-  { key: 'outstanding',  header: 'Outstanding (KES)', x: 115, w: 40, right: true, bold: true },
-  { key: 'overdue',      header: 'Overdue (KES)',     x: 155, w: 38, right: true },
-  { key: 'credit_limit', header: 'Credit Limit',      x: 193, w: 38, right: true },
-  { key: 'avail',        header: 'Avail. Credit',     x: 231, w: 27, right: true },
-  { key: 'orders',       header: 'Orders',            x: 258, w: 15, centre: true },
-]);
-
-const CUSTOMER_ORDER_COLS = mmCols([
-  { key: 'customer_name', header: 'Customer',      x:   0, w: 50, bold: true },
-  { key: 'order_num',     header: 'Order #',       x:  50, w: 22, size: 6 },
-  { key: 'date',          header: 'Date',          x:  72, w: 22 },
-  { key: 'due_date',      header: 'Due Date',      x:  94, w: 22 },
-  { key: 'status',        header: 'Status',        x: 116, w: 38 },
-  { key: 'value',         header: 'Value (KES)',   x: 154, w: 37, right: true },
-  { key: 'paid',          header: 'Paid (KES)',    x: 191, w: 37, right: true },
-  { key: 'balance',       header: 'Balance (KES)', x: 228, w: 45, right: true, bold: true },
-]);
-
 // Portrait statement columns (x + w in mm)
 const STMT_COLS = mmCols([
   { key: 'date',        header: 'Date',          x:   0, w: 25 },
@@ -376,6 +354,387 @@ function drawTotalsBar(doc, y, leftText, rightText, cw = LCW, margin = LM) {
   return y + 8 * MM;
 }
 
+// ── Customer report PDFs (receivables + orders) ───────────────────────────────
+// Shared look: logo tile on a coral band, report title + filter meta, KPI cards,
+// ageing strip (receivables), zebra table with coloured status/overdue cells,
+// per-customer groups with subtotals (orders), coral totals bar, and a
+// "Page x of y" footer on every page.
+
+const INK   = '#181818';
+const GREEN = '#16794A';
+const AMBER = '#B7791F';
+const RED   = '#B42318';
+const BLUE  = '#245E9B';
+const MUTED = '#6B7280';
+const TINT  = '#FDEDE8';
+
+const CR_REC_COLS = mmCols([
+  { key: 'name',         header: 'Customer',        x:   0, w: 60, bold: true },
+  { key: 'terms',        header: 'Terms',           x:  60, w: 20 },
+  { key: 'orders',       header: 'Orders',          x:  80, w: 15, centre: true },
+  { key: 'total_sales',  header: 'Total sales',     x:  95, w: 37, right: true },
+  { key: 'outstanding',  header: 'Outstanding',     x: 132, w: 37, right: true },
+  { key: 'overdue',      header: 'Overdue',         x: 169, w: 33, right: true },
+  { key: 'oldest',       header: 'Days overdue',    x: 202, w: 19, centre: true },
+  { key: 'credit_limit', header: 'Credit limit',    x: 221, w: 28, right: true },
+  { key: 'used',         header: 'Limit used',      x: 249, w: 24, centre: true },
+]);
+
+const CR_ORD_COLS = mmCols([
+  { key: 'order_num', header: 'Order #',       x:   0, w: 30, size: 6.5 },
+  { key: 'date',      header: 'Order date',    x:  30, w: 26 },
+  { key: 'due',       header: 'Due date',      x:  56, w: 26 },
+  { key: 'status',    header: 'Status',        x:  82, w: 46 },
+  { key: 'late',      header: 'Days late',     x: 128, w: 22, centre: true },
+  { key: 'value',     header: 'Value (KES)',   x: 150, w: 41, right: true },
+  { key: 'paid',      header: 'Paid (KES)',    x: 191, w: 41, right: true },
+  { key: 'balance',   header: 'Balance (KES)', x: 232, w: 41, right: true, bold: true },
+]);
+
+function statusColor(status) {
+  const s = String(status || '').toLowerCase();
+  if (/(delivered|closed)/.test(s))                       return GREEN;
+  if (/cancel/.test(s))                                   return RED;
+  if (/(production|quality|material|deposit)/.test(s))   return AMBER;
+  if (/(inquiry|quote|ready|out for)/.test(s))            return BLUE;
+  return DGRAY;
+}
+
+function fitText(doc, str, maxW, font, size) {
+  doc.font(font).fontSize(size);
+  let s = String(str ?? '');
+  while (s.length > 1 && doc.widthOfString(s) > maxW) s = s.slice(0, -2) + '…';
+  return s;
+}
+
+/** Brand band: logo tile + company name on the left, contact on the right. Returns its height. */
+function drawCrBrandBand(doc) {
+  const H = 17 * MM;
+  fillRect(doc, 0, 0, LW, H, CORAL);
+  const tile = 13 * MM;
+  const tx = LM, ty = (H - tile) / 2;
+  fillRect(doc, tx, ty, tile, tile, WHITE);
+  if (HAS_LOGO) {
+    try { doc.image(LOGO_PATH, tx + 0.6 * MM, ty + 0.6 * MM, { fit: [tile - 1.2 * MM, tile - 1.2 * MM] }); } catch (_) {}
+  }
+  const nx = tx + tile + 4 * MM;
+  doc.font('Helvetica-Bold').fontSize(12).fillColor(WHITE).text('CANVAS GUY LIMITED', nx, 4.4 * MM, { lineBreak: false });
+  doc.font('Helvetica').fontSize(6.8).fillColor(WHITE).text('Colourful spaces', nx, 10 * MM, { lineBreak: false });
+  drawRight(doc, 'Ruiru - Gwa Kairo Thome Rd  |  Kiambu County, Kenya', LW - LM, 5 * MM, { size: 6.5, color: WHITE });
+  drawRight(doc, 'holla@canvasguy.co.ke  |  0713 196 650', LW - LM, 8.8 * MM, { size: 6.5, color: WHITE });
+  return H;
+}
+
+/** Slim band for continuation pages. */
+function drawCrCompactBand(doc, title) {
+  const H = 10 * MM;
+  fillRect(doc, 0, 0, LW, H, CORAL);
+  drawLeft(doc, 'CANVAS GUY LIMITED', LM, 3 * MM, { font: 'Helvetica-Bold', size: 8.5, color: WHITE });
+  drawRight(doc, title.toUpperCase(), LW - LM, 3.2 * MM, { font: 'Helvetica-Bold', size: 8, color: WHITE });
+  return H + 4 * MM;
+}
+
+/** Title, "generated" stamp and the filter line. Returns the next y. */
+function drawCrTitleBlock(doc, y, { title, meta, nowStr, user }) {
+  y += 6 * MM;
+  doc.font('Helvetica-Bold').fontSize(16).fillColor(INK).text(title, LM, y, { lineBreak: false });
+  drawRight(doc, `Generated ${nowStr}${user ? `   |   by ${user}` : ''}`, LW - LM, y + 2.2 * MM, { size: 7, color: DGRAY });
+  y += 9 * MM;
+
+  let x = LM;
+  meta.filter(m => m && m.value).forEach(m => {
+    doc.font('Helvetica-Bold').fontSize(6.2).fillColor(MUTED);
+    const label = String(m.label).toUpperCase();
+    doc.text(label, x, y + 0.6 * MM, { lineBreak: false, characterSpacing: 0.4 });
+    x += doc.widthOfString(label, { characterSpacing: 0.4 }) + 2 * MM;
+    doc.font('Helvetica-Bold').fontSize(8).fillColor(INK);
+    const val = String(m.value);
+    doc.text(val, x, y, { lineBreak: false });
+    x += doc.widthOfString(val) + 8 * MM;
+  });
+  y += 6 * MM;
+  doc.save().moveTo(LM, y).lineTo(LW - LM, y).lineWidth(0.4).stroke(MGRAY).restore();
+  return y + 4 * MM;
+}
+
+function drawCrKpis(doc, y, cards) {
+  const gap = 3 * MM, n = cards.length;
+  const w = (LCW - gap * (n - 1)) / n, h = 17 * MM;
+  cards.forEach((c, i) => {
+    const x = LM + i * (w + gap);
+    doc.save().roundedRect(x, y, w, h, 3).fillAndStroke(c.alert ? '#FDE9E7' : LGRAY, c.alert ? '#EFC8C4' : MGRAY).restore();
+    doc.font('Helvetica-Bold').fontSize(6).fillColor(c.alert ? RED : MUTED)
+       .text(String(c.label).toUpperCase(), x + 3.2 * MM, y + 2.6 * MM, { lineBreak: false, characterSpacing: 0.4 });
+    doc.font('Helvetica-Bold').fontSize(13.5).fillColor(c.alert ? RED : INK)
+       .text(fitText(doc, c.value, w - 6.4 * MM, 'Helvetica-Bold', 13.5), x + 3.2 * MM, y + 6.2 * MM, { lineBreak: false });
+    if (c.sub) {
+      doc.font('Helvetica').fontSize(6.4).fillColor(c.alert ? RED : MUTED)
+         .text(fitText(doc, c.sub, w - 6.4 * MM, 'Helvetica', 6.4), x + 3.2 * MM, y + 12.8 * MM, { lineBreak: false });
+    }
+  });
+  return y + h + 5 * MM;
+}
+
+function drawCrAgeing(doc, y, ageing) {
+  if (!ageing) return y;
+  const segs = [
+    { label: 'Not yet due',  v: +ageing.notYetDue || 0, color: GREEN },
+    { label: '1–30 days',    v: +ageing.d1_30     || 0, color: '#BA7517' },
+    { label: '31–60 days',   v: +ageing.d31_60    || 0, color: '#D85A30' },
+    { label: 'Over 60 days', v: +ageing.d60p      || 0, color: RED },
+  ];
+  const total = segs.reduce((s, g) => s + g.v, 0);
+  if (total <= 0) return y;
+
+  doc.font('Helvetica-Bold').fontSize(6.8).fillColor(INK).text('RECEIVABLES AGEING', LM, y, { lineBreak: false, characterSpacing: 0.4 });
+  drawRight(doc, `Total KES ${fmtKes(total)}`, LW - LM, y, { font: 'Helvetica-Bold', size: 7, color: INK });
+  y += 4.6 * MM;
+
+  const barH = 4 * MM;
+  fillRect(doc, LM, y, LCW, barH, '#EFEDE8');
+  let x = LM;
+  segs.forEach(g => {
+    if (g.v <= 0) return;
+    const w = (g.v / total) * LCW;
+    fillRect(doc, x, y, w, barH, g.color);
+    x += w;
+  });
+  y += barH + 2.6 * MM;
+
+  const colW = LCW / segs.length;
+  segs.forEach((g, i) => {
+    const cx = LM + i * colW;
+    fillRect(doc, cx, y + 0.5 * MM, 2.4 * MM, 2.4 * MM, g.color);
+    doc.font('Helvetica-Bold').fontSize(6.6).fillColor(INK).text(g.label, cx + 3.6 * MM, y, { lineBreak: false });
+    const pct = Math.round((g.v / total) * 100);
+    doc.font('Helvetica').fontSize(6.6).fillColor(DGRAY)
+       .text(`KES ${fmtKes(g.v)}  (${pct}%)`, cx + 3.6 * MM, y + 3.4 * MM, { lineBreak: false });
+  });
+  return y + 9 * MM;
+}
+
+/** values[key] is a string, or { t, color, bold } for a styled cell. */
+function drawCrRow(doc, y, cols, values, idx, { fill } = {}) {
+  const totalW = cols.reduce((s, c) => Math.max(s, c.x + c.w), 0);
+  fillRect(doc, LM, y, totalW, ROW_H, fill || (idx % 2 === 0 ? LGRAY : WHITE));
+  doc.save().moveTo(LM, y + ROW_H).lineTo(LM + totalW, y + ROW_H).lineWidth(0.2).stroke(MGRAY).restore();
+  cols.forEach(col => {
+    const raw  = values[col.key];
+    const cell = (raw !== null && typeof raw === 'object') ? raw : { t: raw };
+    const text = (cell.t === null || cell.t === undefined || cell.t === '') ? '—' : String(cell.t);
+    const bold = cell.bold !== undefined ? cell.bold : !!col.bold;
+    const opts = { font: bold ? 'Helvetica-Bold' : 'Helvetica', size: col.size || 6.8, color: cell.color || DGRAY, maxW: col.w };
+    const x = LM + col.x;
+    if (col.right)       drawRight(doc, text, x + col.w, y + 1.6 * MM, opts);
+    else if (col.centre) drawCenter(doc, text, x + col.w / 2, y + 1.6 * MM, opts);
+    else                 drawLeft(doc, text, x, y + 1.6 * MM, opts);
+  });
+  return y + ROW_H;
+}
+
+function drawCrFooters(doc, title) {
+  const range = doc.bufferedPageRange();
+  for (let i = range.start; i < range.start + range.count; i++) {
+    doc.switchToPage(i);
+    const y = LH - 10 * MM;
+    doc.save().moveTo(LM, y).lineTo(LW - LM, y).lineWidth(0.3).stroke(MGRAY).restore();
+    drawLeft(doc, `Canvas Guy Limited  |  ${title}`, LM, y + 2.2 * MM, { size: 6.3, color: MUTED });
+    drawRight(doc, `Page ${i - range.start + 1} of ${range.count}`, LW - LM, y + 2.2 * MM, { font: 'Helvetica-Bold', size: 6.5, color: DGRAY });
+  }
+}
+
+function crTotalsBar(doc, y, left, right) {
+  fillRect(doc, LM, y, LCW, 8 * MM, CORAL);
+  drawLeft(doc, left, LM, y + 2 * MM, { font: 'Helvetica-Bold', size: 7.5, color: WHITE });
+  drawRight(doc, right, LW - LM, y + 2 * MM, { font: 'Helvetica-Bold', size: 7.5, color: WHITE });
+  return y + 8 * MM;
+}
+
+const crNum = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
+
+function buildCustomerReceivablesDoc(doc, data, ctx) {
+  const { nowStr, userName } = ctx;
+  const filters = data.filters || {};
+  const title   = 'Customer Receivables';
+  const list    = [...data.customerReceivables].sort((a, b) => crNum(b.outstanding) - crNum(a.outstanding));
+
+  const owing    = list.filter(c => crNum(c.outstanding) >= 0.5);
+  const sales    = list.reduce((s, c) => s + crNum(c.total_sales), 0);
+  const outst    = list.reduce((s, c) => s + Math.max(0, crNum(c.outstanding)), 0);
+  const overdue  = list.reduce((s, c) => s + crNum(c.overdue), 0);
+  const overdueN = list.filter(c => crNum(c.overdue) >= 0.5).length;
+
+  let pageNum = 1;
+  doc.addPage();
+  let y = drawCrBrandBand(doc);
+  y = drawCrTitleBlock(doc, y, {
+    title, nowStr, user: userName,
+    meta: [
+      { label: 'Customer', value: filters.customer || 'All customers' },
+      { label: 'Balances as at', value: fmtDate(filters.asAt || new Date().toISOString().slice(0, 10)) },
+    ],
+  });
+  y = drawCrKpis(doc, y, [
+    { label: 'Customers',   value: String(list.length), sub: `${owing.length} with a balance` },
+    { label: 'Total sales', value: `KES ${fmtKes(sales)}` },
+    { label: 'Outstanding', value: `KES ${fmtKes(outst)}`, alert: outst >= 0.5 },
+    { label: 'Overdue',     value: `KES ${fmtKes(overdue)}`, alert: overdue >= 0.5,
+      sub: overdueN ? `${overdueN} customer${overdueN === 1 ? '' : 's'}` : 'Nothing overdue' },
+  ]);
+  y = drawCrAgeing(doc, y, data.ageing);
+
+  const newPage = () => {
+    doc.addPage(); pageNum++;
+    y = drawCrCompactBand(doc, title);
+  };
+  const colHeaders = () => { y = drawColHeaders(doc, y, CR_REC_COLS); };
+
+  y = drawSectionBar(doc, y, 'BALANCES BY CUSTOMER');
+  colHeaders();
+
+  list.forEach((c, idx) => {
+    if (y + ROW_H > LH - LBOTTOM) { newPage(); colHeaders(); }
+    const cl   = crNum(c.credit_limit);
+    const out  = crNum(c.outstanding);
+    const ovd  = crNum(c.overdue);
+    const used = cl > 0 ? out / cl : null;
+    y = drawCrRow(doc, y, CR_REC_COLS, {
+      name:         c.name || '',
+      terms:        c.credit_terms || '',
+      orders:       String(c.total_orders || 0),
+      total_sales:  fmtKes(c.total_sales),
+      outstanding:  out >= 0.5 ? { t: fmtKes(out), color: ovd >= 0.5 ? RED : AMBER, bold: true } : { t: '—', color: MUTED, bold: false },
+      overdue:      ovd >= 0.5 ? { t: fmtKes(ovd), color: RED, bold: true } : { t: '—', color: MUTED, bold: false },
+      oldest:       ovd >= 0.5 && c.oldest_overdue_days ? { t: String(c.oldest_overdue_days), color: RED, bold: true } : { t: '—', color: MUTED, bold: false },
+      credit_limit: cl > 0 ? fmtKes(cl) : { t: '—', color: MUTED },
+      used:         used === null ? { t: '—', color: MUTED }
+                    : { t: `${Math.round(used * 100)}%`, bold: used >= 0.8, color: used >= 1 ? RED : used >= 0.8 ? AMBER : GREEN },
+    }, idx);
+  });
+
+  if (y + 12 * MM > LH - LBOTTOM) newPage();
+  crTotalsBar(doc, y + 2 * MM,
+    `TOTAL  |  ${list.length} customer${list.length === 1 ? '' : 's'}`,
+    `Total sales: KES ${fmtKes(sales)}   Outstanding: KES ${fmtKes(outst)}   Overdue: KES ${fmtKes(overdue)}`);
+
+  drawCrFooters(doc, `${title}${filters.customer && filters.customer !== 'All customers' ? ' — ' + filters.customer : ''}`);
+}
+
+function buildCustomerOrdersDoc(doc, data, ctx) {
+  const { nowStr, userName } = ctx;
+  const filters = data.filters || {};
+  const title   = 'Customer Orders';
+  const today   = new Date().toISOString().slice(0, 10);
+
+  const orders = data.customerOrders.map(o => {
+    const value = crNum(o.total_value);
+    const paid  = Math.min(crNum(o.amount_paid), value);
+    const bal   = Math.max(0, value - crNum(o.amount_paid));
+    let late = 0;
+    if (o.due_date && String(o.due_date).slice(0, 10) < today && bal >= 0.5) {
+      const [dy, dm, dd] = String(o.due_date).slice(0, 10).split('-').map(Number);
+      const [ty, tm, td] = today.split('-').map(Number);
+      late = Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(dy, dm - 1, dd)) / 86400000);
+    }
+    return { ...o, value, paid, bal, late };
+  });
+
+  // Group by customer (A–Z); newest order first inside each group.
+  const byCust = new Map();
+  orders.forEach(o => {
+    const k = o.customer_name || '—';
+    if (!byCust.has(k)) byCust.set(k, []);
+    byCust.get(k).push(o);
+  });
+  const groups = [...byCust.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([name, rows]) => [name, rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))]);
+  const multi = groups.length > 1;
+
+  const tot = orders.reduce((t, o) => ({
+    value: t.value + o.value, paid: t.paid + o.paid, bal: t.bal + o.bal,
+    lateN: t.lateN + (o.late > 0 ? 1 : 0), lateAmt: t.lateAmt + (o.late > 0 ? o.bal : 0),
+  }), { value: 0, paid: 0, bal: 0, lateN: 0, lateAmt: 0 });
+
+  let pageNum = 1;
+  doc.addPage();
+  let y = drawCrBrandBand(doc);
+  y = drawCrTitleBlock(doc, y, {
+    title, nowStr, user: userName,
+    meta: [
+      { label: 'Customer', value: filters.customer || (multi ? 'All customers' : (groups[0] ? groups[0][0] : 'All customers')) },
+      { label: 'Period',   value: filters.period || (data.dateFrom && data.dateTo ? `${fmtDate(data.dateFrom)} – ${fmtDate(data.dateTo)}` : 'All time') },
+    ],
+  });
+  y = drawCrKpis(doc, y, [
+    { label: 'Orders',      value: String(orders.length), sub: multi ? `${groups.length} customers` : undefined },
+    { label: 'Total value', value: `KES ${fmtKes(tot.value)}` },
+    { label: 'Collected',   value: `KES ${fmtKes(tot.paid)}`,
+      sub: tot.value > 0 ? `${Math.round((tot.paid / tot.value) * 100)}% of value` : undefined },
+    { label: 'Outstanding', value: `KES ${fmtKes(tot.bal)}`, alert: tot.bal >= 0.5,
+      sub: tot.lateN ? `${tot.lateN} late  |  KES ${fmtKes(tot.lateAmt)}` : undefined },
+  ]);
+
+  const newPage = () => {
+    doc.addPage(); pageNum++;
+    y = drawCrCompactBand(doc, title);
+  };
+  const colHeaders = () => { y = drawColHeaders(doc, y, CR_ORD_COLS); };
+
+  y = drawSectionBar(doc, y, multi ? 'ORDERS BY CUSTOMER' : 'ORDERS');
+  colHeaders();
+
+  const orderRow = (o, idx) => drawCrRow(doc, y, CR_ORD_COLS, {
+    order_num: { t: o.order_num, color: CORAL, bold: true },
+    date:      fmtDate(o.created_at),
+    due:       o.due_date ? fmtDate(o.due_date) : '—',
+    status:    { t: o.status, color: statusColor(o.status), bold: true },
+    late:      o.late > 0 ? { t: String(o.late), color: RED, bold: true } : { t: '—', color: MUTED },
+    value:     fmtKes(o.value),
+    paid:      o.paid > 0 ? { t: fmtKes(o.paid), color: GREEN } : { t: '—', color: MUTED },
+    balance:   o.bal >= 0.5 ? { t: fmtKes(o.bal), color: o.late > 0 ? RED : AMBER, bold: true } : { t: '—', color: MUTED, bold: false },
+  }, idx);
+
+  groups.forEach(([name, rows]) => {
+    if (multi) {
+      // Keep a group header together with at least its first row.
+      if (y + 2 * ROW_H > LH - LBOTTOM) { newPage(); colHeaders(); }
+      const totalW = CR_ORD_COLS.reduce((s, c) => Math.max(s, c.x + c.w), 0);
+      fillRect(doc, LM, y, totalW, ROW_H, TINT);
+      drawLeft(doc, name, LM, y + 1.6 * MM, { font: 'Helvetica-Bold', size: 7.2, color: CORAL, maxW: 150 * MM });
+      drawRight(doc, `${rows.length} order${rows.length === 1 ? '' : 's'}`, LM + totalW, y + 1.6 * MM, { font: 'Helvetica-Bold', size: 6.5, color: CORAL });
+      y += ROW_H;
+    }
+    rows.forEach((o, idx) => {
+      if (y + ROW_H > LH - LBOTTOM) { newPage(); colHeaders(); }
+      y = orderRow(o, idx);
+    });
+    if (multi) {
+      if (y + ROW_H > LH - LBOTTOM) { newPage(); colHeaders(); }
+      const sv = rows.reduce((s, o) => s + o.value, 0);
+      const sp = rows.reduce((s, o) => s + o.paid, 0);
+      const sb = rows.reduce((s, o) => s + o.bal, 0);
+      const totalW = CR_ORD_COLS.reduce((s, c) => Math.max(s, c.x + c.w), 0);
+      fillRect(doc, LM, y, totalW, ROW_H, '#EDEBE7');
+      doc.save().moveTo(LM, y).lineTo(LM + totalW, y).lineWidth(0.5).stroke(DGRAY).restore();
+      const sx = LM + CR_ORD_COLS[3].x;
+      drawLeft(doc, `Subtotal  ${name}`, sx, y + 1.6 * MM, { font: 'Helvetica-Bold', size: 6.8, color: INK, maxW: CR_ORD_COLS[3].w + CR_ORD_COLS[4].w });
+      [['value', sv], ['paid', sp], ['balance', sb]].forEach(([k, v]) => {
+        const col = CR_ORD_COLS.find(c => c.key === k);
+        drawRight(doc, v >= 0.5 ? fmtKes(v) : '—', LM + col.x + col.w, y + 1.6 * MM, { font: 'Helvetica-Bold', size: 6.8, color: INK });
+      });
+      y += ROW_H + 1.5 * MM;
+    }
+  });
+
+  if (y + 12 * MM > LH - LBOTTOM) newPage();
+  crTotalsBar(doc, y + 2 * MM,
+    `TOTAL  |  ${orders.length} order${orders.length === 1 ? '' : 's'}`,
+    `Total value: KES ${fmtKes(tot.value)}   Collected: KES ${fmtKes(tot.paid)}   Outstanding: KES ${fmtKes(tot.bal)}`);
+
+  drawCrFooters(doc, `${title}${filters.customer && filters.customer !== 'All customers' ? ' — ' + filters.customer : ''}`);
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 function buildReportPDF(data) {
@@ -453,106 +812,23 @@ function buildReportPDF(data) {
       }
 
       // ── Customer receivables ───────────────────────────────────────────────
-      const customerReceivables = data.customerReceivables;
-      if (customerReceivables != null) {
-        doc = new PDFDocument({ size: [LW, LH], autoFirstPage: false, margin: 0 });
+      if (data.customerReceivables != null) {
+        doc = new PDFDocument({ size: [LW, LH], autoFirstPage: false, margin: 0, bufferPages: true });
         doc.on('data', c => chunks.push(c));
         doc.on('end',  () => resolve(Buffer.concat(chunks)));
         doc.on('error', reject);
-
-        const cols = CUSTOMER_REC_COLS;
-        const rows = customerReceivables.map(cust => {
-          const cl    = parseFloat(cust.credit_limit || 0);
-          const out   = parseFloat(cust.outstanding  || 0);
-          const avail = Math.max(cl - out, 0);
-          return {
-            name:         cust.name || '',
-            terms:        cust.credit_terms || '',
-            total_sales:  fmtKes(cust.total_sales || 0),
-            outstanding:  fmtKes(out),
-            overdue:      fmtKes(cust.overdue || 0),
-            credit_limit: cl > 0 ? fmtKes(cl) : '—',
-            avail:        cl > 0 ? fmtKes(avail) : '—',
-            orders:       String(cust.total_orders || 0),
-          };
-        });
-
-        let pageNum = 1;
-        doc.addPage();
-        let y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum);
-        y = drawSectionBar(doc, y, 'CUSTOMER RECEIVABLES');
-        y = drawColHeaders(doc, y, cols);
-
-        rows.forEach((row, idx) => {
-          if (y + ROW_H > LH - LBOTTOM) {
-            doc.addPage(); pageNum++;
-            y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum);
-            y = drawSectionBar(doc, y, 'CUSTOMER RECEIVABLES (continued)');
-            y = drawColHeaders(doc, y, cols);
-          }
-          y = drawDataRow(doc, y, cols, row, idx);
-        });
-
-        if (y + 10 * MM > LH - LBOTTOM) { doc.addPage(); pageNum++; y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum); }
-        const n = customerReceivables.length;
-        const ts = customerReceivables.reduce((s, r) => s + parseFloat(r.total_sales || 0), 0);
-        const to = customerReceivables.reduce((s, r) => s + parseFloat(r.outstanding || 0), 0);
-        const td = customerReceivables.reduce((s, r) => s + parseFloat(r.overdue     || 0), 0);
-        drawTotalsBar(doc, y + 2 * MM,
-          `TOTAL  |  ${n} customer${n !== 1 ? 's' : ''}`,
-          `Total Sales: KES ${fmtKes(ts)}   Outstanding: KES ${fmtKes(to)}   Overdue: KES ${fmtKes(td)}`);
+        buildCustomerReceivablesDoc(doc, data, { nowStr, userName });
         doc.end();
         return;
       }
 
       // ── Customer orders ───────────────────────────────────────────────────
-      const customerOrders = data.customerOrders;
-      if (customerOrders != null) {
-        doc = new PDFDocument({ size: [LW, LH], autoFirstPage: false, margin: 0 });
+      if (data.customerOrders != null) {
+        doc = new PDFDocument({ size: [LW, LH], autoFirstPage: false, margin: 0, bufferPages: true });
         doc.on('data', c => chunks.push(c));
         doc.on('end',  () => resolve(Buffer.concat(chunks)));
         doc.on('error', reject);
-
-        const cols = CUSTOMER_ORDER_COLS;
-        const rows = customerOrders.map(o => {
-          const tv  = parseFloat(o.total_value || 0);
-          const pd  = parseFloat(o.amount_paid || 0);
-          const bal = Math.max(tv - pd, 0);
-          return {
-            customer_name: o.customer_name || '',
-            order_num:     o.order_num     || '',
-            date:          fmtDate(o.created_at),
-            due_date:      fmtDate(o.due_date),
-            status:        o.status        || '',
-            value:         fmtKes(tv),
-            paid:          fmtKes(pd),
-            balance:       fmtKes(bal),
-          };
-        });
-
-        let pageNum = 1;
-        doc.addPage();
-        let y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum);
-        y = drawSectionBar(doc, y, 'CUSTOMER ORDERS');
-        y = drawColHeaders(doc, y, cols);
-
-        rows.forEach((row, idx) => {
-          if (y + ROW_H > LH - LBOTTOM) {
-            doc.addPage(); pageNum++;
-            y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum);
-            y = drawSectionBar(doc, y, 'CUSTOMER ORDERS (continued)');
-            y = drawColHeaders(doc, y, cols);
-          }
-          y = drawDataRow(doc, y, cols, row, idx);
-        });
-
-        if (y + 10 * MM > LH - LBOTTOM) { doc.addPage(); pageNum++; y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum); }
-        const n   = customerOrders.length;
-        const tv2 = customerOrders.reduce((s, o) => s + parseFloat(o.total_value || 0), 0);
-        const tp2 = customerOrders.reduce((s, o) => s + parseFloat(o.amount_paid || 0), 0);
-        drawTotalsBar(doc, y + 2 * MM,
-          `TOTAL  |  ${n} order${n !== 1 ? 's' : ''}`,
-          `Total Value: KES ${fmtKes(tv2)}   Collected: KES ${fmtKes(tp2)}   Outstanding: KES ${fmtKes(Math.max(tv2-tp2,0))}`);
+        buildCustomerOrdersDoc(doc, data, { nowStr, userName });
         doc.end();
         return;
       }
