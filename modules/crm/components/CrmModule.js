@@ -1482,8 +1482,8 @@ function QuotationsTab({ onRefresh, refreshKey = 0 }) {
                   const busy = actioning === qt.id || converting === qt.id;
                   const isExp = expanded === qt.id;
                   return (
-                    <>
-                      <tr key={qt.id} style={{ background: isExp ? C.bg : C.card, borderBottom: `1px solid ${C.line}` }}>
+                    <React.Fragment key={qt.id}>
+                      <tr style={{ background: isExp ? C.bg : C.card, borderBottom: `1px solid ${C.line}` }}>
                         <Td>
                           <button onClick={() => toggleExpand(qt.id)} style={{ border: 0, background: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: C.ink, padding: 0 }}>
                             {qt.quote_num || '—'}
@@ -1726,7 +1726,7 @@ function QuotationsTab({ onRefresh, refreshKey = 0 }) {
                           </td>
                         </tr>
                       )}
-                    </>
+                    </React.Fragment>
                   );
                 })}
               </tbody>
