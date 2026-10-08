@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canvas Guy — Workshop production prototype v2</title>
+<style>
+:root{--ink:#17181a;--muted:#6b7280;--line:#e6e4df;--bg:#f6f5f2;--card:#fff;--coral:#E8512A;--coral-bg:#fff1ec;--green:#16794a;--green-bg:#eaf7ef;--amber:#a8610a;--amber-bg:#fff6e5;--red:#b42318;--red-bg:#fef0ee;--blue:#1d4ed8;--blue-bg:#eef3ff;--grey-bg:#f0efec;--radius:12px}
+*{box-sizing:border-box}body{margin:0;font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--ink);background:var(--bg)}
+button{font:inherit;cursor:pointer}input,select,textarea{font:inherit}
+.top{display:flex;align-items:center;gap:14px;padding:10px 20px;background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20;flex-wrap:wrap}
+.brand{display:flex;gap:10px;align-items:center}.mark{background:var(--coral);color:#fff;font-weight:800;border-radius:8px;padding:6px 8px}
+.brand small{display:block;color:var(--muted)}
+.proto{background:var(--amber-bg);color:var(--amber);border:1px solid #f1d49b;border-radius:999px;padding:3px 10px;font-size:11.5px;font-weight:600}
+.spacer{flex:1}
+select.role{border:1px solid var(--line);border-radius:8px;padding:6px 8px;background:#fff}
+.wrap{max-width:1280px;margin:0 auto;padding:18px 20px 80px}
+.tabs{display:flex;gap:4px;margin:6px 0 14px;border-bottom:1px solid var(--line)}
+.tab{background:none;border:0;border-bottom:3px solid transparent;padding:9px 14px;font-weight:600;color:var(--muted)}
+.tab.on{color:var(--coral);border-color:var(--coral)}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:10px 14px}.kpi span{color:var(--muted);font-size:11.5px;display:block}.kpi strong{font-size:22px}
+.kpi.warn strong{color:var(--red)}
+.bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+.bar input[type=search]{flex:1;min-width:220px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#fff}
+.chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 12px;font-weight:600;color:var(--muted)}
+.chip.on{background:var(--ink);border-color:var(--ink);color:#fff}
+.chip.attn.on{background:var(--red);border-color:var(--red)}
+.count{color:var(--muted);margin-left:auto}.count b{color:var(--ink)}
+.btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 12px;font-weight:600}
+.btn.p{background:var(--coral);border-color:var(--coral);color:#fff}.btn.d{border-color:#f3b5ad;color:var(--red)}
+.btn[disabled]{opacity:.45;cursor:not-allowed}.btn.sm{padding:4px 9px;font-size:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);margin-bottom:10px;overflow:hidden}
+.jrow{display:grid;grid-template-columns:1.5fr 1.1fr 1.3fr 1.2fr 24px;gap:12px;padding:12px 14px;align-items:center;cursor:pointer}
+.jrow:hover{background:#fcfbf9}
+.jt strong{display:block}.jt small,.muted{color:var(--muted)}
+.tag{display:inline-block;border-radius:6px;padding:2px 7px;font-size:11.5px;font-weight:600;background:var(--grey-bg);color:#444;margin:1px 3px 1px 0}
+.tag.g{background:var(--green-bg);color:var(--green)}.tag.a{background:var(--amber-bg);color:var(--amber)}.tag.r{background:var(--red-bg);color:var(--red)}.tag.b{background:var(--blue-bg);color:var(--blue)}
+.reasons{padding:0 14px 10px;display:flex;gap:6px;flex-wrap:wrap}
+.exp{border-top:1px solid var(--line);padding:12px 14px;background:#fcfbf9}
+.stages{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
+.st{border:1px solid var(--line);background:#fff;border-radius:10px;padding:8px 10px}
+.st b{display:block;font-size:12px}.st .n{font-size:15px;font-weight:700}.st small{color:var(--muted)}
+.st.gate{border-style:dashed;background:#fffdf7}.st.blocked{border-color:#f3b5ad;background:var(--red-bg)}
+.prog{height:6px;background:var(--grey-bg);border-radius:4px;overflow:hidden;margin-top:6px}.prog i{display:block;height:100%;background:var(--coral)}
+.actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.gantt{background:#fff;border:1px solid var(--line);border-radius:var(--radius);overflow:auto}
+.g-grid{display:grid;min-width:980px}
+.g-h,.g-c{border-bottom:1px solid var(--line);border-right:1px solid #f0efec;padding:6px;font-size:11.5px;min-height:34px}
+.g-h{background:#faf9f7;font-weight:700;text-align:center;position:sticky;top:0}
+.g-h.off,.g-c.off{background:repeating-linear-gradient(135deg,#f3f2ef,#f3f2ef 6px,#ecebe7 6px,#ecebe7 12px)}
+.g-l{padding:6px 10px;border-bottom:1px solid var(--line);border-right:1px solid var(--line);min-height:34px;background:#fff;position:sticky;left:0;z-index:2}
+.g-l.sub{padding-left:26px;color:var(--muted);background:#fcfbf9}
+.g-c{position:relative;padding:3px 0}
+.bar-s{height:22px;border-radius:5px;color:#fff;font-size:10.5px;font-weight:600;padding:3px 6px;overflow:hidden;white-space:nowrap;cursor:pointer;border:0;width:100%;text-align:left}
+.bar-s.prep{background:#64748b}.bar-s.asm{background:#E8512A}.bar-s.san{background:#c47a1d}.bar-s.fin{background:#7c5cbf}.bar-s.qc{background:#111}.bar-s.pkg{background:#16794a}
+.bar-s.blocked{background:var(--red);outline:2px solid #f3b5ad}.bar-s.unas{background:#fff;color:var(--red);border:1.5px dashed var(--red)}
+.due{position:absolute;top:0;bottom:0;width:0;border-left:2px solid var(--ink);z-index:1}
+.cust{position:absolute;top:0;bottom:0;width:0;border-left:2px dotted var(--coral);z-index:1}
+.legend{display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:11.5px;margin:8px 0}
+.note{border-radius:10px;padding:9px 12px;margin:8px 0;font-size:12.5px}
+.note.r{background:var(--red-bg);color:var(--red);border:1px solid #f3b5ad}.note.a{background:var(--amber-bg);color:#7a4607;border:1px solid #f1d49b}.note.b{background:var(--blue-bg);color:var(--blue);border:1px solid #c8d6fb}.note.g{background:var(--green-bg);color:var(--green);border:1px solid #bfe3cf}
+.grid2{display:grid;grid-template-columns:1.3fr 1fr;gap:14px}
+@media(max-width:900px){.grid2,.stages{grid-template-columns:1fr 1fr}.jrow{grid-template-columns:1fr 1fr}}
+.panel{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:14px;margin-bottom:12px}
+.panel h3{margin:0 0 8px;font-size:14px}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px}th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.ov{position:fixed;inset:0;background:rgba(15,16,18,.5);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding:30px 14px;overflow:auto}
+.modal{background:#fff;border-radius:14px;width:100%;max-width:640px;padding:20px;box-shadow:0 24px 70px rgba(0,0,0,.3)}
+.modal.wide{max-width:900px}.modal h2{margin:0 0 4px;font-size:17px}.modal .sub{color:var(--muted);margin-bottom:12px}
+.mf{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.steps{display:flex;gap:6px;margin:10px 0;color:var(--muted);font-size:12px}.steps b{color:var(--coral)}
+.ops{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.op{border:1.5px solid var(--line);border-radius:9px;padding:7px 12px;background:#fff;font-weight:600}.op.on{border-color:var(--coral);background:var(--coral-bg);color:var(--coral)}
+.wk{display:grid;grid-template-columns:28px 1fr 130px 90px;gap:10px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:6px 0;background:#fff}
+.wk.sel{border-color:var(--coral);background:var(--coral-bg)}
+.av{width:28px;height:28px;border-radius:50%;background:var(--ink);color:#fff;display:grid;place-items:center;font-size:11px;font-weight:700}
+.meter{height:6px;background:var(--grey-bg);border-radius:4px;overflow:hidden}.meter i{display:block;height:100%;background:var(--green)}.meter i.w{background:var(--amber)}.meter i.x{background:var(--red)}
+label.f{display:block;font-size:11.5px;font-weight:700;color:var(--muted);margin:10px 0 4px;text-transform:uppercase}
+.in{width:100%;border:1px solid var(--line);border-radius:8px;padding:7px 9px;background:#fff}
+.row2{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.radio{display:flex;gap:10px;align-items:flex-start;border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;margin:6px 0;cursor:pointer}.radio.on{border-color:var(--coral);background:var(--coral-bg)}
+.radio small{color:var(--muted);display:block}
+.sheet{border:1px solid #cfcdc7;border-radius:6px;padding:16px;margin:10px 0;background:#fff}
+.sheet h4{margin:0}.conf{float:right;background:var(--red-bg);color:var(--red);padding:2px 8px;border-radius:6px;font-weight:700;font-size:11px}
+.sign{height:26px;border:1px solid #bbb;border-radius:4px}
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 16px;border-radius:10px;z-index:90;max-width:90%}
+.dec{border-left:4px solid var(--amber);padding:8px 12px;background:#fffbf2;margin:8px 0;border-radius:0 8px 8px 0}
+ul.clean{margin:6px 0 0 18px;padding:0}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="brand"><span class="mark">CG</span><div><strong>Workshop production</strong><small>Prototype v2 — corrected workflow</small></div></div>
+  <span class="proto">Prototype · nothing is saved · today is Mon 5 Oct 2026</span>
+  <div class="spacer"></div>
+  <label class="muted">Viewing as
+    <select class="role" id="role"><option value="production_manager">Production manager</option><option value="production_staff">Production staff</option><option value="admin">Admin</option></select>
+  </label>
+</div>
+<div class="wrap">
+  <div class="tabs" id="tabs"></div>
+  <div id="view"></div>
+</div>
+<div id="modal"></div>
+<div id="toast"></div>
+
+<script>
+/* ============================================================
+   DATA — in the real build all of this comes from the database.
+   Operation lists are fetched from production_operations by stage_key,
+   never hard-coded in the component.
+   ============================================================ */
+const TODAY = 0;                       // day index 0 = Mon 5 Oct 2026
+const DAYS = 14;                       // 5 Oct → 18 Oct
+const CAP_H_PER_DAY = 8;               // ASSUMPTION to confirm: 8 h/day, Mon–Sat
+const QC_THRESHOLD_DAYS = 3;           // configurable setting
+const MON = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const dateOf = i => { const d = new Date(Date.UTC(2026,9,5+i)); return d; };
+const isOff = i => (i % 7) === 6;      // Sundays
+const lbl = i => { const d = dateOf(i); return MON[i%7]+' '+d.getUTCDate()+' Oct'; };
+const short = i => dateOf(i).getUTCDate()+' Oct';
+const iso = i => dateOf(i).toISOString().slice(0,10);
+const idxOf = s => Math.round((Date.parse(s+'T00:00:00Z') - Date.UTC(2026,9,5)) / 86400000);
+const addWork = (i,n) => { const s = n<0?-1:1; let c=Math.abs(n); while(c>0){ i+=s; if(!isOff(i)) c--; } return i; };
+
+const STAGES = [
+  {k:'prep', name:'Material prep'}, {k:'asm', name:'Assembly'}, {k:'san', name:'Sanding'},
+  {k:'fin', name:'Finishing'}, {k:'qc', name:'QC gate', gate:true}, {k:'pkg', name:'Packaging'}
+];
+const OPERATIONS = {   // production_operations.stage_key → name
+  prep:['Material picking','Cut-list preparation','CNC cutting'],
+  asm:['Fabrication','Joinery','Assembly','Glass fitting','Upholstery'],
+  san:['Sanding','Surface inspection'],
+  fin:['One coat','PU','NC','Custom finish'],
+  pkg:['Wrapping','Corner protection','Boxing']
+  // qc: none — a mandatory manager-only gate, workers are never assigned to it
+};
+const WORKERS = [
+  {id:'ko',name:'Kevin Opare',skills:['Joinery','Assembly'],ini:'KO'},
+  {id:'go',name:'Gibson Omufira',skills:['Joinery','Cutting'],ini:'GO'},
+  {id:'mo',name:'Mary Otieno',skills:['Glass fitting','Finishing'],ini:'MO'},
+  {id:'pk',name:'Peter Kamau',skills:['CNC','Fabrication'],ini:'PK'},
+  {id:'jm',name:'Joseph Mwangi',skills:['Sanding'],ini:'JM'},
+  {id:'dm',name:'Daniel Mutua',skills:['Sanding','Finishing'],ini:'DM'},
+  {id:'gn',name:'Grace Njeri',skills:['Packaging'],ini:'GN'}
+];
+// qty fields are completed quantities per stage (QC: accepted / rework)
+const jobs = [
+ {id:'J7', order:'ORD-099', client:'Caviar Interiors', product:'Wall Decoration', spec:'1200 × 1000mm · Pine · Custom colour', num:'JOB-2026-0007', qty:6, due:7, cust:9, mat:[18,20], drw:'2 drawings · Rev B approved',
+   done:{prep:6,asm:4,san:1,fin:0,pkg:0}, qc:{accepted:0,rework:0,since:null},
+   sch:{prep:[0,0],asm:[0,3],san:[3,4],fin:[4,5],qc:[5,5],pkg:[7,7]}},
+ {id:'J8', order:'ORD-099', client:'Caviar Interiors', product:'Circular Mirror', spec:'80cm · Glass · Black frame', num:'JOB-2026-0008', qty:6, due:7, cust:9, mat:[20,20], drw:'1 drawing · Rev A approved',
+   done:{prep:6,asm:3,san:0,fin:0,pkg:0}, qc:{accepted:0,rework:0,since:null},
+   sch:{prep:[0,0],asm:[1,4],san:[4,5],fin:[5,7],qc:[8,8],pkg:[8,9]}},
+ {id:'J11', order:'ORD-104', client:'Nova Spaces', product:'Console Table', spec:'1400 × 400mm · Oak', num:'JOB-2026-0011', qty:2, due:2, cust:4, mat:[8,12], drw:'1 drawing · Rev C',
+   done:{prep:0,asm:0,san:0,fin:0,pkg:0}, qc:{accepted:0,rework:0,since:null},
+   sch:{prep:[0,2],asm:[2,3],san:[3,4],fin:[4,5],qc:[5,5],pkg:[7,7]}},
+ {id:'J12', order:'ORD-104', client:'Nova Spaces', product:'Side Shelf', spec:'900mm · Oak', num:'JOB-2026-0012', qty:4, due:7, cust:9, mat:[10,10], drw:'1 drawing · Rev A',
+   done:{prep:4,asm:2,san:0,fin:0,pkg:0}, qc:{accepted:0,rework:0,since:null},
+   sch:{prep:[0,0],asm:[0,3],san:[3,4],fin:[4,5],qc:[5,5],pkg:[7,7]}},
+ {id:'J13', order:'ORD-075', client:'Lily', product:'Minimal Mirrors', spec:'60cm · Brass', num:'JOB-2026-0013', qty:10, due:10, cust:12, mat:[14,14], drw:'1 drawing · Rev A',
+   done:{prep:10,asm:10,san:6,fin:0,pkg:0}, qc:{accepted:0,rework:0,since:null},
+   sch:{prep:[0,0],asm:[0,0],san:[0,3],fin:[3,5],qc:[5,5],pkg:[8,9]}},
+ {id:'J14', order:'ORD-072', client:'Kimemia Ltd', product:'Reception Frame', spec:'Black PU', num:'JOB-2026-0014', qty:3, due:7, cust:10, mat:[6,6], drw:'1 drawing · Rev B',
+   done:{prep:3,asm:3,san:1,fin:0,pkg:0}, qc:{accepted:0,rework:0,since:null},
+   sch:{prep:[0,0],asm:[0,0],san:[0,1],fin:[1,4],qc:[4,4],pkg:[5,5]}},
+ {id:'J16', order:'ORD-108', client:'Mango Offices', product:'Canvas Set', spec:'Set of 4 · Stretched', num:'JOB-2026-0016', qty:8, due:0, cust:2, mat:[9,9], drw:'No drawing required',
+   done:{prep:8,asm:8,san:8,fin:8,pkg:5}, qc:{accepted:8,rework:0,since:null},
+   sch:{prep:[0,0],asm:[0,0],san:[0,0],fin:[0,0],qc:[0,0],pkg:[0,2]}},
+ {id:'J17', order:'ORD-110', client:'Orchid Co', product:'Framed Prints', spec:'A2 · White oak', num:'JOB-2026-0017', qty:5, due:9, cust:11, mat:[7,7], drw:'1 drawing · Rev A',
+   done:{prep:5,asm:5,san:5,fin:5,pkg:0}, qc:{accepted:2,rework:1,since:-3},
+   sch:{prep:[0,0],asm:[0,0],san:[0,0],fin:[0,1],qc:[1,1],pkg:[2,3]}}
+];
+const CHARGES_EXCLUDED = 2;   // delivery + packaging fee lines never become jobs
+let assigns = [
+ {id:1,job:'J7',stage:'asm',op:'Joinery',emp:'ko',qty:6,mode:'working_together',s:0,e:3,hpd:6},
+ {id:2,job:'J7',stage:'asm',op:'Joinery',emp:'go',qty:6,mode:'working_together',s:0,e:3,hpd:4},
+ {id:3,job:'J8',stage:'asm',op:'Glass fitting',emp:'mo',qty:6,mode:'working_together',s:1,e:4,hpd:4},
+ {id:4,job:'J8',stage:'asm',op:'Assembly',emp:'ko',qty:6,mode:'working_together',s:2,e:4,hpd:6},
+ {id:5,job:'J11',stage:'prep',op:'Material picking',emp:'pk',qty:2,mode:'working_together',s:0,e:2,hpd:4},
+ {id:6,job:'J12',stage:'asm',op:'Fabrication',emp:'pk',qty:4,mode:'working_together',s:0,e:3,hpd:3},
+ {id:7,job:'J13',stage:'san',op:'Sanding',emp:'jm',qty:6,mode:'split_quantity',s:0,e:3,hpd:5},
+ {id:8,job:'J13',stage:'san',op:'Sanding',emp:'dm',qty:4,mode:'split_quantity',s:0,e:3,hpd:4},
+ {id:9,job:'J16',stage:'pkg',op:'Boxing',emp:'gn',qty:8,mode:'working_together',s:0,e:2,hpd:6},
+ {id:10,job:'J17',stage:'fin',op:'PU',emp:'mo',qty:5,mode:'working_together',s:0,e:1,hpd:4}
+];
+let blockers = [
+ {id:1,job:'J11',stage:'prep',reason:'Waiting for drawer hardware',owner:'Jane (purchasing)',expected:2,ref:'PO-0081 · Hardware Hub',notes:'Supplier confirmed dispatch Tue',open:true,log:[]}
+];
+const MATERIALS = {
+ J7:[
+  {m:'Frame moulding',u:'m',est:15.2,adj:0,act:14.8,cpu:1200,src:'Timber Mart',by:'Gibson O.',at:'Thu 1 Oct 16:10'},
+  {m:'Canvas sheet',u:'sheets',est:6.0,adj:0.3,act:6.5,cpu:1500,src:'Art Supplies Ltd',by:'Gibson O.',at:'Thu 1 Oct 16:12'},
+  {m:'Backing board',u:'sheets',est:6.0,adj:0.3,act:null,cpu:2000,src:'In-house stock',by:null,at:null},
+  {m:'Hanging sets',u:'pcs',est:6,adj:0,act:null,cpu:90,src:'In-house stock',by:null,at:null}
+ ]
+};
+
+const S = { tab:'control', sel:'J7', open:new Set(['J7']), q:'', stage:'all', attn:false, role:'production_manager', asg:null, shiftDraft:null };
+const can = {
+  assign:()=>['production_manager','admin'].includes(S.role),
+  schedule:()=>['production_manager','admin'].includes(S.role),
+  blocker:()=>['production_manager','admin'].includes(S.role),
+  qc:()=>['production_manager','admin'].includes(S.role),
+  record:()=>true
+};
+const W = id => WORKERS.find(w=>w.id===id);
+const J = id => jobs.find(j=>j.id===id);
+const stageName = k => STAGES.find(s=>s.k===k).name;
+
+/* ============================================================
+   DERIVED QUANTITIES (single helper — list, Gantt and detail all use it)
+   ============================================================ */
+function avail(j){
+  const d=j.done, q=j.qc, o={};
+  o.prep={done:d.prep, planned:j.qty, available:j.qty-d.prep};          // starts from planned qty
+  o.asm ={done:d.asm,  planned:j.qty, available:d.prep-d.asm};
+  o.san ={done:d.san,  planned:j.qty, available:d.asm-d.san};
+  o.fin ={done:d.fin,  planned:j.qty, available:d.san-d.fin};
+  const awaiting = d.fin - q.accepted - q.rework;                      // QC gate
+  o.qc  ={done:q.accepted, planned:j.qty, available:awaiting, awaiting, rework:q.rework};
+  o.pkg ={done:d.pkg,  planned:j.qty, available:q.accepted-d.pkg};      // from accepted, NOT finishing
+  return o;
+}
+function currentStage(j){
+  const a=avail(j);
+  if(j.done.pkg>=j.qty) return 'pkg';
+  for(const k of ['prep','asm','san','fin']) if(a[k].done<j.qty && a[k].available>0 || (k==='prep'&&a.prep.done<j.qty)) { if(a[k].available>0) return k; }
+  if(a.qc.awaiting>0) return 'qc';
+  if(a.pkg.available>0) return 'pkg';
+  return 'prep';
+}
+const jobAssigns = (jid,stage) => assigns.filter(a=>a.job===jid && (!stage||a.stage===stage));
+function openBlocker(jid){ return blockers.find(b=>b.job===jid && b.open); }
+
+/* ============================================================
+   CAPACITY — per-employee, per-day. Warn, never silently block.
+   ============================================================ */
+function conflicts(){
+  const out=[], byEmp={};
+  for(const a of assigns) for(let d=a.s; d<=a.e; d++){ if(isOff(d)) continue; ((byEmp[a.emp]??={})[d]??=[]).push(a); }
+  for(const emp in byEmp) for(const d in byEmp[emp]){
+    const list=byEmp[emp][d], alloc=list.reduce((s,a)=>s+a.hpd,0);
+    if(alloc>CAP_H_PER_DAY) out.push({emp,date:+d,jobs:[...new Set(list.map(a=>a.job))],alloc,cap:CAP_H_PER_DAY});
+  }
+  return out;
+}
+function weekHours(emp){ let h=0; for(const a of assigns) if(a.emp===emp) for(let d=Math.max(a.s,0); d<=Math.min(a.e,5); d++) if(!isOff(d)) h+=a.hpd; return h; }
+
+/* ============================================================
+   ATTENTION — one shared helper, explicit reasons not a boolean
+   ============================================================ */
+function attention(j){
+  const r=[], a=avail(j), sch=j.sch;
+  const b=openBlocker(j.id);
+  if(b) r.push({c:'blocked',t:'Blocked: '+b.reason+' · owner '+b.owner+' · expected '+short(b.expected)});
+  const done = j.done.pkg>=j.qty;
+  if(!done && j.due<TODAY) r.push({c:'overdue',t:'Production date passed ('+short(j.due)+')'});
+  if(j.mat[0]<j.mat[1]) r.push({c:'materials',t:'Materials: '+j.mat[0]+' of '+j.mat[1]+' lines ready'});
+  for(const s of STAGES){ if(s.gate) continue;
+    const [st]=sch[s.k]; const complete = s.k==='pkg'?j.done.pkg>=j.qty:a[s.k].done>=j.qty;
+    if(!complete && st<=TODAY+2 && st>=TODAY && jobAssigns(j.id,s.k).length===0)
+      r.push({c:'unassigned',t:stageName(s.k)+' starts '+lbl(st)+' with no workers assigned'}); }
+  conflicts().filter(c=>c.jobs.includes(j.id)).forEach(c=>r.push({c:'capacity',t:W(c.emp).name+' over capacity on '+lbl(c.date)+' ('+c.alloc+' h of '+c.cap+' h)'}));
+  if(a.qc.awaiting>0 && j.qc.since!=null && (TODAY-j.qc.since)>QC_THRESHOLD_DAYS) r.push({c:'qcwait',t:'QC waiting '+(TODAY-j.qc.since)+' days (limit '+QC_THRESHOLD_DAYS+')'});
+  if(j.qc.rework>0) r.push({c:'rework',t:j.qc.rework+' unit(s) in rework'});
+  const finish = j.sch.pkg[1];
+  if(!done && finish>j.due) r.push({c:'risk',t:'Planned finish '+short(finish)+' is after production due '+short(j.due)});
+  return r;
+}
+const REASON_TAG={blocked:'r',overdue:'r',capacity:'r',materials:'a',unassigned:'a',qcwait:'a',rework:'a',risk:'a'};
+
+/* ============================================================
+   RENDERING
+   ============================================================ */
+const $ = s=>document.querySelector(s);
+function toast(t){ const el=$('#toast'); el.innerHTML='<div class="toast">'+t+'</div>'; clearTimeout(toast.t); toast.t=setTimeout(()=>el.innerHTML='',3200); }
+function visibleJobs(){
+  const q=S.q.trim().toLowerCase();
+  return jobs.filter(j=>{
+    if(S.stage!=='all' && currentStage(j)!==S.stage) return false;
+    if(S.attn && attention(j).length===0) return false;
+    if(!q) return true;
+    const workers = jobAssigns(j.id).map(a=>W(a.emp).name).join(' ');
+    return [j.order,j.num,j.product,j.client,workers].join(' ').toLowerCase().includes(q);
+  });
+}
+function renderTabs(){
+  const t=[['control','Workshop control'],['gantt','Workshop Gantt'],['job','Selected job'],['changes','What changed + decisions']];
+  $('#tabs').innerHTML=t.map(([k,n])=>'<button class="tab '+(S.tab===k?'on':'')+'" data-act="tab" data-v="'+k+'">'+n+'</button>').join('');
+}
+function kpis(){
+  const act=jobs.length, units=jobs.reduce((s,j)=>s+Object.values(avail(j)).reduce((x,v,i)=>x,0),0);
+  const moving=jobs.reduce((s,j)=>s+Math.max(0,j.done.asm+j.done.san+j.done.fin+j.done.pkg>0?j.qty:0),0);
+  const attn=jobs.filter(j=>attention(j).length).length;
+  const dueWeek=jobs.filter(j=>j.due<=5).length;
+  return '<div class="kpis"><div class="kpi"><span>Active product jobs</span><strong>'+act+'</strong></div><div class="kpi"><span>Needs attention</span><strong style="color:var(--red)">'+attn+'</strong></div><div class="kpi"><span>Production due this week</span><strong>'+dueWeek+'</strong></div><div class="kpi"><span>Worker conflicts</span><strong style="color:'+(conflicts().length?'var(--red)':'inherit')+'">'+conflicts().length+'</strong></div><div class="kpi"><span>Awaiting QC (units)</span><strong>'+jobs.reduce((s,j)=>s+avail(j).qc.awaiting,0)+'</strong></div></div>';
+}
+function stageBox(j,s,a){
+  if(s.k==='qc'){ const q=a.qc; return '<div class="st gate"><b>QC gate</b><span class="n">'+q.awaiting+' awaiting</span><br><small>'+q.done+' accepted'+(q.rework?' · '+q.rework+' rework':'')+'</small><br><small>Manager only · mandatory</small></div>'; }
+  const x=a[s.k], blk = openBlocker(j.id)&&openBlocker(j.id).stage===s.k;
+  const pct=Math.round(x.done/x.planned*100);
+  const asg=jobAssigns(j.id,s.k);
+  const who=asg.length?[...new Set(asg.map(z=>W(z.emp).name.split(' ')[0]))].join(' + '):'<span style="color:var(--red)">Unassigned</span>';
+  const note = s.k==='pkg' ? x.available+' accepted, ready' : s.k==='prep' ? x.available+' still to prepare' : x.available+' currently available';
+  return '<div class="st '+(blk?'blocked':'')+'"><b>'+s.name+(blk?' · BLOCKED':'')+'</b><span class="n">'+x.done+' / '+x.planned+' done</span><div class="prog"><i style="width:'+pct+'%"></i></div><small>'+note+'</small><br><small>'+who+'</small></div>';
+}
+function jobRow(j){
+  const a=avail(j), cur=currentStage(j), open=S.open.has(j.id), reasons=attention(j);
+  const asg=jobAssigns(j.id,cur), who=asg.length?[...new Set(asg.map(z=>W(z.emp).name))].join(', '):'Unassigned';
+  const mode=asg[0]?(asg[0].mode==='working_together'?'Working together':'Split quantity'):'';
+  const op=asg[0]?asg[0].op:'—';
+  const total=Object.values(j.done).reduce((s,v)=>s+v,0)/(5*j.qty)*100;
+  let h='<div class="card"><div class="jrow" data-act="toggle" data-v="'+j.id+'">';
+  h+='<div class="jt"><strong>'+j.client+' · '+j.product+'</strong><small>'+j.order+' · '+j.num+' · Qty '+j.qty+'</small></div>';
+  h+='<div><span class="tag b">'+stageName(cur)+'</span><br><small class="muted">'+op+' · '+a[cur].done+'/'+a[cur].planned+'</small></div>';
+  h+='<div>'+who+'<br><small class="muted">'+(mode?mode+' · ':'')+'Qty '+(asg[0]?asg[0].qty:'—')+'</small></div>';
+  h+='<div><small class="muted">Production due</small> <b>'+short(j.due)+'</b><br><small class="muted">Customer delivery</small> '+short(j.cust)+'<div class="prog"><i style="width:'+Math.round(total)+'%"></i></div></div>';
+  h+='<div>'+(open?'⌃':'⌄')+'</div></div>';
+  if(reasons.length) h+='<div class="reasons">'+reasons.map(r=>'<span class="tag '+(REASON_TAG[r.c]||'')+'">'+r.t+'</span>').join('')+'</div>';
+  if(open){
+    h+='<div class="exp"><div class="stages">'+STAGES.map(s=>stageBox(j,s,a)).join('')+'</div>';
+    h+='<div class="note b" style="margin-top:10px">Availability = upstream completed − this stage completed. “6 total planned · 3 currently available” — planned quantity is never described as available.</div>';
+    h+='<div class="actions"><button class="btn sm" data-act="select" data-v="'+j.id+'">Open job</button>';
+    h+='<button class="btn sm" data-act="dates" data-v="'+j.id+'" '+(can.schedule()?'':'disabled')+'>Change dates</button>';
+    h+='<button class="btn sm" data-act="assign" data-v="'+j.id+'|'+cur+'" '+(can.assign()&&cur!=='qc'?'':'disabled')+'>Assign '+(cur==='qc'?'(QC: no workers)':stageName(cur))+'</button>';
+    h+='<button class="btn sm" data-act="print" data-v="'+j.id+'">Print…</button>';
+    const b=openBlocker(j.id); if(b) h+='<button class="btn sm d" data-act="resolve" data-v="'+j.id+'" '+(can.blocker()?'':'disabled')+'>Resolve blocker</button>'; else h+='<button class="btn sm" data-act="blocker" data-v="'+j.id+'" '+(can.blocker()?'':'disabled')+'>Raise blocker</button>';
+    h+='</div></div>';
+  }
+  return h+'</div>';
+}
+function viewControl(){
+  const vis=visibleJobs();
+  let h=kpis();
+  h+='<div class="bar"><input type="search" id="q" placeholder="Search order, job number, product or worker" value="'+S.q.replace(/"/g,'&quot;')+'">';
+  h+=['all','prep','asm','san','fin','qc','pkg'].map(k=>'<button class="chip '+(S.stage===k?'on':'')+'" data-act="stage" data-v="'+k+'">'+(k==='all'?'All stages':stageName(k))+'</button>').join('');
+  h+='<button class="chip attn '+(S.attn?'on':'')+'" data-act="attn">Needs attention</button>';
+  h+='<span class="count"><b>'+vis.length+'</b> of <b>'+jobs.length+'</b> jobs shown</span>';
+  h+='<button class="btn sm" data-act="reset">Reset</button><button class="btn sm" data-act="print" data-v="">Print packs…</button></div>';
+  h+=vis.length?vis.map(jobRow).join(''):'<div class="note a">No jobs match this view.</div>';
+  h+='<div class="muted" style="margin-top:8px">'+CHARGES_EXCLUDED+' charge lines (delivery, packaging fee) are excluded — only product jobs appear here. Visible '+vis.length+' + hidden '+(jobs.length-vis.length)+' = total '+jobs.length+'.</div>';
+  return h;
+}
+function viewGantt(){
+  const cf=conflicts();
+  const cols='230px repeat('+DAYS+',minmax(52px,1fr))';
+  let h='<div class="note b"><b>Planned dates only.</b> Moving a bar never records production progress — progress is only recorded on the Selected job tab, and is capped by upstream quantity.</div>';
+  h+='<div class="legend"><span>▮ working day</span><span style="background:#ecebe7;padding:0 6px">Sunday (non-working)</span><span>▏<b>solid</b> = production due</span><span style="color:var(--coral)">⋮ dotted = customer delivery</span><span>Click a bar to assign workers</span></div>';
+  h+='<div class="gantt"><div class="g-grid" style="grid-template-columns:'+cols+'"><div class="g-h" style="text-align:left;position:sticky;left:0;z-index:3">Job / stage</div>';
+  for(let d=0;d<DAYS;d++) h+='<div class="g-h '+(isOff(d)?'off':'')+'">'+lbl(d).replace(' Oct','')+'</div>';
+  for(const j of jobs){
+    const open=S.open.has('g'+j.id), b=openBlocker(j.id);
+    h+='<div class="g-l"><b data-act="gtoggle" data-v="'+j.id+'" style="cursor:pointer">'+(open?'▾ ':'▸ ')+j.client+' · '+j.product+'</b><br><small class="muted">Prod. due '+short(j.due)+' · Cust. '+short(j.cust)+(attention(j).length?' · ⚠ '+attention(j).length:'')+'</small></div>';
+    for(let d=0;d<DAYS;d++){
+      let cell='';
+      if(d===j.due) cell+='<i class="due" title="Production due"></i>';
+      if(d===j.cust) cell+='<i class="cust" title="Customer delivery"></i>';
+      h+='<div class="g-c '+(isOff(d)?'off':'')+'">'+cell+'</div>';
+    }
+    if(open) for(const s of STAGES){
+      const [st,en]=j.sch[s.k]; const blk=b&&b.stage===s.k; const un=!s.gate&&jobAssigns(j.id,s.k).length===0&&!(s.k!=='pkg'&&avail(j)[s.k].done>=j.qty);
+      h+='<div class="g-l sub">'+s.name+(s.gate?' (gate)':'')+'</div>';
+      for(let d=0;d<DAYS;d++){
+        let c='<div class="g-c '+(isOff(d)?'off':'')+'">';
+        if(d>=st&&d<=en && !isOff(d)){
+          const first=(d===st)||isOff(d-1)&&d-1>=st&&false;
+          const cls='bar-s '+s.k+(blk?' blocked':'')+(un&&!blk?' unas':'');
+          const text = d===st ? (blk?'Blocked':(s.gate?'QC':(un?'Unassigned':stageName(s.k).split(' ')[0]))) : '';
+          c+='<button class="'+cls+'" data-act="'+(s.gate?'noop':'assign')+'" data-v="'+j.id+'|'+s.k+'" title="'+s.name+' '+lbl(st)+'–'+lbl(en)+'">'+text+'</button>';
+        }
+        h+=c+'</div>';
+      }
+    }
+  }
+  h+='</div></div>';
+  if(cf.length){ h+='<h3 style="margin:16px 0 6px">Worker conflicts</h3><div class="card"><table><tr><th>Employee</th><th>Date</th><th>Jobs involved</th><th class="n">Allocated</th><th class="n">Available</th></tr>'+
+    cf.map(c=>'<tr><td>'+W(c.emp).name+'</td><td>'+lbl(c.date)+'</td><td>'+c.jobs.map(x=>J(x).num).join(', ')+'</td><td class="n" style="color:var(--red)"><b>'+c.alloc+' h</b></td><td class="n">'+c.cap+' h</td></tr>').join('')+'</table></div>'; }
+  blockers.filter(b=>b.open).forEach(b=>{ const j=J(b.job); h+='<div class="note r"><b>'+j.client+' · '+j.product+'</b> — '+b.reason+'. Owner: '+b.owner+' · '+b.ref+' · expected '+lbl(b.expected)+'. Downstream dates at risk. <button class="btn sm" data-act="dates" data-v="'+j.id+'">Review impact</button></div>'; });
+  return h;
+}
+function viewJob(){
+  const j=J(S.sel), a=avail(j), mats=MATERIALS[j.id];
+  let h='<div class="bar"><select class="role" id="jsel">'+jobs.map(x=>'<option value="'+x.id+'" '+(x.id===j.id?'selected':'')+'>'+x.order+' · '+x.product+'</option>').join('')+'</select></div>';
+  h+='<div class="grid2"><div>';
+  h+='<div class="panel"><h3>'+j.client+' · '+j.product+'</h3><div class="muted">'+j.order+' · '+j.num+' · '+j.spec+' · Qty '+j.qty+'</div>';
+  h+='<div style="margin-top:8px"><span class="tag">Production due: '+lbl(j.due)+'</span><span class="tag">Customer delivery: '+lbl(j.cust)+'</span></div>';
+  const ar=attention(j); if(ar.length) h+='<div class="reasons" style="padding:8px 0 0">'+ar.map(r=>'<span class="tag '+(REASON_TAG[r.c]||'')+'">'+r.t+'</span>').join('')+'</div>';
+  h+='<div class="actions"><button class="btn sm" data-act="print" data-v="'+j.id+'">Print this job…</button><button class="btn sm" data-act="dates" data-v="'+j.id+'" '+(can.schedule()?'':'disabled')+'>Change dates</button></div></div>';
+  h+='<div class="panel"><h3>Stages — availability and progress</h3><table><tr><th>Stage</th><th class="n">Planned</th><th class="n">Completed</th><th class="n">Available now</th><th>Dates</th><th>Workers</th><th>Record progress</th></tr>';
+  for(const s of STAGES){
+    const x=a[s.k]; const asg=jobAssigns(j.id,s.k);
+    const who=s.gate?'<span class="muted">Manager only</span>':asg.length?[...new Set(asg.map(z=>W(z.emp).name.split(' ')[0]))].join(' + '):'<span style="color:var(--red)">Unassigned</span>';
+    const av=s.gate?x.awaiting+' awaiting':x.available;
+    let rec='';
+    if(s.gate) rec='<input type="number" min="1" value="1" id="rc_qc" style="width:46px"> <button class="btn sm" data-act="qcaccept" '+(can.qc()?'':'disabled')+'>Accept</button>';
+    else rec='<input type="number" min="1" value="1" id="rc_'+s.k+'" style="width:46px"> <button class="btn sm" data-act="record" data-v="'+s.k+'">Record</button>';
+    h+='<tr><td><b>'+s.name+'</b></td><td class="n">'+x.planned+'</td><td class="n">'+x.done+'</td><td class="n"><b>'+av+'</b></td><td>'+short(j.sch[s.k][0])+'–'+short(j.sch[s.k][1])+'</td><td>'+who+'</td><td>'+rec+'</td></tr>';
+  }
+  h+='</table><div class="muted" style="margin-top:6px">Try recording more than is available: the system refuses. Packaging draws from QC-accepted units, not from Finishing.</div></div>';
+  h+='<div class="panel"><h3>Assignments</h3>'+(jobAssigns(j.id).length?'<table><tr><th>Stage · operation</th><th>Worker</th><th class="n">Qty</th><th>Mode</th><th>Dates</th></tr>'+jobAssigns(j.id).map(z=>'<tr><td>'+stageName(z.stage)+' · '+z.op+'</td><td>'+W(z.emp).name+'</td><td class="n">'+z.qty+'</td><td>'+(z.mode==='working_together'?'Working together':'Split quantity')+'</td><td>'+short(z.s)+'–'+short(z.e)+'</td></tr>').join('')+'</table>':'<div class="muted">No assignments yet.</div>')+'<div class="actions"><button class="btn sm p" data-act="assign" data-v="'+j.id+'|'+currentStage(j)+'" '+(can.assign()&&currentStage(j)!=='qc'?'':'disabled')+'>Assign workers</button></div></div>';
+  h+='</div><div>';
+  h+='<div class="panel"><h3>Materials readiness</h3><div style="font-size:20px;font-weight:700">'+j.mat[0]+' of '+j.mat[1]+' lines ready</div><div class="prog"><i style="width:'+Math.round(j.mat[0]/j.mat[1]*100)+'%"></i></div>'+(j.mat[0]<j.mat[1]?'<div class="note a">Moving dates does not resolve a shortage — raise a blocker with an owner and a purchase reference.</div>':'')+'</div>';
+  h+='<div class="panel"><h3>Drawings</h3>'+j.drw+'</div>';
+  const b=blockers.filter(x=>x.job===j.id);
+  h+='<div class="panel"><h3>Blockers</h3>'+(b.length?b.map(x=>'<div style="margin-bottom:8px"><span class="tag '+(x.open?'r':'g')+'">'+(x.open?'Open':'Resolved')+'</span> <b>'+x.reason+'</b><br><small class="muted">Stage '+stageName(x.stage)+' · owner '+x.owner+' · ref '+x.ref+' · expected '+short(x.expected)+(x.notes?' · '+x.notes:'')+'</small>'+(x.log.length?'<br><small class="muted">'+x.log.join('<br>')+'</small>':'')+'</div>').join(''):'<div class="muted">No blockers.</div>')+'</div>';
+  return h+'</div></div>';
+}
+function viewChanges(){
+  return '<div class="panel"><h3>Corrections made to the first prototype</h3><ul class="clean">'+
+  '<li><b>One production due date per job</b> (the first version showed 12 Oct on the rows and 13 Oct in the timeline dialog). Customer delivery is separate, shown as a dotted milestone.</li>'+
+  '<li><b>CNC cutting moved to Material prep</b>, where the brief puts it. Operation lists come from the database by stage — nothing is hard-coded in the component.</li>'+
+  '<li><b>QC is a gate, not a worker stage</b> — no assignment modal, manager/admin accept only.</li>'+
+  '<li><b>Unrecorded actual usage is “Not recorded”, never zero</b>; internal pack totals are flagged partial (see the Internal pack print preview).</li>'+
+  '<li><b>One capacity rule</b> used everywhere: 8 h/day, Mon–Sat. Weekly figures and the daily conflict table both derive from the same assignments.</li>'+
+  '<li><b>Availability is derived</b> from upstream completed quantity; Packaging from QC-accepted units. Recording above availability is refused.</li>'+
+  '<li><b>Roles enforced</b>: switch “Viewing as” to Production staff — assign, schedule, blocker and QC controls disable. In the real build this is enforced in the API and database.</li>'+
+  '<li>Date changes never apply silently: a downstream choice is always asked.</li></ul></div>'+
+  '<div class="panel"><h3>Decisions needed before / during the build</h3>'+
+  '<div class="dec" style="border-color:var(--green);background:var(--green-bg)"><b>1. Capacity — decided: 8 h/day, Mon–Sat</b> (48 h/week), stored per employee.</div>'+
+  '<div class="dec"><b>2. Labour hours in the internal pack.</b> The first prototype showed “Internal labour 18 hrs vs 14 hrs”, but no actual hours are captured today. Either add time capture on progress entries, or leave labour out of the pack. This prototype leaves it out.</div>'+
+  '<div class="dec"><b>3. “Print shortage sheet”.</b> Was in the first prototype but not in the brief. Included here as an optional third print type — keep or drop?</div>'+
+  '<div class="dec" style="border-color:var(--green);background:var(--green-bg)"><b>4. QC waiting threshold — decided: 3 days</b>, stored as a setting.</div>'+
+  '<div class="dec" style="border-color:var(--green);background:var(--green-bg)"><b>5. Material prep operations — decided: add them.</b> New operations are added; the old Cutting operation is retired (hidden from pickers, history kept), not re-pointed.</div></div>'+
+  '<div class="panel"><h3>Proposed build order</h3><ol class="clean"><li>Stage-level assignments + <code>assignment_mode</code> + corrected operations</li><li>Stage schedule table, Gantt, date-impact choice, due-date split</li><li>Blockers with ownership + shared attention helper + capacity conflicts</li><li>Workshop control view, print scope picker, shop-floor card, internal pack with actual usage</li></ol></div>';
+}
+function render(){
+  renderTabs();
+  $('#view').innerHTML = S.tab==='control'?viewControl():S.tab==='gantt'?viewGantt():S.tab==='job'?viewJob():viewChanges();
+  const q=$('#q'); if(q){ q.addEventListener('input',e=>{S.q=e.target.value; const p=e.target.selectionStart; render(); const n=$('#q'); n.focus(); n.setSelectionRange(p,p);}); }
+  const js=$('#jsel'); if(js) js.addEventListener('change',e=>{S.sel=e.target.value;render();});
+}
+
+/* ============================================================
+   MODALS
+   ============================================================ */
+function modal(html,wide){ $('#modal').innerHTML='<div class="ov" data-act="ovclose"><div class="modal '+(wide?'wide':'')+'">'+html+'</div></div>'; }
+function closeModal(){ $('#modal').innerHTML=''; S.asg=null; }
+
+// ---- Assignment modal ------------------------------------------------
+function openAssign(jid,stage){
+  if(!can.assign()) return toast('Only production managers and admins can assign workers.');
+  if(stage==='qc') return toast('QC is a mandatory manager-only gate — workers are not assigned to it.');
+  S.asg={job:jid,stage,op:null,mode:'working_together',sel:{},q:'',s:Math.max(J(jid).sch[stage][0],0),e:J(jid).sch[stage][1],hpd:4};
+  renderAssign();
+}
+function asgValidation(){
+  const g=S.asg, j=J(g.job), errs=[], warns=[], ids=Object.keys(g.sel);
+  const planned=j.qty;
+  if(!g.op) errs.push('Choose an operation.');
+  if(!ids.length) errs.push('Select at least one worker.');
+  if(g.e<g.s) errs.push('End date is before the start date.');
+  if(g.mode==='working_together'){
+    ids.forEach(id=>{ if(!(g.sel[id]>0)||g.sel[id]>planned) errs.push(W(id).name+': quantity must be 1–'+planned+'.'); });
+    const qs=new Set(ids.map(id=>g.sel[id])); if(qs.size>1) errs.push('Working together: every worker has the same quantity.');
+  } else {
+    const sum=ids.reduce((s,id)=>s+(+g.sel[id]||0),0);
+    if(ids.some(id=>!(g.sel[id]>0))) errs.push('Each selected worker needs a quantity above 0.');
+    if(sum>planned) errs.push('Split quantities add up to '+sum+' — more than the '+planned+' planned.');
+    else if(sum<planned && ids.length) warns.push('Split covers '+sum+' of '+planned+' — '+(planned-sum)+' still unallocated.');
+  }
+  // overlap + capacity (warn, never silently block)
+  for(const id of ids) for(let d=g.s; d<=g.e; d++){ if(isOff(d)) continue;
+    const other=assigns.filter(a=>a.emp===id && d>=a.s && d<=a.e);
+    const alloc=other.reduce((s,a)=>s+a.hpd,0)+g.hpd;
+    if(other.length && alloc>CAP_H_PER_DAY){ warns.push(W(id).name+' is over capacity on '+lbl(d)+': '+alloc+' h of '+CAP_H_PER_DAY+' h with '+[...new Set(other.map(a=>J(a.job).num))].join(', ')+'.'); break; }
+    else if(other.length){ warns.push(W(id).name+' also works on '+[...new Set(other.map(a=>J(a.job).num))].join(', ')+' on '+lbl(d)+'.'); break; }
+  }
+  const a=avail(j)[g.stage];
+  if(a.available<planned && g.stage!=='prep') warns.push('Only '+a.available+' of '+planned+' are available to this stage today. You can still schedule all '+planned+' — actual completion is capped by upstream quantity.');
+  return {errs:[...new Set(errs)],warns:[...new Set(warns)]};
+}
+function renderAssign(){
+  const g=S.asg, j=J(g.job), a=avail(j)[g.stage], v=asgValidation();
+  const ops=OPERATIONS[g.stage]||[];
+  const q=g.q.toLowerCase();
+  const ws=WORKERS.filter(w=>!q||(w.name+' '+w.skills.join(' ')).toLowerCase().includes(q));
+  let h='<h2>Assign workers · '+stageName(g.stage)+'</h2><div class="sub">'+j.num+' · '+j.product+' · '+j.qty+' planned total · <b>'+(g.stage==='prep'?a.available+' still to prepare':a.available+' currently available')+'</b></div>';
+  h+='<div class="steps"><b>1 '+stageName(g.stage)+'</b> › '+(g.op?'<b>':'')+'2 Operation'+(g.op?'</b>':'')+' › 3 People</div>';
+  h+='<label class="f">Operation <span style="font-weight:400;text-transform:none">(only operations belonging to '+stageName(g.stage)+', loaded from the database)</span></label><div class="ops">'+ops.map(o=>'<button class="op '+(g.op===o?'on':'')+'" data-act="aop" data-v="'+o+'">'+o+'</button>').join('')+'</div>';
+  h+='<label class="f">How will the team share the work?</label>';
+  h+='<div class="radio '+(g.mode==='working_together'?'on':'')+'" data-act="amode" data-v="working_together"><input type="radio" '+(g.mode==='working_together'?'checked':'')+'><div><b>Working together on the same quantity</b><small>Every selected worker works on the same assigned quantity.</small></div></div>';
+  h+='<div class="radio '+(g.mode==='split_quantity'?'on':'')+'" data-act="amode" data-v="split_quantity"><input type="radio" '+(g.mode==='split_quantity'?'checked':'')+'><div><b>Split the quantity between workers</b><small>Individual quantities must add up to no more than '+j.qty+'.</small></div></div>';
+  h+='<label class="f">Search workers by name or skill</label><input class="in" id="aq" value="'+g.q+'" placeholder="e.g. joinery, Mary">';
+  for(const w of ws){
+    const sel=g.sel[w.id]!=null, hrs=weekHours(w.id), cap=CAP_H_PER_DAY*6, pct=Math.min(100,hrs/cap*100);
+    h+='<div class="wk '+(sel?'sel':'')+'"><span class="av">'+w.ini+'</span><div data-act="awk" data-v="'+w.id+'" style="cursor:pointer"><b>'+w.name+'</b><br><small class="muted">'+w.skills.join(' · ')+' · '+hrs+' of '+cap+' h this week</small></div>';
+    h+='<div class="meter"><i class="'+(pct>100?'x':pct>80?'w':'')+'" style="width:'+pct+'%"></i></div>';
+    h+=sel?'<input class="in" type="number" min="1" data-act="aqty" data-w="'+w.id+'" value="'+g.sel[w.id]+'">':'<button class="btn sm" data-act="awk" data-v="'+w.id+'">Add</button>';
+    h+='</div>';
+  }
+  h+='<div class="row2"><div><label class="f">Start date</label><input class="in" type="date" id="as" value="'+iso(g.s)+'"></div><div><label class="f">End date</label><input class="in" type="date" id="ae" value="'+iso(g.e)+'"></div><div><label class="f">Hours / day each</label><input class="in" type="number" min="1" max="12" id="ah" value="'+g.hpd+'"></div></div>';
+  if(v.errs.length) h+='<div class="note r"><b>Cannot save:</b><ul class="clean">'+v.errs.map(e=>'<li>'+e+'</li>').join('')+'</ul></div>';
+  if(v.warns.length) h+='<div class="note a"><b>Heads up (does not block saving):</b><ul class="clean">'+v.warns.map(e=>'<li>'+e+'</li>').join('')+'</ul></div>';
+  h+='<div class="note b">Saved with: job, stage, operation, employee, assigned quantity, assignment mode, planned start/end, assigned by.</div>';
+  h+='<div class="mf"><button class="btn" data-act="close">Cancel</button><button class="btn p" data-act="asave" '+(v.errs.length?'disabled':'')+'>Save assignment</button></div>';
+  modal(h,true);
+  const aq=$('#aq'); if(aq){ aq.addEventListener('input',e=>{ g.q=e.target.value; const p=e.target.selectionStart; renderAssign(); const n=$('#aq'); n.focus(); n.setSelectionRange(p,p); }); }
+  ['as','ae','ah'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('change',e=>{ if(id==='as') g.s=idxOf(e.target.value); if(id==='ae') g.e=idxOf(e.target.value); if(id==='ah') g.hpd=+e.target.value||1; renderAssign(); }); });
+  document.querySelectorAll('[data-act=aqty]').forEach(el=>el.addEventListener('change',e=>{ g.sel[el.dataset.w]=+e.target.value; renderAssign(); }));
+}
+function saveAssign(){
+  const g=S.asg, v=asgValidation(); if(v.errs.length) return;
+  for(const id of Object.keys(g.sel)) assigns.push({id:Date.now()+Math.random(),job:g.job,stage:g.stage,op:g.op,emp:id,qty:+g.sel[id],mode:g.mode,s:g.s,e:g.e,hpd:g.hpd});
+  closeModal(); toast('Assignment saved — '+Object.keys(g.sel).length+' worker(s), '+(g.mode==='working_together'?'working together':'split quantity')+'. Planned dates only; no progress recorded.'); render();
+}
+
+// ---- Dates + impact ----------------------------------------------------
+function openDates(jid){
+  if(!can.schedule()) return toast('Only production managers and admins can change dates.');
+  const j=J(jid); S.shiftDraft={job:jid,s:{},e:{}}; STAGES.forEach(s=>{S.shiftDraft.s[s.k]=j.sch[s.k][0];S.shiftDraft.e[s.k]=j.sch[s.k][1];});
+  renderDates();
+}
+function renderDates(){
+  const d=S.shiftDraft, j=J(d.job);
+  let h='<h2>Stage dates · '+j.product+'</h2><div class="sub">Production due <b>'+lbl(j.due)+'</b> · Customer delivery <b>'+lbl(j.cust)+'</b> (not moved by stage dates). Changing a date never records progress.</div><table><tr><th>Stage</th><th>Start</th><th>End</th></tr>';
+  for(const s of STAGES) h+='<tr><td><b>'+s.name+'</b></td><td><input class="in" type="date" data-act="ds" data-k="'+s.k+'" value="'+iso(d.s[s.k])+'"></td><td><input class="in" type="date" data-act="de" data-k="'+s.k+'" value="'+iso(d.e[s.k])+'"></td></tr>';
+  h+='</table>';
+  const bad=STAGES.filter(s=>isOff(d.s[s.k])||isOff(d.e[s.k]));
+  if(bad.length) h+='<div class="note a">'+bad.map(s=>s.name).join(', ')+' start or end on a Sunday (non-working).</div>';
+  h+='<div class="mf"><button class="btn" data-act="close">Cancel</button><button class="btn p" data-act="dapply">Apply</button></div>';
+  modal(h,true);
+  document.querySelectorAll('[data-act=ds],[data-act=de]').forEach(el=>el.addEventListener('change',e=>{ const k=el.dataset.k; (el.dataset.act==='ds'?d.s:d.e)[k]=idxOf(e.target.value); renderDates(); }));
+}
+function applyDates(){
+  const d=S.shiftDraft, j=J(d.job);
+  const changed=STAGES.filter(s=>d.s[s.k]!==j.sch[s.k][0]||d.e[s.k]!==j.sch[s.k][1]);
+  if(!changed.length){ closeModal(); return toast('No date changed.'); }
+  const first=changed[0], idx=STAGES.findIndex(s=>s.k===first.k);
+  const delta=addDelta(j.sch[first.k][1], d.e[first.k]);
+  const later=STAGES.slice(idx+1);
+  if(changed.length===1 && delta!==0 && later.length){
+    modal('<h2>'+first.name+' moves '+Math.abs(delta)+' working day'+(Math.abs(delta)>1?'s ':' ')+(delta>0?'later':'earlier')+'</h2><div class="sub">Choose how the downstream stages should respond. Dates are never shifted silently.</div>'+
+     '<div class="radio" data-act="impact" data-v="shift"><div><b>Shift every later stage</b><small>'+later.map(s=>s.name).join(', ')+' each move '+Math.abs(delta)+' working day(s).</small></div></div>'+
+     '<div class="radio" data-act="impact" data-v="keep"><div><b>Keep later dates unchanged</b><small>Creates an overlap and flags the plan for a capacity review.</small></div></div>'+
+     '<div class="radio" data-act="impact" data-v="review"><div><b>Review each affected stage</b><small>Return to the stage dates and edit them individually.</small></div></div>'+
+     '<div class="note b">Customer delivery stays '+lbl(j.cust)+'. Production due stays '+lbl(j.due)+'.</div><div class="mf"><button class="btn" data-act="close">Cancel</button></div>');
+    S.shiftDraft.delta=delta; S.shiftDraft.idx=idx; return;
+  }
+  commitDates(false);
+}
+function addDelta(a,b){ let n=0,i=a; const s=b>=a?1:-1; while(i!==b){ i+=s; if(!isOff(i)) n+=s; } return n; }
+function commitDates(shiftLater){
+  const d=S.shiftDraft, j=J(d.job);
+  STAGES.forEach((s,i)=>{ j.sch[s.k]=[d.s[s.k],d.e[s.k]]; });
+  if(shiftLater){ STAGES.slice(d.idx+1).forEach(s=>{ const [a,b]=j.sch[s.k]; j.sch[s.k]=[addWork(a,d.delta),addWork(b,d.delta)]; }); }
+  // assignments follow their stage's planned dates (still planned only)
+  assigns.filter(x=>x.job===j.id).forEach(x=>{ x.s=j.sch[x.stage][0]; x.e=j.sch[x.stage][1]; });
+  closeModal(); render();
+  const risk=j.sch.pkg[1]>j.due; toast('Dates updated.'+(risk?' ⚠ Planned finish is now after production due.':''));
+}
+// ---- Blockers -----------------------------------------------------------
+function openBlockerForm(jid){
+  if(!can.blocker()) return toast('Only production managers and admins manage blockers.');
+  const j=J(jid);
+  modal('<h2>Raise blocker · '+j.product+'</h2><div class="sub">A blocker needs an owner and an expected resolution. Moving dates alone is not a fix for a material shortage.</div>'+
+   '<label class="f">Stage</label><select class="in" id="bs">'+STAGES.filter(s=>!s.gate).map(s=>'<option value="'+s.k+'">'+s.name+'</option>').join('')+'</select>'+
+   '<label class="f">Reason</label><input class="in" id="br" placeholder="e.g. Waiting for hinges">'+
+   '<div class="row2"><div><label class="f">Responsible person</label><input class="in" id="bo"></div><div><label class="f">Expected resolution</label><input class="in" type="date" id="be" value="'+iso(2)+'"></div><div><label class="f">Supplier / PO ref</label><input class="in" id="bp"></div></div>'+
+   '<label class="f">Notes</label><textarea class="in" id="bn" rows="2"></textarea><div id="berr"></div><div class="mf"><button class="btn" data-act="close">Cancel</button><button class="btn p" data-act="bsave" data-v="'+jid+'">Raise blocker</button></div>');
+}
+function saveBlocker(jid){
+  const r=$('#br').value.trim(), o=$('#bo').value.trim();
+  if(!r||!o){ $('#berr').innerHTML='<div class="note r">Reason and responsible person are required.</div>'; return; }
+  blockers.push({id:Date.now(),job:jid,stage:$('#bs').value,reason:r,owner:o,expected:idxOf($('#be').value),ref:$('#bp').value.trim()||'—',notes:$('#bn').value.trim(),open:true,log:['Raised by Production manager · '+lbl(0)]});
+  closeModal(); toast('Blocker raised and visible in list, Gantt and job view.'); render();
+}
+function openResolve(jid){
+  if(!can.blocker()) return toast('Only production managers and admins manage blockers.');
+  const b=openBlocker(jid);
+  modal('<h2>Resolve blocker</h2><div class="sub">'+b.reason+' · owner '+b.owner+' · '+b.ref+'</div><label class="f">Resolution note</label><textarea class="in" id="rn" rows="3" placeholder="What fixed it? e.g. Hardware received and checked"></textarea><div id="rerr"></div><div class="mf"><button class="btn" data-act="close">Cancel</button><button class="btn p" data-act="rsave" data-v="'+jid+'">Mark resolved</button></div>');
+}
+function saveResolve(jid){
+  const n=$('#rn').value.trim(); if(!n){ $('#rerr').innerHTML='<div class="note r">A resolution note is required.</div>'; return; }
+  const b=openBlocker(jid); b.open=false; b.log.push('Resolved by Production manager · '+lbl(0)+' · '+n);
+  modal('<h2>Blocker resolved</h2><div class="sub">Dates were not changed automatically.</div><div class="note a">Review downstream dates now? The delay may have pushed later stages past production due.</div><div class="mf"><button class="btn" data-act="close">Later</button><button class="btn p" data-act="dates" data-v="'+jid+'">Review dates</button></div>');
+  render();
+}
+// ---- Progress (demo of the quantity cap) ----------------------------------
+function recordProgress(k){
+  const j=J(S.sel), a=avail(j), n=+($('#rc_'+k).value)||0, x=a[k];
+  if(n<1) return toast('Enter a quantity of 1 or more.');
+  if(n>x.available) return toast('Refused: only '+x.available+' available to '+stageName(k)+' from the previous stage (you entered '+n+').');
+  j.done[k]+=n; render(); toast(n+' recorded for '+stageName(k)+'. Availability downstream updated everywhere.');
+}
+function qcAccept(){
+  const j=J(S.sel), a=avail(j), n=+($('#rc_qc').value)||0;
+  if(!can.qc()) return toast('QC decisions are manager/admin only.');
+  if(n<1||n>a.qc.awaiting) return toast('Refused: '+a.qc.awaiting+' awaiting QC.');
+  j.qc.accepted+=n; render(); toast(n+' accepted at QC — they are now available to Packaging.');
+}
+// ---- Printing -----------------------------------------------------------------
+function openPrint(jid){
+  S.print={scope:jid?'job':'visible',type:'shop',job:jid||S.sel};
+  renderPrint();
+}
+function printJobs(){
+  const p=S.print, j=J(p.job);
+  if(p.scope==='job') return [j];
+  if(p.scope==='visible') return visibleJobs();
+  if(p.scope==='order') return jobs.filter(x=>x.order===j.order);
+  return jobs;
+}
+function renderPrint(){
+  const p=S.print, j=J(p.job), n=printJobs().length;
+  const sc=[['job','Selected job',j.product+' · '+j.num],['visible','Visible filtered jobs',visibleJobs().length+' jobs currently shown'],['order','Whole order',j.client+' · '+jobs.filter(x=>x.order===j.order).length+' jobs'],['all','All active workshop jobs',jobs.length+' active jobs']];
+  let h='<h2>Print packs</h2><div class="sub">1. Choose what to print · 2. Choose the print type</div>';
+  h+=sc.map(([k,t,s])=>'<div class="radio '+(p.scope===k?'on':'')+'" data-act="pscope" data-v="'+k+'"><div><b>'+t+'</b><small>'+s+'</small></div></div>').join('');
+  h+='<div style="height:6px"></div>'+[['shop','Shop-floor job card','No costs, supplier prices, margins or selling prices'],['internal','Internal production pack','BoQ vs actual, costs, variances, source, who recorded and when'],['short','Shortage sheet (proposed — not in brief)','Missing material lines per job']].map(([k,t,s])=>'<div class="radio '+(p.type===k?'on':'')+'" data-act="ptype" data-v="'+k+'"><div><b>'+t+'</b><small>'+s+'</small></div></div>').join('');
+  h+='<div class="mf"><button class="btn" data-act="close">Cancel</button><button class="btn p" data-act="ppreview" '+((p.type==='internal'&&!can.assign())?'disabled':'')+'>Open preview ('+n+')</button></div>';
+  if(p.type==='internal'&&!can.assign()) h+='<div class="note r">Internal packs are for production managers and admins only.</div>';
+  modal(h);
+}
+function sheetShop(j){
+  const rows=STAGES.filter(s=>!s.gate).map(s=>{ const asg=jobAssigns(j.id,s.k); return '<tr><td>'+s.name+(asg[0]?' · '+asg[0].op:'')+'</td><td>'+(asg.length?[...new Set(asg.map(a=>W(a.emp).name))].join(', '):'<i>Unassigned</i>')+'</td><td class="n">'+j.qty+'</td><td>'+short(j.sch[s.k][0])+'–'+short(j.sch[s.k][1])+'</td><td><div class="sign"></div></td></tr>'; }).join('');
+  const qc='<tr><td>QC gate (manager)</td><td>Manager</td><td class="n">'+j.qty+'</td><td>'+short(j.sch.qc[0])+'</td><td><div class="sign"></div></td></tr>';
+  const m=MATERIALS[j.id];
+  return '<div class="sheet"><span class="conf" style="background:var(--green-bg);color:var(--green)">SHOP FLOOR · NO COSTS</span><h4>'+j.num+' · '+j.order+'</h4><div><b>'+j.product+'</b> · '+j.spec+' · Qty '+j.qty+' · Production due '+short(j.due)+'</div>'+
+   '<table style="margin-top:8px"><tr><th>Stage / operation</th><th>Team</th><th class="n">Qty</th><th>Dates</th><th>Sign-off</th></tr>'+rows+qc+'</table>'+
+   '<div style="margin-top:8px"><b>Materials required</b>: '+(m?m.map(x=>x.m+' '+(x.est+x.adj).toFixed(2)+' '+x.u).join(' · '):'see BoQ')+'</div><div class="muted">Drawings: '+j.drw+'</div><div class="muted" style="margin-top:6px">Notes / shortages: ________________________________</div></div>';
+}
+function sheetInternal(j){
+  const m=MATERIALS[j.id]; if(!m) return '<div class="sheet"><span class="conf">INTERNAL</span><h4>'+j.num+'</h4><div class="muted">No BoQ lines in this prototype for this job.</div></div>';
+  let est=0,act=0,rec=0;
+  const rows=m.map(x=>{ const fin=x.est+x.adj; const ec=fin*x.cpu; est+=ec; const has=x.act!=null; if(has){ act+=x.act*x.cpu; rec++; }
+    return '<tr><td>'+x.m+'</td><td class="n">'+x.est.toFixed(2)+'</td><td class="n">'+(x.adj?'+'+x.adj.toFixed(2):'—')+'</td><td class="n">'+fin.toFixed(2)+'</td><td class="n">'+(has?x.act.toFixed(2):'<i style="color:var(--amber)">Not recorded</i>')+'</td><td class="n">'+(has?((x.act-fin>=0?'+':'')+(x.act-fin).toFixed(2)):'—')+'</td><td class="n">'+Math.round(ec).toLocaleString()+'</td><td class="n">'+(has?Math.round(x.act*x.cpu).toLocaleString():'—')+'</td><td>'+x.src+'</td><td>'+(has?x.by+' · '+x.at:'—')+'</td></tr>'; }).join('');
+  return '<div class="sheet"><span class="conf">INTERNAL · CONFIDENTIAL</span><h4>'+j.num+' · '+j.order+'</h4><div><b>'+j.product+'</b> · Qty '+j.qty+'</div>'+
+   '<table style="margin-top:8px"><tr><th>Material</th><th class="n">BoQ est.</th><th class="n">Adj.</th><th class="n">Final plan</th><th class="n">Actual</th><th class="n">Var.</th><th class="n">Est. cost</th><th class="n">Actual cost</th><th>Source</th><th>Recorded by / when</th></tr>'+rows+'</table>'+
+   '<div style="margin-top:8px"><b>Estimated cost KES '+Math.round(est).toLocaleString()+'</b> · Actual cost recorded for '+rec+' of '+m.length+' lines: <b>KES '+Math.round(act).toLocaleString()+' (partial — not a job total)</b></div>'+
+   '<div class="note a" style="margin-top:6px">Unrecorded actuals are shown as “Not recorded”, never as zero, so the total cannot look cheaper than it is. Labour hours are not shown — no hours are captured yet (decision 2).</div><div class="muted">Manager review / variance explanation: ________________________________</div></div>';
+}
+function sheetShort(j){
+  const m=j.mat[1]-j.mat[0]; const b=openBlocker(j.id);
+  return '<div class="sheet"><h4>Shortage sheet · '+j.num+'</h4><div>'+j.product+' · '+(m>0?m+' material line(s) not ready':'No shortages')+(b?'<br>Blocker: '+b.reason+' · '+b.ref+' · expected '+short(b.expected):'')+'</div></div>';
+}
+function previewPrint(){
+  const p=S.print, list=printJobs();
+  const body=list.map(j=>p.type==='shop'?sheetShop(j):p.type==='internal'?sheetInternal(j):sheetShort(j)).join('');
+  modal('<h2>Print preview · '+(p.type==='shop'?'Shop-floor job cards':p.type==='internal'?'Internal production pack':'Shortage sheets')+'</h2><div class="sub">'+list.length+' sheet(s). '+(p.type==='shop'?'No financial figures appear on these.':'Do not issue to customers.')+'</div>'+(body||'<div class="note a">No jobs in scope.</div>')+'<div class="mf"><button class="btn" data-act="close">Close</button><button class="btn p" onclick="toast(\'Prototype: would open the print dialog\')">Print</button></div>',true);
+}
+
+/* ============================================================
+   EVENTS
+   ============================================================ */
+document.addEventListener('click',e=>{
+  const el=e.target.closest('[data-act]'); if(!el) return;
+  const a=el.dataset.act, v=el.dataset.v;
+  if(el.tagName==='INPUT'&&a==='aqty') return;
+  if(a==='ovclose'&&e.target!==el) return;   // only a click on the dark backdrop closes
+  switch(a){
+    case 'tab': S.tab=v; render(); break;
+    case 'toggle': S.open.has(v)?S.open.delete(v):S.open.add(v); render(); break;
+    case 'gtoggle': S.open.has('g'+v)?S.open.delete('g'+v):S.open.add('g'+v); render(); break;
+    case 'stage': S.stage=v; render(); break;
+    case 'attn': S.attn=!S.attn; render(); break;
+    case 'reset': S.q='';S.stage='all';S.attn=false; render(); break;
+    case 'select': S.sel=v; S.tab='job'; render(); break;
+    case 'assign': { const [j,s]=v.split('|'); openAssign(j,s); break; }
+    case 'aop': S.asg.op=v; renderAssign(); break;
+    case 'amode': S.asg.mode=v; if(v==='working_together'){ const q=Object.values(S.asg.sel)[0]; Object.keys(S.asg.sel).forEach(k=>S.asg.sel[k]=q||J(S.asg.job).qty); } renderAssign(); break;
+    case 'awk': { const w=v; if(S.asg.sel[w]!=null) delete S.asg.sel[w]; else S.asg.sel[w]=S.asg.mode==='working_together'?J(S.asg.job).qty:1; renderAssign(); break; }
+    case 'asave': saveAssign(); break;
+    case 'dates': openDates(v); break;
+    case 'dapply': applyDates(); break;
+    case 'impact': if(v==='review'){ renderDates(); } else commitDates(v==='shift'); break;
+    case 'blocker': openBlockerForm(v); break;
+    case 'bsave': saveBlocker(v); break;
+    case 'resolve': openResolve(v); break;
+    case 'rsave': saveResolve(v); break;
+    case 'record': recordProgress(v); break;
+    case 'qcaccept': qcAccept(); break;
+    case 'print': openPrint(v); break;
+    case 'pscope': S.print.scope=v; renderPrint(); break;
+    case 'ptype': S.print.type=v; renderPrint(); break;
+    case 'ppreview': previewPrint(); break;
+    case 'close': case 'ovclose': closeModal(); break;
+  }
+});
+$('#role').addEventListener('change',e=>{ S.role=e.target.value; render(); toast('Viewing as '+e.target.options[e.target.selectedIndex].text+' — controls follow the role rules (enforced server-side in the real build).'); });
+render();
+</script>
+</body>
+</html>
