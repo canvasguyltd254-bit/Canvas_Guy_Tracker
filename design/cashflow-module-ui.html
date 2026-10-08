@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cashflow &amp; Budget — UI mockup rev 2 — Canvas Guy Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --coral:#E8512A; --coralBg:#fde8e2; --coralBd:#f5c2b0;
+  --ink:#181818; --muted:#6b7280; --faint:#9ca3af;
+  --line:#e7e3de; --bg:#f7f6f3; --card:#ffffff;
+  --green:#16794a; --greenBg:#eaf7ef; --greenBd:#c6e7d4;
+  --amber:#96620a; --amberBg:#fff5d9; --amberBd:#ead69c;
+  --red:#a8362d;   --redBg:#fde9e7;   --redBd:#efc8c4;
+  --blue:#245e9b;  --blueBg:#eaf2fb;  --blueBd:#c7dbef;
+  --purple:#5b21b6;--purpleBg:#f0ebff;--purpleBd:#d4c5f9;
+  --r:12px; --rs:8px; --mono:'DM Mono',monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',system-ui,sans-serif;background:var(--bg);color:var(--ink);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.mono{font-family:var(--mono)}
+.wrap{max-width:1240px;margin:0 auto;padding:20px 18px 64px}
+:focus-visible{outline:2px solid var(--coral);outline-offset:2px;border-radius:4px}
+
+.crumb{font-size:13px;color:var(--muted);margin-bottom:10px}
+.head{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+h1{font-size:21px;font-weight:500;line-height:1.25}
+.sub{font-size:12px;color:var(--muted);margin-top:2px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:20px;overflow-x:auto}
+.tab{padding:0 16px;min-height:44px;font:inherit;font-size:13px;background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);cursor:pointer;white-space:nowrap}
+.tab:hover{color:var(--ink)}
+.tab[aria-selected=true]{color:var(--coral);font-weight:700;border-bottom-color:var(--coral)}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r)}
+.card-h{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.card-t{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.card-b{padding:16px}
+.grid{display:grid;gap:14px}
+@media(min-width:900px){.cols-3{grid-template-columns:repeat(3,1fr)}.split{grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);align-items:start}}
+
+.btn{font:inherit;font-size:12px;min-height:44px;padding:0 13px;border:1px solid var(--line);border-radius:var(--rs);background:var(--card);cursor:pointer;color:var(--ink);display:inline-flex;align-items:center;gap:6px}
+.btn:hover{border-color:var(--faint)}
+.btn.p{background:var(--coral);border-color:var(--coral);color:#fff}
+.btn[disabled]{opacity:.45;cursor:not-allowed;background:var(--bg)}
+.btn.sm{min-height:36px;padding:0 10px}
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:20px;white-space:nowrap}
+.p-green{background:var(--greenBg);color:var(--green)} .p-amber{background:var(--amberBg);color:var(--amber)}
+.p-red{background:var(--redBg);color:var(--red)} .p-blue{background:var(--blueBg);color:var(--blue)}
+.p-grey{background:#f1efeb;color:var(--muted)} .p-purple{background:var(--purpleBg);color:var(--purple)}
+.src{display:inline-block;font-size:10px;color:var(--faint);border:1px solid var(--line);border-radius:4px;padding:1px 6px;white-space:nowrap}
+.src.assumed{color:var(--amber);border-color:var(--amberBd);background:var(--amberBg)}
+.src.stale{color:var(--red);border-color:var(--redBd);background:var(--redBg)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);padding:0 10px 8px 0;white-space:nowrap}
+td{padding:10px 10px 10px 0;border-top:1px solid var(--line);vertical-align:top}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.r{text-align:right}
+.note{font-size:12px;color:var(--muted)}
+.tiny{font-size:11px}
+details>summary{cursor:pointer;list-style:none;font-size:11px;color:var(--blue);padding:3px 0}
+details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:"▸ ";display:inline-block;transition:transform .15s}
+details[open]>summary::before{content:"▾ "}
+
+.kpi-l{font-size:11px;color:var(--muted);margin-bottom:5px}
+.kpi-v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:22px;font-weight:500;line-height:1}
+.kpi-s{font-size:11px;color:var(--faint);margin-top:5px}
+
+.banner{display:flex;gap:11px;padding:12px 14px;border-radius:var(--rs);font-size:13px;align-items:flex-start;margin-bottom:14px}
+.b-amber{background:var(--amberBg);border:1px solid var(--amberBd);color:var(--amber)}
+.b-red{background:var(--redBg);border:1px solid var(--redBd);color:var(--red)}
+.b-blue{background:var(--blueBg);border:1px solid var(--blueBd);color:var(--blue)}
+.b-tag{font-weight:700;white-space:nowrap}
+
+.grp td{padding:7px 10px 7px 12px;background:var(--bg);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+
+/* budget bar: track = 120% of budget; dashed marker at the 100% point */
+.bar{position:relative;height:20px;background:var(--bg);border-radius:5px;overflow:visible}
+.seg{position:absolute;top:0;bottom:0}
+.s-inc{background:var(--blue)}
+.s-com{background:var(--coral)}
+.s-over{background:repeating-linear-gradient(45deg,#a8362d,#a8362d 4px,#8f2b23 4px,#8f2b23 8px);border-radius:0 5px 5px 0}
+.mark{position:absolute;top:-3px;bottom:-3px;width:0;border-left:2px dashed var(--ink);opacity:.55}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:12px}
+.dot{width:8px;height:8px;border-radius:2px;display:inline-block;margin-right:6px;vertical-align:-1px}
+
+.panel[hidden]{display:none}
+.foot{margin-top:28px;font-size:11px;color:var(--faint);text-align:center}
+
+/* ── mobile: tables become cards ───────────────────────────────── */
+@media(max-width:760px){
+  .rt thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+  .rt tbody{display:block}
+  .rt tr{display:block;border:1px solid var(--line);border-radius:var(--rs);margin-bottom:10px;padding:8px 12px;background:var(--card)}
+  .rt td{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;border:0;padding:6px 0;text-align:left}
+  .rt td+td{border-top:1px dotted var(--line)}
+  .rt td::before{content:attr(data-l);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);flex:0 0 auto;padding-top:2px}
+  .rt td[data-l=""]::before{display:none}
+  .rt tr.grp{display:block;border:0;background:none;padding:0;margin:16px 0 8px}
+  .rt tr.grp td{display:block;border-radius:var(--rs);padding:9px 12px}
+  .rt tr.grp td::before{display:none}
+  .scroll-x{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .scroll-x table{min-width:720px}
+  .kpi-v{font-size:19px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="crumb">Modules / Cashflow</div>
+
+  <div class="head">
+    <div style="flex:1;min-width:240px">
+      <h1>Cashflow &amp; budget</h1>
+      <div class="sub">Rolling 13 ISO weeks from Mon 28 Sep 2026 · KES · as at Wed 23 Sep 2026</div>
+    </div>
+    <div style="display:flex;gap:7px">
+      <button class="btn">Settings</button>
+      <button class="btn" disabled title="Not in Phase 1">Export <span class="pill p-grey">Phase 2</span></button>
+    </div>
+  </div>
+
+  <div class="tabs" role="tablist" aria-label="Cashflow sections">
+    <button class="tab" role="tab" id="t-ov"  aria-controls="ov"  aria-selected="true"  tabindex="0">Overview</button>
+    <button class="tab" role="tab" id="t-in"  aria-controls="in"  aria-selected="false" tabindex="-1">Money in</button>
+    <button class="tab" role="tab" id="t-pay" aria-controls="pay" aria-selected="false" tabindex="-1">Payments plan</button>
+    <button class="tab" role="tab" id="t-bud" aria-controls="bud" aria-selected="false" tabindex="-1">Budget</button>
+  </div>
+
+<!-- ══════════════════ OVERVIEW ══════════════════ -->
+<section class="panel" id="ov" role="tabpanel" aria-labelledby="t-ov" tabindex="0">
+
+  <div class="banner b-amber">
+    <span class="b-tag">⚠ Provisional</span>
+    <span>3 records have not posted to the ledger, oldest 6 days. Cash pools marked <span class="src assumed">provisional</span> may be overstated.
+      <a href="#" style="color:inherit">Open review queue</a></span>
+  </div>
+
+  <div class="grid cols-3" style="margin-bottom:14px">
+    <div class="card"><div class="card-b">
+      <div class="kpi-l">Cash on hand · 1000 <span class="src assumed">provisional</span></div>
+      <div class="kpi-v">84,000</div>
+      <div class="kpi-s">Counted 22 Sep · 1 unposted record</div>
+    </div></div>
+    <div class="card"><div class="card-b">
+      <div class="kpi-l">M-Pesa float · 1010 <span class="src assumed">provisional</span></div>
+      <div class="kpi-v">212,400</div>
+      <div class="kpi-s">Chatpesa live · 2 unposted records</div>
+    </div></div>
+    <div class="card"><div class="card-b">
+      <div class="kpi-l">Bank · 1020</div>
+      <div class="kpi-v">1,340,200</div>
+      <div class="kpi-s">Reconciled 23 Sep · clean</div>
+    </div></div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px"><div class="card-b" style="display:flex;gap:26px;flex-wrap:wrap;align-items:baseline">
+    <div>
+      <div class="kpi-l">Available now <span class="src assumed">provisional</span></div>
+      <div class="kpi-v" style="font-size:26px">KES 1,636,600</div>
+      <div class="kpi-s">Includes 2 provisional pools</div>
+    </div>
+    <div><div class="kpi-l">Due out · week 1</div><div class="kpi-v" style="font-size:26px;color:var(--red)">KES 498,000</div></div>
+    <div><div class="kpi-l">Expected in · week 1</div><div class="kpi-v" style="font-size:26px;color:var(--green)">KES 420,000</div></div>
+    <div style="flex:1"></div>
+    <div>
+      <div class="kpi-l">Lowest projected closing</div>
+      <div class="kpi-v" style="font-size:26px;color:var(--red)">−KES 187,600</div>
+      <div class="kpi-s">▼ Shortfall · week of 30 Nov</div>
+    </div>
+  </div></div>
+
+  <div class="banner b-red">
+    <span class="b-tag">▼ Cash shortfall</span>
+    <span>
+      Week of <strong>30 Nov</strong> projects closing cash of <span class="mono">−187,600</span> — below zero.
+      <strong>Gap to break even: <span class="mono">187,600</span>.</strong>
+      <div style="margin-top:6px">
+        Deferrable obligations falling in that week total <span class="mono">214,000</span> across 3 items — enough to close the gap, but no single one is.
+        The largest, <strong>Sandpaper &amp; Abrasives Co</strong> <span class="mono">96,000</span> (due Fri 4 Dec, <em>Can wait</em>),
+        leaves <span class="mono">91,600</span> still short on its own.
+      </div>
+      <div style="margin-top:6px"><a href="#" style="color:inherit">Plan the week of 30 Nov</a> · <a href="#" style="color:inherit">Show deferrable items</a></div>
+    </span>
+  </div>
+
+  <div class="banner b-amber">
+    <span class="b-tag">⚠ Low cash · 5 weeks</span>
+    <span>
+      Five weeks close above zero but below the <span class="mono">250,000</span> reserve threshold:
+      <strong>9 Nov</strong> <span class="mono">249,600</span> ·
+      <strong>23 Nov</strong> <span class="mono">96,400</span> ·
+      <strong>7 Dec</strong> <span class="mono">134,400</span> ·
+      <strong>14 Dec</strong> <span class="mono">192,400</span> ·
+      <strong>21 Dec</strong> <span class="mono">237,400</span>.
+      <div style="margin-top:4px">Cash does not recover above the reserve at any point after 9 Nov.
+        <a href="#" style="color:inherit">Change threshold</a></div>
+    </span>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div class="card-h">
+      <span class="card-t">13-week projected closing cash</span>
+      <span style="font-size:11px;color:var(--muted)">
+        <span class="dot" style="background:var(--blue)"></span>Weighted (official)
+        <span class="dot" style="background:var(--faint);margin-left:12px"></span>Gross
+        <span class="dot" style="background:var(--coral);margin-left:12px"></span>Downside incl. BoQ
+      </span>
+    </div>
+    <div class="card-b">
+      <svg viewBox="0 0 900 275" width="100%" height="270" role="img"
+           aria-label="Projected closing cash over 13 ISO weeks from 28 September 2026. The weighted line falls from 1,558,600 to a low of minus 187,600 in the week of 30 November, crossing below zero. The gross line stays positive throughout. The dashed downside line, which also subtracts committed bill-of-quantities spend, falls below zero from the week of 9 November onward.">
+        <!-- gridlines -->
+        <g stroke="#e7e3de" stroke-width="1">
+          <line x1="60" y1="30"    x2="880" y2="30"/>
+          <line x1="60" y1="63.3"  x2="880" y2="63.3"/>
+          <line x1="60" y1="96.7"  x2="880" y2="96.7"/>
+          <line x1="60" y1="130"   x2="880" y2="130"/>
+          <line x1="60" y1="196.7" x2="880" y2="196.7"/>
+          <line x1="60" y1="230"   x2="880" y2="230"/>
+        </g>
+        <g font-size="10" fill="#9ca3af" font-family="DM Mono" text-anchor="end">
+          <text x="54" y="34">2.0m</text><text x="54" y="67">1.5m</text><text x="54" y="100">1.0m</text>
+          <text x="54" y="134">0.5m</text><text x="54" y="200">−0.5m</text><text x="54" y="234">−1.0m</text>
+        </g>
+
+        <!-- downside risk band: between weighted and downside -->
+        <polygon opacity=".14" fill="#E8512A" points="60,59.4 128.3,82.6 196.7,50 265,91.6 333.3,101 401.7,118.2 470,146.7 538.3,136.4 606.7,156.9 675,175.8 743.3,154.4 811.7,150.5 880,147.5 880,178.4 811.7,181.4 743.3,185.4 675,206.8 606.7,187.8 538.3,167.4 470,177.6 401.7,149.2 333.3,132 265,122.6 196.7,76.7 128.3,98.6 60,59.4"/>
+
+        <!-- reserve threshold 250,000 -->
+        <line x1="60" y1="146.7" x2="880" y2="146.7" stroke="#96620a" stroke-width="1" stroke-dasharray="2 4"/>
+        <text x="884" y="150" font-size="9.5" fill="#96620a" font-family="DM Mono">reserve 250k</text>
+
+        <!-- zero -->
+        <line x1="60" y1="163.3" x2="880" y2="163.3" stroke="#a8362d" stroke-width="1.5"/>
+        <text x="54" y="167" text-anchor="end" font-size="10" fill="#a8362d" font-family="DM Mono">0</text>
+
+        <!-- gross -->
+        <polyline fill="none" stroke="#9ca3af" stroke-width="2"
+          points="60,55.4 128.3,73.6 196.7,32.4 265,71.3 333.3,75 401.7,87.6 470,111 538.3,94.1 606.7,109.2 675,122.8 743.3,96 811.7,87.5 880,80.8"/>
+        <!-- downside incl. committed BoQ -->
+        <polyline fill="none" stroke="#E8512A" stroke-width="1.75" stroke-dasharray="6 4"
+          points="60,59.4 128.3,98.6 196.7,76.7 265,122.6 333.3,132 401.7,149.2 470,177.6 538.3,167.4 606.7,187.8 675,206.8 743.3,185.4 811.7,181.4 880,178.4"/>
+        <!-- weighted (official) -->
+        <polyline fill="none" stroke="#245e9b" stroke-width="2.75"
+          points="60,59.4 128.3,82.6 196.7,50 265,91.6 333.3,101 401.7,118.2 470,146.7 538.3,136.4 606.7,156.9 675,175.8 743.3,154.4 811.7,150.5 880,147.5"/>
+
+        <!-- markers: low-cash weeks + shortfall week -->
+        <circle cx="470"   cy="146.7" r="4" fill="#96620a"/>
+        <circle cx="606.7" cy="156.9" r="4" fill="#96620a"/>
+        <circle cx="675"   cy="175.8" r="5.5" fill="#a8362d"/>
+        <text x="675" y="194" text-anchor="middle" font-size="10" font-weight="700" fill="#a8362d" font-family="DM Mono">▼ −187,600</text>
+
+        <g font-size="9.5" fill="#9ca3af" text-anchor="middle">
+          <text x="60" y="252">28 Sep</text><text x="196.7" y="252">12 Oct</text><text x="333.3" y="252">26 Oct</text>
+          <text x="470" y="252">9 Nov</text><text x="606.7" y="252">23 Nov</text><text x="743.3" y="252">7 Dec</text>
+          <text x="880" y="252">21 Dec</text>
+        </g>
+        <text x="60" y="270" font-size="10" fill="#6b7280">Mondays · ISO weeks</text>
+      </svg>
+
+      <div class="note" style="margin-top:8px;display:grid;gap:4px">
+        <div><strong>Weighted</strong> is the official closing figure — expected receipts discounted by collection confidence.</div>
+        <div><strong>Gross</strong> assumes everyone pays in full and on time. The gap between the two is your collection risk.</div>
+        <div><strong>Downside</strong> additionally subtracts committed BoQ spend that has not been invoiced yet. It is a warning line, never the official balance.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h">
+      <span class="card-t">All 13 weeks</span>
+      <span class="note">Closing = Opening + In − Out. Committed BoQ is shown but excluded from Closing.</span>
+    </div>
+    <div class="card-b scroll-x">
+      <table>
+        <caption class="note" style="text-align:left;padding-bottom:10px">ISO weeks, Monday start. No weeks omitted.</caption>
+        <thead><tr>
+          <th>Week (Mon)</th><th class="r">Opening</th><th class="r">In</th><th class="r">Out</th>
+          <th class="r">Closing</th><th class="r">Committed BoQ</th><th>State</th>
+        </tr></thead>
+        <tbody>
+          <tr><td>28 Sep</td><td class="r num">1,636,600</td><td class="r num" style="color:var(--green)">420,000</td><td class="r num" style="color:var(--red)">498,000</td><td class="r num">1,558,600</td><td class="r num" style="color:var(--coral)">—</td><td></td></tr>
+          <tr><td>5 Oct</td><td class="r num">1,558,600</td><td class="r num" style="color:var(--green)">265,000</td><td class="r num" style="color:var(--red)">612,000</td><td class="r num">1,211,600</td><td class="r num" style="color:var(--coral)">240,000</td><td></td></tr>
+          <tr><td>12 Oct</td><td class="r num">1,211,600</td><td class="r num" style="color:var(--green)">890,000</td><td class="r num" style="color:var(--red)">402,000</td><td class="r num">1,699,600</td><td class="r num" style="color:var(--coral)">160,000</td><td></td></tr>
+          <tr><td>19 Oct</td><td class="r num">1,699,600</td><td class="r num" style="color:var(--green)">120,000</td><td class="r num" style="color:var(--red)">744,000</td><td class="r num">1,075,600</td><td class="r num" style="color:var(--coral)">64,000</td><td></td></tr>
+          <tr><td>26 Oct</td><td class="r num">1,075,600</td><td class="r num" style="color:var(--green)">380,000</td><td class="r num" style="color:var(--red)">521,000</td><td class="r num">934,600</td><td class="r num" style="color:var(--coral)">—</td><td></td></tr>
+          <tr><td>2 Nov</td><td class="r num">934,600</td><td class="r num" style="color:var(--green)">210,000</td><td class="r num" style="color:var(--red)">468,000</td><td class="r num">676,600</td><td class="r num" style="color:var(--coral)">—</td><td></td></tr>
+          <tr style="background:var(--amberBg)"><td><strong>9 Nov</strong></td><td class="r num">676,600</td><td class="r num" style="color:var(--green)">165,000</td><td class="r num" style="color:var(--red)">592,000</td><td class="r num" style="color:var(--amber);font-weight:700">249,600</td><td class="r num" style="color:var(--coral)">—</td><td><span class="pill p-amber">⚠ Low cash</span></td></tr>
+          <tr><td>16 Nov</td><td class="r num">249,600</td><td class="r num" style="color:var(--green)">540,000</td><td class="r num" style="color:var(--red)">386,000</td><td class="r num">403,600</td><td class="r num" style="color:var(--coral)">—</td><td></td></tr>
+          <tr style="background:var(--amberBg)"><td><strong>23 Nov</strong></td><td class="r num">403,600</td><td class="r num" style="color:var(--green)">210,000</td><td class="r num" style="color:var(--red)">517,200</td><td class="r num" style="color:var(--amber);font-weight:700">96,400</td><td class="r num" style="color:var(--coral)">—</td><td><span class="pill p-amber">⚠ Low cash</span></td></tr>
+          <tr style="background:var(--redBg)"><td><strong>30 Nov</strong></td><td class="r num">96,400</td><td class="r num" style="color:var(--green)">180,000</td><td class="r num" style="color:var(--red)">464,000</td><td class="r num" style="color:var(--red);font-weight:700">−187,600</td><td class="r num" style="color:var(--coral)">—</td><td><span class="pill p-red">▼ Shortfall</span></td></tr>
+          <tr><td>7 Dec</td><td class="r num" style="color:var(--red)">−187,600</td><td class="r num" style="color:var(--green)">620,000</td><td class="r num" style="color:var(--red)">298,000</td><td class="r num">134,400</td><td class="r num" style="color:var(--coral)">—</td><td><span class="pill p-amber">⚠ Low cash</span></td></tr>
+          <tr><td>14 Dec</td><td class="r num">134,400</td><td class="r num" style="color:var(--green)">410,000</td><td class="r num" style="color:var(--red)">352,000</td><td class="r num">192,400</td><td class="r num" style="color:var(--coral)">—</td><td><span class="pill p-amber">⚠ Low cash</span></td></tr>
+          <tr><td>21 Dec</td><td class="r num">192,400</td><td class="r num" style="color:var(--green)">285,000</td><td class="r num" style="color:var(--red)">240,000</td><td class="r num">237,400</td><td class="r num" style="color:var(--coral)">—</td><td><span class="pill p-amber">⚠ Low cash</span></td></tr>
+          <tr style="border-top:2px solid var(--line)"><td colspan="5" class="note" style="padding-top:12px">Committed BoQ total across the horizon — excluded from every Closing figure above</td><td class="r num" style="color:var(--coral);font-weight:700;padding-top:12px">464,000</td><td></td></tr>
+        </tbody>
+      </table>
+      <div class="note" style="margin-top:12px">
+        <strong>Two distinct states.</strong> <span class="pill p-amber">⚠ Low cash</span> closing is positive but below the
+        <span class="mono">250,000</span> reserve threshold. <span class="pill p-red">▼ Shortfall</span> closing is below zero.
+        The chart, the KPI, the banners and this table all read the same computed series.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ MONEY IN ══════════════════ -->
+<section class="panel" id="in" role="tabpanel" aria-labelledby="t-in" tabindex="0" hidden>
+
+  <div class="grid cols-3" style="margin-bottom:14px">
+    <div class="card"><div class="card-b"><div class="kpi-l">Outstanding</div><div class="kpi-v">2,847,000</div><div class="kpi-s">18 orders</div></div></div>
+    <div class="card"><div class="card-b"><div class="kpi-l">Overdue</div><div class="kpi-v" style="color:var(--red)">612,000</div><div class="kpi-s">▲ 5 orders · oldest 47 days</div></div></div>
+    <div class="card"><div class="card-b"><div class="kpi-l">Weighted, next 30 days</div><div class="kpi-v" style="color:var(--green)">1,204,000</div><div class="kpi-s">Gross 1,480,000</div></div></div>
+  </div>
+
+  <div class="banner b-amber">
+    <span class="b-tag">⚠ Stale overrides</span>
+    <span>2 manually set expected dates have not been reviewed in over 30 days. They still drive the projection.
+      <a href="#" style="color:inherit">Review them</a></span>
+  </div>
+
+  <div class="card">
+    <div class="card-h">
+      <span class="card-t">Expected receipts</span>
+      <span style="display:flex;gap:7px;flex-wrap:wrap">
+        <button class="btn sm">All</button><button class="btn sm">Overdue</button>
+        <button class="btn sm">Uncertain</button><button class="btn sm">Stale overrides</button>
+      </span>
+    </div>
+    <div class="card-b scroll-x">
+      <table class="rt">
+        <thead><tr>
+          <th>Customer / order</th><th class="r">Total</th><th class="r">Paid</th><th class="r">Outstanding</th>
+          <th>Expected date</th><th>Confidence</th><th>Latest collection action</th><th></th>
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td data-l="Customer"><div style="font-weight:500">Caviar Interiors</div><div class="mono tiny" style="color:var(--faint)">ORD-099 · INV-2026-0142</div></td>
+            <td data-l="Total" class="r num">1,240,000</td>
+            <td data-l="Paid" class="r num">620,000</td>
+            <td data-l="Outstanding" class="r num" style="font-weight:500">620,000</td>
+            <td data-l="Expected"><div>Fri 2 Oct 2026</div><div class="src">Due date 28 Sep + 4d history</div></td>
+            <td data-l="Confidence"><span class="pill p-green">● Confirmed</span><div class="note tiny" style="margin-top:3px">median 4d late · 6 paid orders</div></td>
+            <td data-l="Last action"><div class="tiny">Invoice acknowledged by accounts</div><div class="tiny" style="color:var(--faint)">18 Sep · J. Kimemia</div></td>
+            <td data-l="" class="r"><button class="btn sm">Edit</button></td>
+          </tr>
+          <tr>
+            <td data-l="Customer"><div style="font-weight:500">Westlands Villas</div><div class="mono tiny" style="color:var(--faint)">ORD-101 · INV-2026-0148</div></td>
+            <td data-l="Total" class="r num">880,000</td>
+            <td data-l="Paid" class="r num">264,000</td>
+            <td data-l="Outstanding" class="r num" style="font-weight:500">616,000</td>
+            <td data-l="Expected"><div>Wed 14 Oct 2026</div><div class="src">Due date 2 Oct + 12d history</div></td>
+            <td data-l="Confidence"><span class="pill p-blue">◐ Likely</span><div class="note tiny" style="margin-top:3px">median 12d late · 4 paid orders</div></td>
+            <td data-l="Last action"><div class="tiny">Reminder sent, no reply</div><div class="tiny" style="color:var(--faint)">15 Sep · M. Achieng</div></td>
+            <td data-l="" class="r"><button class="btn sm">Edit</button></td>
+          </tr>
+          <tr>
+            <td data-l="Customer"><div style="font-weight:500">Kilimani Offices</div><div class="mono tiny" style="color:var(--faint)">ORD-094 · INV-2026-0131</div></td>
+            <td data-l="Total" class="r num">465,000</td>
+            <td data-l="Paid" class="r num">0</td>
+            <td data-l="Outstanding" class="r num" style="font-weight:500;color:var(--red)">465,000</td>
+            <td data-l="Expected">
+              <div>Mon 12 Oct 2026</div>
+              <div class="tiny" style="color:var(--red)">▲ due 7 Aug · 47 days overdue</div>
+              <div class="src stale">Manual override · not reviewed 34d</div>
+            </td>
+            <td data-l="Confidence"><span class="pill p-amber">◔ Uncertain</span><div class="note tiny" style="margin-top:3px">median 38d late · 3 paid orders</div></td>
+            <td data-l="Last action"><div class="tiny">Promised payment after their Q3 close</div><div class="tiny" style="color:var(--faint)">20 Aug · J. Kimemia</div></td>
+            <td data-l="" class="r"><button class="btn sm p">Add note</button></td>
+          </tr>
+          <tr>
+            <td data-l="Customer"><div style="font-weight:500">Riverside Residences</div><div class="mono tiny" style="color:var(--faint)">ORD-108 · INV-2026-0155</div></td>
+            <td data-l="Total" class="r num">320,000</td>
+            <td data-l="Paid" class="r num">96,000</td>
+            <td data-l="Outstanding" class="r num" style="font-weight:500">224,000</td>
+            <td data-l="Expected"><div>Wed 28 Oct 2026</div><div class="src assumed">Payment terms only · no history</div></td>
+            <td data-l="Confidence"><span class="pill p-blue">◐ Likely</span><div class="note tiny" style="margin-top:3px">new customer · system default</div></td>
+            <td data-l="Last action"><div class="tiny" style="color:var(--faint)">No collection activity yet</div></td>
+            <td data-l="" class="r"><button class="btn sm">Add note</button></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="note" style="margin-top:12px">
+        Amounts are gross. Confidence weighting affects the projection only — never the figure you chase.
+        <strong>Add note</strong> records a collection action; it does not send anything to the customer.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ PAYMENTS PLAN ══════════════════ -->
+<section class="panel" id="pay" role="tabpanel" aria-labelledby="t-pay" tabindex="0" hidden>
+
+  <div class="card" style="margin-bottom:14px"><div class="card-b" style="display:flex;gap:26px;flex-wrap:wrap;align-items:baseline">
+    <div><div class="kpi-l">Available now <span class="src assumed">provisional</span></div><div class="kpi-v">KES 1,636,600</div></div>
+    <div><div class="kpi-l">Planned · next 30 days</div><div class="kpi-v" style="color:var(--red)">KES 564,000</div><div class="kpi-s">Excludes 92,000 held</div></div>
+    <div style="padding-left:26px;border-left:1px solid var(--line)">
+      <div class="kpi-l">Cash remaining after plan</div>
+      <div class="kpi-v" style="color:var(--green)">KES 1,072,600</div>
+      <div class="kpi-s">Updates live as you edit amounts</div>
+    </div>
+  </div></div>
+
+  <div class="banner b-red">
+    <span class="b-tag">▲ 2 overdue</span>
+    <span><span class="mono">130,000</span> past its due date. 1 is planned; <strong>1 is still unplanned</strong>.
+      <a href="#" style="color:inherit">Show overdue only</a></span>
+  </div>
+
+  <div class="banner b-amber">
+    <span class="b-tag">⚠ Stale plan</span>
+    <span>This payment plan was last edited <strong>11 days ago</strong> by J. Kimemia. 4 obligations have changed since.
+      <a href="#" style="color:inherit">Refresh from source</a></span>
+  </div>
+
+  <div class="card">
+    <div class="card-h">
+      <span class="card-t">Obligations · next 30 days</span>
+      <span style="display:flex;gap:7px;flex-wrap:wrap">
+        <button class="btn sm">Next 30 days</button><button class="btn sm">All</button><button class="btn sm p">+ Add obligation</button>
+      </span>
+    </div>
+    <div class="card-b scroll-x">
+      <table class="rt">
+        <thead><tr>
+          <th>What</th><th class="r">Outstanding</th><th>Due</th><th class="r">Planned</th><th>When</th><th>Budget</th><th>Priority</th><th></th>
+        </tr></thead>
+        <tbody>
+
+          <tr class="grp"><td colspan="8">Must pay · planned KES 444,000</td></tr>
+
+          <tr>
+            <td data-l="What"><div style="font-weight:500">KRA VAT — August 2026</div><div class="note tiny">Statutory return</div></td>
+            <td data-l="Outstanding" class="r num">96,000</td>
+            <td data-l="Due"><div style="color:var(--red)">20 Sep 2026</div><div class="tiny" style="color:var(--red)">▲ 3 days overdue</div><div class="src">Statutory calendar</div></td>
+            <td data-l="Planned" class="r num">96,000</td>
+            <td data-l="When">Thu 25 Sep</td>
+            <td data-l="Budget"><span class="pill p-grey">● Statutory</span></td>
+            <td data-l="Priority"><details><summary>Must pay</summary><div class="note tiny">Rule: statutory obligation past due date → Must pay. Not user-set.</div></details></td>
+            <td data-l="" class="r"><button class="btn sm">Edit</button></td>
+          </tr>
+
+          <tr>
+            <td data-l="What"><div style="font-weight:500">Workshop rent · October 2026</div><div class="note tiny">Recurring, 1st of each month · occurrence 2026-10</div></td>
+            <td data-l="Outstanding" class="r num">114,000</td>
+            <td data-l="Due"><div>1 Oct 2026</div><div class="src">Recurrence rule</div></td>
+            <td data-l="Planned" class="r num">114,000</td>
+            <td data-l="When">Thu 1 Oct</td>
+            <td data-l="Budget"><span class="pill p-blue">● Rent &amp; utilities</span></td>
+            <td data-l="Priority"><details><summary>Must pay</summary><div class="note tiny">Rule: obligation category "rent" is configured as Must pay in settings.</div></details></td>
+            <td data-l="" class="r"><button class="btn sm">Edit</button></td>
+          </tr>
+
+          <tr>
+            <td data-l="What"><div style="font-weight:500">SHA remittance</div><div class="note tiny">From payroll PR-2026-CA-026</div></td>
+            <td data-l="Outstanding" class="r num">48,000</td>
+            <td data-l="Due"><div>9 Oct 2026</div><div class="src">Derived from payroll</div></td>
+            <td data-l="Planned" class="r num">48,000</td>
+            <td data-l="When">Fri 9 Oct</td>
+            <td data-l="Budget"><span class="pill p-grey">● Statutory</span></td>
+            <td data-l="Priority"><details><summary>Must pay</summary><div class="note tiny">Rule: payroll-derived statutory deduction → always Must pay.</div></details></td>
+            <td data-l="" class="r"><button class="btn sm">Edit</button></td>
+          </tr>
+
+          <tr>
+            <td data-l="What"><div style="font-weight:500">PAYE</div><div class="note tiny">Not yet modelled in payroll — entered by hand</div></td>
+            <td data-l="Outstanding" class="r num">186,000</td>
+            <td data-l="Due"><div>9 Oct 2026</div><div class="src assumed">Manual estimate</div></td>
+            <td data-l="Planned" class="r num">186,000</td>
+            <td data-l="When">Fri 9 Oct</td>
+            <td data-l="Budget"><span class="pill p-grey">● Statutory</span></td>
+            <td data-l="Priority"><details><summary>Must pay</summary><div class="note tiny">Rule: category "statutory" → Must pay. Amount is an estimate, not derived.</div></details></td>
+            <td data-l="" class="r"><button class="btn sm">Edit</button></td>
+          </tr>
+
+          <tr class="grp"><td colspan="8">Important · planned KES 120,000</td></tr>
+
+          <tr>
+            <td data-l="What"><div style="font-weight:500">Timber Ltd</div><div class="mono tiny" style="color:var(--faint)">PUR-2026-0311 · ORD-099</div></td>
+            <td data-l="Outstanding" class="r num">180,000</td>
+            <td data-l="Due"><div>26 Oct 2026</div><div class="src">Supplier terms · 30 days</div></td>
+            <td data-l="Planned" class="r num">120,000<div class="tiny" style="color:var(--amber);font-weight:400">60,000 unplanned</div></td>
+            <td data-l="When">
+              <details>
+                <summary>2 installments</summary>
+                <table style="margin-top:6px;font-size:12px">
+                  <tr><td style="border:0;padding:2px 10px 2px 0">1 of 2</td><td class="num" style="border:0;padding:2px 0">80,000</td><td style="border:0;padding:2px 0 2px 10px">Tue 13 Oct</td></tr>
+                  <tr><td style="border:0;padding:2px 10px 2px 0">2 of 2</td><td class="num" style="border:0;padding:2px 0">40,000</td><td style="border:0;padding:2px 0 2px 10px">Sat 24 Oct</td></tr>
+                  <tr><td style="border-top:1px solid var(--line);padding:4px 10px 0 0;color:var(--amber)">Unplanned</td><td class="num" style="border-top:1px solid var(--line);padding:4px 0 0;color:var(--amber)">60,000</td><td style="border-top:1px solid var(--line);padding:4px 0 0 10px;color:var(--amber)">—</td></tr>
+                </table>
+              </details>
+            </td>
+            <td data-l="Budget"><span class="pill p-amber">▲ Materials 112%</span></td>
+            <td data-l="Priority"><details><summary>Important</summary><div class="note tiny">Rule: supplier linked to an Active production plan, due within 45 days.</div></details></td>
+            <td data-l="" class="r"><button class="btn sm">Edit</button></td>
+          </tr>
+
+          <tr class="grp"><td colspan="8">Can wait · planned KES 0</td></tr>
+
+          <tr>
+            <td data-l="What"><div style="font-weight:500">Hardware Junction</div><div class="mono tiny" style="color:var(--faint)">PUR-2026-0298</div></td>
+            <td data-l="Outstanding" class="r num">64,500</td>
+            <td data-l="Due"><div>18 Dec 2026</div><div class="src assumed">Assumed 30 days · no terms on supplier</div></td>
+            <td data-l="Planned" class="r num" style="color:var(--faint)">—</td>
+            <td data-l="When" style="color:var(--faint)">—</td>
+            <td data-l="Budget"><span class="pill p-blue">● Materials</span></td>
+            <td data-l="Priority"><details><summary>Can wait</summary><div class="note tiny">Rule: due more than 45 days out and not linked to an active plan.</div></details></td>
+            <td data-l="" class="r"><button class="btn sm">Plan</button></td>
+          </tr>
+
+          <tr class="grp"><td colspan="8" style="color:var(--amber)">On hold · KES 92,000 — excluded from the planned total and from the projection</td></tr>
+
+          <tr style="opacity:.72">
+            <td data-l="What"><div style="font-weight:500">Glass &amp; Mirror Co</div><div class="note tiny">Held 8 Sep by J. Kimemia — disputed breakage on delivery</div></td>
+            <td data-l="Outstanding" class="r num">92,000</td>
+            <td data-l="Due"><div>3 Oct 2026</div><div class="src">Supplier terms · 14 days</div></td>
+            <td data-l="Planned" class="r num" style="color:var(--amber);font-weight:500">held — not counted</td>
+            <td data-l="When" style="color:var(--faint)">—</td>
+            <td data-l="Budget"><span class="pill p-blue">● Materials</span></td>
+            <td data-l="Priority"><details><summary>On hold</summary><div class="note tiny">Set by hand. Held obligations never enter the planned total or the cashflow projection.</div></details></td>
+            <td data-l="" class="r"><button class="btn sm">Release</button></td>
+          </tr>
+
+          <tr class="grp"><td colspan="8" style="color:var(--amber)">Unplanned · 7 obligations · KES 412,000 — nobody has triaged these</td></tr>
+
+          <tr>
+            <td data-l="What"><div style="font-weight:500">Mombasa Rd Transport</div><div class="mono tiny" style="color:var(--faint)">PUR-2026-0289</div></td>
+            <td data-l="Outstanding" class="r num">34,000</td>
+            <td data-l="Due"><div style="color:var(--red)">15 Sep 2026</div><div class="tiny" style="color:var(--red)">▲ 8 days overdue</div><div class="src">Supplier terms · 14 days</div></td>
+            <td data-l="Planned" class="r num" style="color:var(--faint)">—</td>
+            <td data-l="When" style="color:var(--faint)">—</td>
+            <td data-l="Budget"><span class="pill p-blue">● Transport</span></td>
+            <td data-l="Priority"><details><summary>Not set</summary><div class="note tiny">No priority assigned. Unplanned items are excluded from the plan but still shown in the projection at their due date.</div></details></td>
+            <td data-l="" class="r"><button class="btn sm p">Plan</button></td>
+          </tr>
+          <tr>
+            <td data-l="What"><div style="font-weight:500">Nairobi Foam Supplies</div><div class="mono tiny" style="color:var(--faint)">PUR-2026-0305</div></td>
+            <td data-l="Outstanding" class="r num">88,000</td>
+            <td data-l="Due"><div>11 Oct 2026</div><div class="src assumed">Assumed 30 days · no terms on supplier</div></td>
+            <td data-l="Planned" class="r num" style="color:var(--faint)">—</td>
+            <td data-l="When" style="color:var(--faint)">—</td>
+            <td data-l="Budget"><span class="pill p-grey">● Uncategorised</span></td>
+            <td data-l="Priority"><details><summary>Not set</summary><div class="note tiny">No priority assigned and no accounting category, so it lands in no budget.</div></details></td>
+            <td data-l="" class="r"><button class="btn sm p">Plan</button></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="note" style="margin-top:12px">
+        Planned total <span class="mono">564,000</span> = Must pay <span class="mono">444,000</span> + Important <span class="mono">120,000</span>.
+        On hold (<span class="mono">92,000</span>) and Unplanned (<span class="mono">412,000</span>) are deliberately excluded.
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px;border-style:dashed;border-color:var(--coralBd);background:#fffaf8">
+    <div class="card-h" style="border-bottom-color:var(--coralBd)">
+      <span class="card-t" style="color:var(--coral)">Committed BoQ — not yet invoiced</span>
+      <span class="note">Excluded from every total above and from official closing cash</span>
+    </div>
+    <div class="card-b">
+      <div class="banner b-blue" style="margin-bottom:12px">
+        <span>Early warning only. These are costed BoQ lines on <strong>Active</strong> production plans, net of purchases already raised.
+        They are not liabilities yet. Draft plans are excluded — <a href="#" style="color:inherit">show pipeline estimate</a>.
+        This is the <span style="color:var(--coral);font-weight:700">dashed downside line</span> on the Overview chart.</span>
+      </div>
+      <table class="rt">
+        <thead><tr><th>Supplier</th><th>Needed by</th><th>Forecast week</th><th>Jobs</th><th class="r">Gross BoQ</th><th class="r">Purchased</th><th class="r">Still committed</th></tr></thead>
+        <tbody>
+          <tr>
+            <td data-l="Supplier" style="font-weight:500">Timber Ltd</td><td data-l="Needed by">Thu 8 Oct</td><td data-l="Week">wk 5 Oct</td>
+            <td data-l="Jobs" class="note">2 jobs · ORD-099, ORD-104</td>
+            <td data-l="Gross BoQ" class="r num">420,000</td><td data-l="Purchased" class="r num">180,000</td>
+            <td data-l="Committed" class="r num" style="color:var(--coral);font-weight:500">240,000</td>
+          </tr>
+          <tr>
+            <td data-l="Supplier" style="font-weight:500">Glass &amp; Mirror Co</td><td data-l="Needed by">Thu 15 Oct</td><td data-l="Week">wk 12 Oct</td>
+            <td data-l="Jobs" class="note">1 job · ORD-101</td>
+            <td data-l="Gross BoQ" class="r num">160,000</td><td data-l="Purchased" class="r num">0</td>
+            <td data-l="Committed" class="r num" style="color:var(--coral);font-weight:500">160,000</td>
+          </tr>
+          <tr>
+            <td data-l="Supplier" style="font-weight:500">Nairobi Foam Supplies</td><td data-l="Needed by">Thu 22 Oct</td><td data-l="Week">wk 19 Oct</td>
+            <td data-l="Jobs" class="note">3 jobs · ORD-104, ORD-108</td>
+            <td data-l="Gross BoQ" class="r num">96,000</td><td data-l="Purchased" class="r num">32,000</td>
+            <td data-l="Committed" class="r num" style="color:var(--coral);font-weight:500">64,000</td>
+          </tr>
+          <tr>
+            <td data-l="" colspan="6" style="font-weight:500">Total committed</td>
+            <td data-l="Total" class="r num" style="color:var(--coral);font-weight:700">464,000</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="note" style="margin-top:10px">Link coverage: <strong>68%</strong> of purchases are allocated to BoQ lines. Unlinked purchases cannot be netted off, so this figure may overstate.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ BUDGET ══════════════════ -->
+<section class="panel" id="bud" role="tabpanel" aria-labelledby="t-bud" tabindex="0" hidden>
+
+  <div class="banner b-amber">
+    <span class="b-tag">⚠ Uncategorised</span>
+    <span><span class="mono">KES 184,000</span> of October spend has no accounting category and lands in no budget below. Variance is understated until it is assigned.
+      <a href="#" style="color:inherit">Categorise now</a></span>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div class="card-h">
+      <span class="card-t">Overhead budgets — October 2026</span>
+      <span style="display:flex;gap:7px"><button class="btn sm" aria-label="Previous month">◀</button><button class="btn sm">October 2026</button><button class="btn sm" aria-label="Next month">▶</button></span>
+    </div>
+    <div class="card-b scroll-x">
+      <table class="rt">
+        <thead><tr>
+          <th>Category</th><th class="r">Budgeted</th><th class="r">Incurred</th><th class="r">Committed</th>
+          <th class="r">Available</th><th style="min-width:180px">Use of budget</th><th class="r">Variance</th>
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td data-l="Category" style="font-weight:500">Materials</td>
+            <td data-l="Budgeted" class="r num">1,200,000</td>
+            <td data-l="Incurred" class="r num">890,000</td>
+            <td data-l="Committed" class="r num" style="color:var(--coral)">454,000</td>
+            <td data-l="Available" class="r num" style="color:var(--red);font-weight:500">−144,000</td>
+            <td data-l="Use">
+              <div class="bar">
+                <div class="seg s-inc"  style="left:0;width:61.81%"></div>
+                <div class="seg s-com"  style="left:61.81%;width:21.52%"></div>
+                <div class="seg s-over" style="left:83.33%;width:10.00%"></div>
+                <div class="mark" style="left:83.33%"></div>
+              </div>
+              <div class="tiny" style="color:var(--red);margin-top:4px">▲ 144,000 beyond budget</div>
+            </td>
+            <td data-l="Variance" class="r num" style="color:var(--red);font-weight:700">▲ 112%</td>
+          </tr>
+          <tr>
+            <td data-l="Category" style="font-weight:500">Rent &amp; utilities</td>
+            <td data-l="Budgeted" class="r num">180,000</td>
+            <td data-l="Incurred" class="r num">114,000</td>
+            <td data-l="Committed" class="r num" style="color:var(--coral)">66,000</td>
+            <td data-l="Available" class="r num">0</td>
+            <td data-l="Use">
+              <div class="bar">
+                <div class="seg s-inc" style="left:0;width:52.78%"></div>
+                <div class="seg s-com" style="left:52.78%;width:30.55%"></div>
+                <div class="mark" style="left:83.33%"></div>
+              </div>
+              <div class="tiny" style="color:var(--muted);margin-top:4px">● fully allocated</div>
+            </td>
+            <td data-l="Variance" class="r num">● 100%</td>
+          </tr>
+          <tr>
+            <td data-l="Category" style="font-weight:500">Transport</td>
+            <td data-l="Budgeted" class="r num">140,000</td>
+            <td data-l="Incurred" class="r num">62,000</td>
+            <td data-l="Committed" class="r num" style="color:var(--coral)">18,000</td>
+            <td data-l="Available" class="r num" style="color:var(--green);font-weight:500">60,000</td>
+            <td data-l="Use">
+              <div class="bar">
+                <div class="seg s-inc" style="left:0;width:36.90%"></div>
+                <div class="seg s-com" style="left:36.90%;width:10.71%"></div>
+                <div class="mark" style="left:83.33%"></div>
+              </div>
+              <div class="tiny" style="color:var(--green);margin-top:4px">▼ 60,000 available</div>
+            </td>
+            <td data-l="Variance" class="r num" style="color:var(--green)">▼ 57%</td>
+          </tr>
+          <tr>
+            <td data-l="Category" style="font-weight:500">Admin &amp; software</td>
+            <td data-l="Budgeted" class="r num">60,000</td>
+            <td data-l="Incurred" class="r num">41,000</td>
+            <td data-l="Committed" class="r num" style="color:var(--coral)">0</td>
+            <td data-l="Available" class="r num" style="color:var(--green);font-weight:500">19,000</td>
+            <td data-l="Use">
+              <div class="bar">
+                <div class="seg s-inc" style="left:0;width:56.94%"></div>
+                <div class="mark" style="left:83.33%"></div>
+              </div>
+              <div class="tiny" style="color:var(--green);margin-top:4px">▼ 19,000 available</div>
+            </td>
+            <td data-l="Variance" class="r num" style="color:var(--green)">▼ 68%</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--blue)"></span><strong>Incurred</strong> — expense posted, paid or not</span>
+        <span><span class="dot" style="background:var(--coral)"></span><strong>Committed</strong> — owed, not yet posted</span>
+        <span><span class="dot" style="background:#a8362d"></span><strong>Over budget</strong> — beyond the dashed 100% marker</span>
+        <span style="color:var(--faint)">Available = Budgeted − Incurred − Committed. Bars are drawn on a 0–120% scale so overspend is visible.</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid split">
+    <div class="card">
+      <div class="card-h"><span class="card-t">Job budgets</span><span class="note">Active plans</span></div>
+      <div class="card-b scroll-x">
+        <table class="rt">
+          <thead><tr>
+            <th>Order</th><th class="r">Original BoQ budget</th><th class="r">Approved adjustments</th><th class="r">Current budget</th>
+            <th class="r">Incurred</th><th class="r">Committed</th><th class="r">Available</th>
+          </tr></thead>
+          <tbody>
+            <tr>
+              <td data-l="Order"><div style="font-weight:500">Caviar Interiors</div><div class="mono tiny" style="color:var(--faint)">ORD-099</div></td>
+              <td data-l="Original" class="r num">642,000</td>
+              <td data-l="Adjustments" class="r num" style="color:var(--amber)">+24,000<div class="tiny" style="font-weight:400">1 variation</div></td>
+              <td data-l="Current" class="r num" style="font-weight:500">666,000</td>
+              <td data-l="Incurred" class="r num">498,000</td>
+              <td data-l="Committed" class="r num" style="color:var(--coral)">96,000</td>
+              <td data-l="Available" class="r num" style="color:var(--green)">▼ 72,000</td>
+            </tr>
+            <tr>
+              <td data-l="Order"><div style="font-weight:500">Westlands Villas</div><div class="mono tiny" style="color:var(--faint)">ORD-101</div></td>
+              <td data-l="Original" class="r num">410,000</td>
+              <td data-l="Adjustments" class="r num" style="color:var(--faint)">—</td>
+              <td data-l="Current" class="r num" style="font-weight:500">410,000</td>
+              <td data-l="Incurred" class="r num">286,000</td>
+              <td data-l="Committed" class="r num" style="color:var(--coral)">160,000</td>
+              <td data-l="Available" class="r num" style="color:var(--red);font-weight:700">▲ −36,000</td>
+            </tr>
+            <tr>
+              <td data-l="Order"><div style="font-weight:500">Riverside Residences</div><div class="mono tiny" style="color:var(--faint)">ORD-108</div></td>
+              <td data-l="Original" class="r num">198,000</td>
+              <td data-l="Adjustments" class="r num" style="color:var(--faint)">—</td>
+              <td data-l="Current" class="r num" style="font-weight:500">198,000</td>
+              <td data-l="Incurred" class="r num">44,000</td>
+              <td data-l="Committed" class="r num" style="color:var(--coral)">64,000</td>
+              <td data-l="Available" class="r num" style="color:var(--green)">▼ 90,000</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="note" style="margin-top:10px">
+          A job budget is seeded once from the costed BoQ and frozen as <strong>Original</strong>.
+          Later BoQ edits become <strong>Approved adjustments</strong>, never a rewritten baseline — so an overrun cannot be hidden by re-costing the job.
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-h"><span class="card-t">Month projection</span></div>
+      <div class="card-b">
+        <div style="margin-bottom:16px">
+          <div class="kpi-l">Run-rate — spend to date extrapolated</div>
+          <div class="kpi-v" style="font-size:20px">KES 1,542,000</div>
+          <div class="kpi-s">Honest for steady overheads</div>
+        </div>
+        <div style="padding-top:14px;border-top:1px solid var(--line)">
+          <div class="kpi-l">Commitment — incurred plus committed</div>
+          <div class="kpi-v" style="font-size:20px;color:var(--amber)">KES 1,645,000</div>
+          <div class="kpi-s">Believe this one for materials</div>
+        </div>
+        <div class="banner b-amber" style="margin:14px 0 0;font-size:12px">
+          <span>The two disagree by <span class="mono">103,000</span>. Materials is volatile this month — commitment is the number to trust.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+  <div class="foot">Canvas Guy Tracker — Cashflow &amp; budget · Phase 1 mockup rev 2 · illustrative figures · 23 Sep 2026</div>
+</div>
+
+<script>
+(function(){
+  var tabs   = Array.prototype.slice.call(document.querySelectorAll('.tab'));
+  var panels = tabs.map(function(t){ return document.getElementById(t.getAttribute('aria-controls')); });
+
+  function select(i, focus){
+    tabs.forEach(function(t, j){
+      var on = i === j;
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.tabIndex = on ? 0 : -1;
+      panels[j].hidden = !on;
+    });
+    if (focus) tabs[i].focus();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  tabs.forEach(function(t, i){
+    t.addEventListener('click', function(){ select(i, false); });
+    t.addEventListener('keydown', function(e){
+      var n = null;
+      if (e.key === 'ArrowRight') n = (i + 1) % tabs.length;
+      else if (e.key === 'ArrowLeft') n = (i - 1 + tabs.length) % tabs.length;
+      else if (e.key === 'Home') n = 0;
+      else if (e.key === 'End') n = tabs.length - 1;
+      if (n !== null){ e.preventDefault(); select(n, true); }
+    });
+  });
+})();
+</script>
+</body>
+</html>
