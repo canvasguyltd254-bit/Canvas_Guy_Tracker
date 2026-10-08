@@ -250,6 +250,26 @@ export async function PATCH(request, props) {
       return NextResponse.json({ error: 'Customer name cannot be empty' }, { status: 400 });
     }
 
+    // The edit form sends "" for empty fields. Postgres rejects "" for numeric and
+    // date columns, so normalise exactly as the create route does.
+    for (const f of ['credit_limit', 'opening_balance']) {
+      if (update[f] !== undefined) {
+        const n = update[f] === '' || update[f] === null ? 0 : Number(update[f]);
+        if (!Number.isFinite(n)) return NextResponse.json({ error: `${f.replace('_', ' ')} must be a number` }, { status: 400 });
+        if (f === 'credit_limit' && n < 0) return NextResponse.json({ error: 'credit limit cannot be negative' }, { status: 400 });
+        update[f] = n;
+      }
+    }
+    if (update.opening_balance_date !== undefined) {
+      const d = update.opening_balance_date;
+      if (d === '' || d === null) update.opening_balance_date = null;
+      else if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return NextResponse.json({ error: 'opening balance date must be YYYY-MM-DD' }, { status: 400 });
+    }
+    for (const f of ['contact_person', 'phone', 'email', 'address', 'kra_pin', 'notes']) {
+      if (update[f] !== undefined) update[f] = typeof update[f] === 'string' && update[f].trim() === '' ? null : update[f];
+    }
+    if (update.name !== undefined) update.name = update.name.trim();
+
     const { data, error } = await serviceClient
       .from('customers')
       .update(update)
@@ -259,7 +279,7 @@ export async function PATCH(request, props) {
 
     if (error) {
       console.error('PATCH /api/customers/[id]:', error);
-      return NextResponse.json({ error: 'Failed to update customer' }, { status: 500 });
+      return NextResponse.json({ error: 'Failed to update customer', detail: error.message }, { status: 500 });
     }
 
     return NextResponse.json({ success: true, data });
