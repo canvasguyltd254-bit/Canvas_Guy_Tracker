@@ -8,7 +8,14 @@
  *   customerId  — if set, hides customer column and pre-filters to this customer
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import {
+  AGEING_BUCKETS, isLiveInvoice, owes, dueInfo, invoiceTabs, invoiceTabCounts,
+  matchesInvoiceSearch, summariseInvoices,
+} from '@/shared/lib/invoiceView';
+import { isCancelled } from '@/shared/lib/reports/orderRules';
+
+const isCancelledStatus = (inv) => isCancelled(inv);
 
 // ─── Design tokens (duplicated from CrmModule for portability) ────────────────
 const C = {
@@ -428,219 +435,301 @@ function InvoiceDetailPanel({ orderId, onClose }) {
 }
 
 // ─── InvoicesTab (exported) ───────────────────────────────────────────────────
+// Metrics, tabs and urgency come from shared/lib/invoiceView.js; this component
+// only lays them out. Search and tabs run in the browser (so counts stay right);
+// the date range, VAT mode and order status are server filters under "More filters".
+const TAB_LABEL = { all: 'All', outstanding: 'Outstanding', overdue: 'Overdue', paid: 'Paid', pending: 'Pending issuance', cancelled: 'Cancelled' };
+const TONE_COLOR = { red: C.red, amber: C.amber, muted: C.muted };
+const AGE_COLOR = { current: '#9ca3af', d1_30: '#e6a23c', d31_60: '#e8772a', d61_90: '#d9472b', d90p: '#a8362d', nodate: '#cfcac3' };
+
+function useWidth() {
+  const [w, setW] = useState(typeof window !== 'undefined' ? window.innerWidth : 1200);
+  useEffect(() => {
+    const h = () => setW(window.innerWidth);
+    window.addEventListener('resize', h);
+    return () => window.removeEventListener('resize', h);
+  }, []);
+  return w;
+}
+
+const Stat = ({ label, value, sub, alert, onClick }) => (
+  <div onClick={onClick} role={onClick ? 'button' : undefined} tabIndex={onClick ? 0 : undefined}
+    onKeyDown={onClick ? e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } } : undefined}
+    style={{ background: alert ? C.redBg : C.card, border: `1px solid ${alert ? C.redBd : C.line}`, borderRadius: 10, padding: '12px 14px', cursor: onClick ? 'pointer' : 'default' }}>
+    <div style={{ color: alert ? C.red : C.muted, fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</div>
+    <div style={{ fontSize: 19, fontWeight: 800, marginTop: 5, color: alert ? C.red : C.ink, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+    {sub && <div style={{ color: C.muted, marginTop: 2, fontSize: 11 }}>{sub}</div>}
+  </div>
+);
+
 export default function InvoicesTab({ customerId, refreshKey = 0 } = {}) {
   const [invoices, setInvoices]   = useState([]);
   const [loading, setLoad]        = useState(true);
+  const [loadErr, setLoadErr]     = useState('');
   const [expandedId, setExpanded] = useState(null);
-
-  const [fCustomer,    setFCustomer]    = useState('');
-  const [fInvoice,     setFInvoice]     = useState('');
-  const [fQuote,       setFQuote]       = useState('');
-  const [fOrder,       setFOrder]       = useState('');
+  const [tab, setTab]             = useState('all');
+  const [search, setSearch]       = useState('');
+  const [showMore, setShowMore]   = useState(false);
   const [fVatMode,     setFVatMode]     = useState('');
-  const [fPmtStatus,   setFPmtStatus]   = useState('');
   const [fOrderStatus, setFOrderStatus] = useState('');
   const [fDateFrom,    setFDateFrom]    = useState('');
   const [fDateTo,      setFDateTo]      = useState('');
+  const width  = useWidth();
+  const mobile = width < 760;
+
+  const today = useMemo(() => {
+    const n = new Date();
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  }, []);
 
   const fetchInvoices = useCallback(() => {
-    setLoad(true);
+    setLoad(true); setLoadErr('');
     const p = new URLSearchParams();
-    if (customerId)    p.set('customer_id',    customerId);
-    if (fCustomer)     p.set('customer',        fCustomer);
-    if (fInvoice)      p.set('invoice',         fInvoice);
-    if (fQuote)        p.set('quote',           fQuote);
-    if (fOrder)        p.set('order',           fOrder);
-    if (fVatMode)      p.set('vat_mode',        fVatMode);
-    if (fPmtStatus)    p.set('payment_status',  fPmtStatus);
-    if (fOrderStatus)  p.set('order_status',    fOrderStatus);
-    if (fDateFrom)     p.set('date_from',       fDateFrom);
-    if (fDateTo)       p.set('date_to',         fDateTo);
+    if (customerId)    p.set('customer_id',  customerId);
+    if (fVatMode)      p.set('vat_mode',     fVatMode);
+    if (fOrderStatus)  p.set('order_status', fOrderStatus);
+    if (fDateFrom)     p.set('date_from',    fDateFrom);
+    if (fDateTo)       p.set('date_to',      fDateTo);
     fetch(`/api/crm/invoices?${p}`)
       .then(r => r.json())
       .then(j => {
-        if (j.error) { console.error('invoices fetch error:', j.error); setLoad(false); return; }
+        if (j.error) { setLoadErr(j.error); setLoad(false); return; }
         setInvoices(j.invoices || []);
         setLoad(false);
       })
-      .catch(err => { console.error('invoices fetch failed:', err); setLoad(false); });
-  }, [customerId, fCustomer, fInvoice, fQuote, fOrder, fVatMode, fPmtStatus, fOrderStatus, fDateFrom, fDateTo, refreshKey]);
+      .catch(err => { console.error('invoices fetch failed:', err); setLoadErr('Could not load invoices.'); setLoad(false); });
+  }, [customerId, fVatMode, fOrderStatus, fDateFrom, fDateTo, refreshKey]);
 
   useEffect(() => { fetchInvoices(); }, [fetchInvoices]);
 
-  const issuedInvoices = invoices.filter(i => !i.pending_invoice);
-  const totalValue  = issuedInvoices.reduce((s, i) => s + i.total_value, 0);
-  const totalPaid   = issuedInvoices.reduce((s, i) => s + i.total_paid,  0);
-  const totalBal    = issuedInvoices.reduce((s, i) => s + i.balance,     0);
-  const pendingCount = invoices.filter(i => i.pending_invoice).length;
+  const searched = useMemo(() => invoices.filter(i => matchesInvoiceSearch(i, search)), [invoices, search]);
+  const counts   = useMemo(() => invoiceTabCounts(searched, today), [searched, today]);
+  const summary  = useMemo(() => summariseInvoices(invoices, today), [invoices, today]);
+  const visible  = useMemo(() => (tab === 'all' ? searched : searched.filter(i => invoiceTabs(i, today).includes(tab))), [searched, tab, today]);
 
   const ORDER_STATUS_OPTIONS = [
     'Quote Approved', 'Deposit Paid', 'Material Check', 'Production',
     'Quality Control', 'Ready for Delivery', 'Partially Delivered', 'Delivered', 'Closed',
   ];
-
   const inputStyle = { border: `1px solid ${C.line}`, background: C.card, borderRadius: 8, padding: '7px 10px', fontSize: 12, outline: 'none' };
-  const selectStyle = { ...inputStyle, minWidth: 130 };
+  const filtersActive = !!(fVatMode || fOrderStatus || fDateFrom || fDateTo);
 
-  return (
-    <div>
-      {/* KPI bar */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 14 }}>
-        {[
-          ['Invoiced', `KES ${fmtKes(totalValue)}`, `${issuedInvoices.length} invoice${issuedInvoices.length !== 1 ? 's' : ''}`, false],
-          ['Collected', `KES ${fmtKes(totalPaid)}`, null, false],
-          ['Outstanding', `KES ${fmtKes(totalBal)}`, null, totalBal > 0],
-          ...(pendingCount > 0 ? [['Pending Issuance', String(pendingCount), 'awaiting deposit', false]] : []),
-        ].map(([label, value, sub, alert]) => (
-          <div key={label} style={{
-            background: alert ? C.redBg : C.card,
-            border: `1px solid ${alert ? C.redBd : C.line}`,
-            borderRadius: 10, padding: '13px 15px',
-          }}>
-            <div style={{ color: C.muted, fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>{label}</div>
-            <div style={{ fontSize: 20, fontWeight: 800, marginTop: 6, color: alert ? C.red : C.ink }}>{value}</div>
-            {sub && <div style={{ color: C.muted, fontSize: 11, marginTop: 4 }}>{sub}</div>}
-          </div>
+  const cards = (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10, marginBottom: 12 }}>
+      <Stat label="Invoiced" value={`KES ${fmtKes(summary.invoiced)}`} sub={`${summary.invoiceCount} invoice${summary.invoiceCount === 1 ? '' : 's'}`} />
+      <Stat label="Collected" value={`KES ${fmtKes(summary.collected)}`} sub={summary.collectionRate === null ? '—' : `${summary.collectionRate}% of invoiced`} />
+      <Stat label="Outstanding" value={`KES ${fmtKes(summary.outstanding)}`} sub={`${summary.owingCount} invoice${summary.owingCount === 1 ? '' : 's'} owing`} onClick={() => setTab('outstanding')} />
+      <Stat label="Overdue" value={`KES ${fmtKes(summary.overdue)}`} sub={summary.overdueCount > 0 ? `${summary.overdueCount} past due date` : 'Nothing overdue'} alert={summary.overdueCount > 0} onClick={() => setTab('overdue')} />
+      <Stat label="Due in 7 days" value={`KES ${fmtKes(summary.dueSoon)}`} sub={`${summary.dueSoonCount} invoice${summary.dueSoonCount === 1 ? '' : 's'}`} />
+      {summary.pendingCount > 0 && <Stat label="Pending issuance" value={summary.pendingCount} sub={`KES ${fmtKes(summary.pendingValue)} awaiting deposit`} onClick={() => setTab('pending')} />}
+    </div>
+  );
+
+  const ageing = summary.outstanding > 0 && (
+    <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, padding: '12px 14px', marginBottom: 12 }}>
+      <div style={{ fontSize: 10.5, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 8 }}>Outstanding by age past due date</div>
+      <div style={{ display: 'flex', height: 10, borderRadius: 6, overflow: 'hidden', background: C.line }} role="img"
+        aria-label={AGEING_BUCKETS.filter(b => summary.ageing[b.key] > 0).map(b => `${b.label}: KES ${fmtKes(summary.ageing[b.key])}`).join(', ')}>
+        {AGEING_BUCKETS.map(b => summary.ageing[b.key] > 0 && (
+          <div key={b.key} style={{ width: `${(summary.ageing[b.key] / summary.outstanding) * 100}%`, background: AGE_COLOR[b.key] }} title={`${b.label}: KES ${fmtKes(summary.ageing[b.key])}`} />
         ))}
       </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px', marginTop: 8, fontSize: 11.5 }}>
+        {AGEING_BUCKETS.map(b => summary.ageing[b.key] > 0 && (
+          <span key={b.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: C.ink }}>
+            <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 2, background: AGE_COLOR[b.key] }} />
+            {b.label} <strong style={{ fontVariantNumeric: 'tabular-nums' }}>KES {fmtKes(summary.ageing[b.key])}</strong>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
 
-      {/* Filters */}
-      <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 14, overflow: 'hidden' }}>
-        <div style={{ padding: '10px 14px', borderBottom: `1px solid ${C.line}`, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          {!customerId && (
-            <input value={fCustomer} onChange={e => setFCustomer(e.target.value)}
-              placeholder="Search customer…" style={{ ...inputStyle, minWidth: 150 }} />
-          )}
-          <input value={fInvoice}  onChange={e => setFInvoice(e.target.value)}  placeholder="Invoice #…"  style={{ ...inputStyle, minWidth: 120 }} />
-          <input value={fQuote}    onChange={e => setFQuote(e.target.value)}     placeholder="Quote #…"    style={{ ...inputStyle, minWidth: 120 }} />
-          <input value={fOrder}    onChange={e => setFOrder(e.target.value)}     placeholder="Order #…"    style={{ ...inputStyle, minWidth: 120 }} />
-          <select value={fVatMode} onChange={e => setFVatMode(e.target.value)} style={selectStyle}>
+  const filters = (
+    <div style={{ padding: '12px 14px 0' }}>
+      <div role="tablist" aria-label="Invoice status" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+        {Object.keys(TAB_LABEL).map(t => {
+          const active = tab === t;
+          const n = counts[t] ?? 0;
+          if ((t === 'pending' || t === 'cancelled') && n === 0 && !active) return null;
+          return (
+            <button key={t} type="button" role="tab" aria-selected={active} onClick={() => setTab(t)}
+              style={{ border: `1px solid ${active ? C.ink : C.line}`, background: active ? C.ink : C.card, color: active ? '#fff' : C.ink, borderRadius: 20, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}
+            >{TAB_LABEL[t]} <span style={{ opacity: 0.7, fontWeight: 600 }}>{n}</span></button>
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', paddingBottom: showMore ? 8 : 12 }}>
+        <input value={search} onChange={e => setSearch(e.target.value)}
+          placeholder={customerId ? 'Search invoice, quote or order number' : 'Search invoice, customer, quote or order number'}
+          style={{ ...inputStyle, flex: 1, minWidth: 220, padding: '8px 10px' }} />
+        <button type="button" onClick={() => setShowMore(s => !s)} aria-expanded={showMore}
+          style={{ ...inputStyle, cursor: 'pointer', fontWeight: 700, color: filtersActive ? C.coral : C.muted, borderColor: filtersActive ? C.coral : C.line, whiteSpace: 'nowrap' }}>
+          {showMore ? 'Hide filters' : filtersActive ? 'Filters on' : 'More filters'}
+        </button>
+      </div>
+      {showMore && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', paddingBottom: 12 }}>
+          <select value={fVatMode} onChange={e => setFVatMode(e.target.value)} style={{ ...inputStyle, minWidth: 130 }} aria-label="VAT mode">
             <option value="">All VAT modes</option>
             <option value="vat_exclusive">Excl. VAT</option>
             <option value="vat_inclusive">Incl. VAT</option>
             <option value="none">No VAT</option>
           </select>
-          <select value={fPmtStatus} onChange={e => setFPmtStatus(e.target.value)} style={selectStyle}>
-            <option value="">All payment</option>
-            <option value="unpaid">Unpaid</option>
-            <option value="part_paid">Part Paid</option>
-            <option value="paid">Paid</option>
-          </select>
-          <select value={fOrderStatus} onChange={e => setFOrderStatus(e.target.value)} style={selectStyle}>
-            <option value="">All statuses</option>
+          <select value={fOrderStatus} onChange={e => setFOrderStatus(e.target.value)} style={{ ...inputStyle, minWidth: 140 }} aria-label="Order status">
+            <option value="">All order statuses</option>
             {ORDER_STATUS_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
-          <input type="date" value={fDateFrom} onChange={e => setFDateFrom(e.target.value)} title="Invoice date from" style={inputStyle} />
-          <input type="date" value={fDateTo}   onChange={e => setFDateTo(e.target.value)}   title="Invoice date to"   style={inputStyle} />
+          <label style={{ fontSize: 11.5, color: C.muted, display: 'inline-flex', alignItems: 'center', gap: 5 }}>Invoice date from
+            <input type="date" value={fDateFrom} onChange={e => setFDateFrom(e.target.value)} style={inputStyle} /></label>
+          <label style={{ fontSize: 11.5, color: C.muted, display: 'inline-flex', alignItems: 'center', gap: 5 }}>to
+            <input type="date" value={fDateTo} onChange={e => setFDateTo(e.target.value)} style={inputStyle} /></label>
+          {filtersActive && <Btn small onClick={() => { setFVatMode(''); setFOrderStatus(''); setFDateFrom(''); setFDateTo(''); }}>Clear</Btn>}
         </div>
+      )}
+    </div>
+  );
 
-        {/* Table */}
-        {loading ? (
-          <div style={{ textAlign: 'center', padding: '50px 0', color: C.muted }}>Loading invoices…</div>
-        ) : invoices.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '50px 0', color: C.muted }}>
-            <svg width="42" height="42" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.2}
-              style={{ display: 'block', margin: '0 auto 12px', opacity: 0.3 }}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-            </svg>
-            <div style={{ fontWeight: 700, marginBottom: 5 }}>No invoices found</div>
-            <div style={{ fontSize: 12 }}>Invoices appear when a quotation is converted to an order.</div>
+  const invoiceCell = inv => (
+    <div>
+      {inv.pending_invoice
+        ? <Badge color="amber">Pending</Badge>
+        : <strong style={{ color: C.coral, whiteSpace: 'nowrap' }}>{inv.invoice_number}</strong>}
+      <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>{fmtDate(inv.invoice_issued_at)}</div>
+    </div>
+  );
+  const customerCell = inv => (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={inv.customer_name}>{inv.customer_name || '—'}</div>
+      <div style={{ fontSize: 10.5, color: C.muted, marginTop: 1 }}>
+        <span style={{ fontFamily: 'monospace' }}>{inv.order_num}</span>{inv.quote_num ? ` · ${formatQuoteRef(inv)}` : ''}
+      </div>
+    </div>
+  );
+  const balanceCell = (inv, align) => {
+    const live = isLiveInvoice(inv);
+    const due = dueInfo(inv, today);
+    return (
+      <div style={{ textAlign: align }}>
+        {!live
+          ? <span style={{ color: C.muted }}>—</span>
+          : owes(inv)
+            ? <strong style={{ color: due?.overdue ? C.red : C.ink, fontVariantNumeric: 'tabular-nums' }}>{fmtKes(inv.balance)}</strong>
+            : <Badge color="green">Paid</Badge>}
+        {live && inv.total_paid > 0 && owes(inv) && <div style={{ fontSize: 10.5, color: C.muted, marginTop: 1 }}>{fmtKes(inv.total_paid)} paid</div>}
+      </div>
+    );
+  };
+  const dueCell = inv => {
+    const due = dueInfo(inv, today);
+    if (!due) return <span style={{ color: C.muted }}>—</span>;
+    return (
+      <div>
+        <div style={{ color: TONE_COLOR[due.tone], fontWeight: due.tone === 'muted' ? 500 : 700, fontSize: 12 }}>{due.text}</div>
+        {inv.payment_due_date && <div style={{ fontSize: 10.5, color: C.muted, marginTop: 1 }}>{fmtDate(inv.payment_due_date)}</div>}
+      </div>
+    );
+  };
+  const deliveryCell = inv => {
+    const pct = inv.total_units > 0 ? Math.round((inv.delivered_units / inv.total_units) * 100) : 0;
+    return inv.total_units > 0 ? (
+      <div style={{ minWidth: 84 }}>
+        <div style={{ fontSize: 10.5, color: C.muted, marginBottom: 3 }}>{inv.delivered_units}/{inv.total_units} delivered</div>
+        <div style={{ height: 4, background: C.line, borderRadius: 4, overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${pct}%`, background: pct >= 100 ? C.green : C.coral, borderRadius: 4 }} />
+        </div>
+      </div>
+    ) : <span style={{ color: C.muted }}>—</span>;
+  };
+  const statusBadge = inv => (
+    <Badge color={
+      isCancelledStatus(inv) ? 'red' :
+      inv.status === 'Closed' || inv.status === 'Delivered' ? 'green' :
+      inv.status === 'Quality Control' ? 'blue' :
+      inv.status === 'Production' ? 'amber' : 'gray'
+    }>{inv.status}</Badge>
+  );
+
+  const body = loading ? (
+    <div style={{ textAlign: 'center', padding: '50px 0', color: C.muted }}>Loading invoices…</div>
+  ) : visible.length === 0 ? (
+    <div style={{ textAlign: 'center', padding: '44px 16px', color: C.muted }}>
+      <div style={{ fontWeight: 700, marginBottom: 5 }}>{invoices.length === 0 ? 'No invoices found' : 'No invoices match these filters'}</div>
+      <div style={{ fontSize: 12 }}>{invoices.length === 0 ? 'Invoices appear when a quotation is converted to an order.' : 'Try a different tab or search.'}</div>
+      {invoices.length > 0 && (search || tab !== 'all') && <div style={{ marginTop: 10 }}><Btn small onClick={() => { setSearch(''); setTab('all'); }}>Clear filters</Btn></div>}
+    </div>
+  ) : mobile ? (
+    <div style={{ padding: '0 12px 12px', display: 'grid', gap: 10 }}>
+      {visible.map(inv => {
+        const open = expandedId === inv.id;
+        return (
+          <div key={inv.id} style={{ border: `1px solid ${C.line}`, borderRadius: 10, background: open ? C.bg : C.card, overflow: 'hidden' }}>
+            <div style={{ padding: 12 }} onClick={() => setExpanded(open ? null : inv.id)}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
+                {invoiceCell(inv)}{statusBadge(inv)}
+              </div>
+              {!customerId && <div style={{ marginTop: 8 }}>{customerCell(inv)}</div>}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 10, gap: 8 }}>
+                <div><div style={{ fontSize: 10.5, color: C.muted }}>Total</div><strong style={{ fontVariantNumeric: 'tabular-nums' }}>KES {fmtKes(inv.total_value)}</strong></div>
+                <div style={{ textAlign: 'right' }}><div style={{ fontSize: 10.5, color: C.muted }}>Balance</div>{balanceCell(inv, 'right')}</div>
+              </div>
+              <div style={{ marginTop: 8 }}>{dueCell(inv)}</div>
+            </div>
+            {open && <div style={{ padding: '0 10px 12px' }}><InvoiceDetailPanel orderId={inv.id} onClose={() => setExpanded(null)} /></div>}
           </div>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr>
-                  <Th>Invoice #</Th>
-                  {!customerId && <Th>Customer</Th>}
-                  <Th>Quote</Th>
-                  <Th>Order</Th>
-                  <Th>VAT Mode</Th>
-                  <Th right>Total</Th>
-                  <Th right>Paid</Th>
-                  <Th right>Balance</Th>
-                  <Th>Payment</Th>
-                  <Th>Delivery</Th>
-                  <Th>Status</Th>
-                  <Th></Th>
+        );
+      })}
+    </div>
+  ) : (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr>
+            <Th>Invoice</Th>
+            {!customerId && <Th>Customer</Th>}
+            {customerId && <Th>Order</Th>}
+            <Th right>Total</Th><Th right>Balance</Th><Th>Payment due</Th><Th>Delivery</Th><Th>Order status</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {visible.map(inv => {
+            const open = expandedId === inv.id;
+            return (
+              <React.Fragment key={inv.id}>
+                <tr onClick={() => setExpanded(open ? null : inv.id)} style={{ background: open ? C.coralBg : C.card, cursor: 'pointer' }}>
+                  <Td style={{ whiteSpace: 'nowrap', width: 1 }}>{invoiceCell(inv)}</Td>
+                  <Td style={{ maxWidth: 300 }}>{customerId
+                    ? <span><span style={{ fontFamily: 'monospace', fontSize: 11.5 }}>{inv.order_num}</span>{inv.quote_num ? <div style={{ fontSize: 10.5, color: C.muted }}>{formatQuoteRef(inv)}</div> : null}</span>
+                    : customerCell(inv)}</Td>
+                  <Td right style={{ whiteSpace: 'nowrap' }}><strong style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtKes(inv.total_value)}</strong></Td>
+                  <Td right style={{ whiteSpace: 'nowrap' }}>{balanceCell(inv, 'right')}</Td>
+                  <Td style={{ whiteSpace: 'nowrap' }}>{dueCell(inv)}</Td>
+                  <Td>{deliveryCell(inv)}</Td>
+                  <Td style={{ whiteSpace: 'nowrap' }}>{statusBadge(inv)}</Td>
                 </tr>
-              </thead>
-              <tbody>
-                {invoices.map((inv, i) => {
-                  const isExpanded = expandedId === inv.id;
-                  const delivPct   = inv.total_units > 0
-                    ? Math.round((inv.delivered_units / inv.total_units) * 100) : 0;
-                  const colSpan    = customerId ? 11 : 12;
-                  return (
-                    <React.Fragment key={inv.id}>
-                      <tr
-                        onClick={() => setExpanded(isExpanded ? null : inv.id)}
-                        style={{
-                          background: isExpanded ? C.coralBg : i % 2 === 0 ? C.card : '#fafaf8',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <Td>
-                          {inv.pending_invoice
-                            ? <Badge color="amber">Pending</Badge>
-                            : <strong style={{ color: C.coral }}>{inv.invoice_number}</strong>
-                          }
-                          <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>{fmtDate(inv.invoice_issued_at)}</div>
-                        </Td>
-                        {!customerId && (
-                          <Td>
-                            <div style={{ fontWeight: 700 }}>{inv.customer_name}</div>
-                            <div style={{ fontSize: 10.5, color: C.muted }}>{inv.customer_type?.replace(/_/g, ' ')}</div>
-                          </Td>
-                        )}
-                        <Td>{formatQuoteRef(inv)}</Td>
-                        <Td><span style={{ fontFamily: 'monospace', fontSize: 11.5 }}>{inv.order_num}</span></Td>
-                        <Td>{vatModeLabel[inv.pricing_mode] || inv.pricing_mode}</Td>
-                        <Td right><strong>{fmtKes(inv.total_value)}</strong></Td>
-                        <Td right style={{ color: C.green }}>{fmtKes(inv.total_paid)}</Td>
-                        <Td right style={{ color: inv.balance > 0 ? C.red : C.green }}>{fmtKes(inv.balance)}</Td>
-                        <Td>
-                          <Badge color={pmtStatusColor[inv.payment_status] || 'gray'}>
-                            {pmtStatusLabel[inv.payment_status] || inv.payment_status}
-                          </Badge>
-                        </Td>
-                        <Td>
-                          {inv.total_units > 0 ? (
-                            <div style={{ minWidth: 80 }}>
-                              <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>
-                                {inv.delivered_units}/{inv.total_units}
-                              </div>
-                              <div style={{ height: 4, background: C.line, borderRadius: 4, overflow: 'hidden' }}>
-                                <div style={{ height: '100%', width: `${delivPct}%`, background: delivPct >= 100 ? C.green : C.coral, borderRadius: 4 }} />
-                              </div>
-                            </div>
-                          ) : '—'}
-                        </Td>
-                        <Td>
-                          <Badge color={
-                            inv.status === 'Closed' || inv.status === 'Delivery' ? 'green' :
-                            inv.status === 'Quality Control' ? 'blue' :
-                            inv.status === 'Production' ? 'amber' : 'gray'
-                          }>{inv.status}</Badge>
-                        </Td>
-                        <Td>
-                          <span style={{ fontSize: 11, color: C.muted }}>{isExpanded ? '▲' : '▼'}</span>
-                        </Td>
-                      </tr>
-                      {isExpanded && (
-                        <tr>
-                          <td colSpan={colSpan} style={{ padding: '0 14px 14px', background: '#f7f6f3' }}>
-                            <InvoiceDetailPanel orderId={inv.id} onClose={() => setExpanded(null)} />
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+                {open && (
+                  <tr>
+                    <td colSpan={7} style={{ padding: '0 14px 14px', background: '#f7f6f3' }}>
+                      <InvoiceDetailPanel orderId={inv.id} onClose={() => setExpanded(null)} />
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  return (
+    <div>
+      {loadErr && <div style={{ background: C.redBg, color: C.red, border: `1px solid ${C.redBd}`, borderRadius: 8, padding: '11px 14px', fontSize: 12.5, marginBottom: 12 }}>{loadErr}</div>}
+      {cards}
+      {ageing}
+      <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, marginBottom: 14, overflow: 'hidden' }}>
+        {filters}
+        {body}
       </div>
     </div>
   );

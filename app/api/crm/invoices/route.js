@@ -51,7 +51,7 @@ export async function GET(request) {
     let q = serviceClient
       .from('orders')
       .select(`
-        id, order_num, client, status, total_value, pricing_mode,
+        id, order_num, client, status, total_value, pricing_mode, payment_due_date, suspended_at,
         invoice_number, invoice_issued_at, customer_type, payment_terms,
         customer_id, quote_id, quote_number, contact_person, invoice_journal_entry_id,
         invoice_customer_id_snapshot, invoice_customer_name_snapshot, invoice_customer_contact_person_snapshot,
@@ -66,6 +66,8 @@ export async function GET(request) {
       .order('created_at', { ascending: false });
 
     // ── Filters ────────────────────────────────────────────────────────────────
+    // Suspended orders are out of every financial view.
+    q = q.is('suspended_at', null);
     if (customerId)    q = q.eq('customer_id', customerId);
     if (orderStatus)   q = q.eq('status', orderStatus);
     if (vatMode)       q = q.eq('pricing_mode', vatMode);
@@ -175,6 +177,7 @@ export async function GET(request) {
         invoice_issued_at: order.invoice_issued_at,
         customer_type:    order.customer_type,
         payment_terms:    order.payment_terms,
+        payment_due_date: order.payment_due_date || null,
         customer_id:      order.customer_id,
         // Issued invoice → the name it was issued to; unissued → current customer (invoiceCustomer.js)
         customer_name:    resolveInvoiceCustomer(order, order.customers).name || order.client,

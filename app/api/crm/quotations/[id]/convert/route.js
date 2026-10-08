@@ -26,13 +26,15 @@ const ROLES_CRM = ['admin', 'head_of_sales', 'sales'];
 export async function POST(request, props) {
   const params = await props.params;
   try {
-    const suspendedErr = await checkQuotationSuspended(params.id);
-    if (suspendedErr) return suspendedErr;
-
+    // Authenticate BEFORE touching the database so an unauthenticated caller
+    // cannot probe which quotation ids exist or are suspended.
     const { user, role } = await getAuthContext();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const authErr = requireRole(user, role, ROLES_CRM);
     if (authErr) return authErr;
+
+    const suspendedErr = await checkQuotationSuspended(params.id);
+    if (suspendedErr) return suspendedErr;
 
     const { data: orderId, error: rpcErr } = await serviceClient.rpc(
       'convert_quote_to_order',

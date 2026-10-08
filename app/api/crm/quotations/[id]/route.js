@@ -172,13 +172,15 @@ function diffQuote(existing, body, oldItems, newItems) {
 export async function PATCH(request, props) {
   const params = await props.params;
   try {
-    const suspendedErr = await checkQuotationSuspended(params.id);
-    if (suspendedErr) return suspendedErr;
-
+    // Authenticate BEFORE touching the database so an unauthenticated caller
+    // cannot probe which quotation ids exist or are suspended.
     const { user, role } = await getAuthContext();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const authErr = requireRole(user, role, ROLES_CRM);
     if (authErr) return authErr;
+
+    const suspendedErr = await checkQuotationSuspended(params.id);
+    if (suspendedErr) return suspendedErr;
 
     // Fetch enough fields to run guards + diffs
     const { data: existing } = await serviceClient
@@ -221,7 +223,12 @@ export async function PATCH(request, props) {
 
     const { data, error } = await serviceClient
       .from('quotations')
-      .update({ ...safe, updated_at: new Date().toISOString() })
+      .update({
+        ...safe,
+        // sent_at is NOT set here: the quotations_set_sent_at trigger records the first
+        // move to 'sent' (also on insert) and refuses to overwrite it afterwards.
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', params.id)
       .select()
       .single();
@@ -286,6 +293,18 @@ export async function PATCH(request, props) {
 
     if (activityLogs.length > 0) {
       await serviceClient.from('quote_activities').insert(activityLogs);
+    }
+
+    // The quote has an outcome: close any system-made "chase this quote" task.
+    if (body.status && body.status !== existing.status && ['accepted', 'rejected', 'expired', 'superseded'].includes(body.status)) {
+      const { error: closeErr } = await serviceClient
+        .from('followups')
+        .update({ completed_at: new Date().toISOString(), completed_by: user.id, completed_reason: body.status })
+        .eq('quotation_id', params.id)
+        .eq('auto_source', 'quote_nudge')
+        .is('completed_at', null);
+      // Not fatal (and the column may not exist before the migration): log and carry on.
+      if (closeErr) console.warn('PATCH /api/crm/quotations/[id]: could not close auto follow-ups:', closeErr.message);
     }
 
     return NextResponse.json({ data });

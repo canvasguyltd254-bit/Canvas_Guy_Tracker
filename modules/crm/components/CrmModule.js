@@ -6,6 +6,15 @@ import calcTotals from '@/shared/lib/calcTotals';
 import LineItemEditor, { BLANK_ITEM, BLANK_CHARGE } from '@/shared/components/LineItemEditor';
 import InvoicesTab from '@/modules/crm/components/InvoicesTab';
 import { useAuth } from '@/shared/context/AuthContext';
+import {
+  STATUS_ORDER, validityInfo, statusView, primaryAction, menuActions, customerLabel,
+  matchesSearch, tabCounts, summarise,
+} from '@/shared/lib/quoteView';
+import { followUpState, followUpSummary, CONTACT_METHODS } from '@/shared/lib/quoteFollowUp';
+import {
+  ENQUIRY_STAGES, openFollowUp, attentionInfo, enquiryPrimary, enquiryMenu, matchesEnquirySearch,
+  enquiryTabCounts, needsAttention, summariseEnquiries,
+} from '@/shared/lib/enquiryView';
 
 // ─── Portal context ───────────────────────────────────────────────────────────
 // { ref, isActive }
@@ -961,28 +970,49 @@ function PipelineTab({ enquiries, stats }) {
 function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
   const [enquiries, setEnquiries] = useState([]);
   const [loading, setLoading]     = useState(true);
-  const [stage, setStage]         = useState('');
+  const [loadErr, setLoadErr]     = useState('');
+  const [tab, setTab]             = useState('all');
   const [q, setQ]                 = useState('');
   const [showForm, setShowForm]   = useState(false);
+  const [quoteFor, setQuoteFor]   = useState(null);   // enquiry a quote is being created from
   const [expanded, setExpanded]   = useState(null); // enquiry id
   const [advancing, setAdvancing]     = useState(null); // enquiry id being updated
   const [lostModal, setLostModal]     = useState(null); // enquiry id awaiting lost reason
   const [lostReason, setLostReason]   = useState('');
   const [lostError, setLostError]     = useState('');
   const [exportingPdf, setExportingPdf] = useState(false);
+  const width  = useWindowWidth();
+  const mobile = width < 760;
 
+  const today = useMemo(() => {
+    const n = new Date();
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  }, []);
+
+  // Stage tabs and search run in the browser so the counts stay correct.
   const load = useCallback(async () => {
-    setLoading(true);
-    const params = new URLSearchParams();
-    if (stage) params.set('stage', stage);
-    if (q)     params.set('q', q);
-    const res = await fetch(`/api/crm/enquiries?${params}`);
-    const json = await res.json();
-    setEnquiries(json.data || []);
+    setLoading(true); setLoadErr('');
+    try {
+      const res = await fetch('/api/crm/enquiries');
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Could not load enquiries');
+      setEnquiries(json.data || []);
+    } catch (e) {
+      setLoadErr(e.message || 'Could not load enquiries');
+    }
     setLoading(false);
-  }, [stage, q, refreshKey]);
+  }, [refreshKey]);
 
   useEffect(() => { load(); }, [load]);
+
+  const searched = useMemo(() => enquiries.filter(e => matchesEnquirySearch(e, q)), [enquiries, q]);
+  const counts   = useMemo(() => ({ ...enquiryTabCounts(searched), attention: searched.filter(e => needsAttention(e, today)).length }), [searched, today]);
+  const summary  = useMemo(() => summariseEnquiries(enquiries, today), [enquiries, today]);
+  const visible  = useMemo(() => {
+    if (tab === 'all') return searched;
+    if (tab === 'attention') return searched.filter(e => needsAttention(e, today));
+    return searched.filter(e => e.stage === tab);
+  }, [searched, tab, today]);
 
   const advanceStage = async (enqId, newStage) => {
     setAdvancing(enqId);
@@ -1027,7 +1057,7 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
     setExportingPdf(true);
     try {
       const params = new URLSearchParams();
-      if (stage) params.set('stage', stage);
+      if (ENQUIRY_STAGES.includes(tab)) params.set('stage', tab);
       if (q)     params.set('q', q);
       const res = await fetch(`/api/crm/enquiries/report?${params}`);
       if (!res.ok) { const j = await res.json(); alert(j.error || 'Export failed'); return; }
@@ -1041,6 +1071,162 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
     }
   };
 
+  const onAction = (key, e) => {
+    if (key === 'contacted') return advanceStage(e.id, 'contacted');
+    if (key === 'lost')      return openLostModal(e.id);
+    if (key === 'quote')     return setQuoteFor(e);
+    return undefined;
+  };
+
+  const TABS = ['all', 'attention', ...ENQUIRY_STAGES];
+  const TAB_NAME = { all: 'All', attention: 'Needs attention', new: 'New', contacted: 'Contacted', quoted: 'Quoted', won: 'Won', lost: 'Lost' };
+  const TONE = { red: C.red, amber: C.amber, muted: C.muted };
+  const label = e => e.customers?.name || String(e.prospect_name || '').replace(/^~+\s*/, '').trim() || '—';
+
+  const attentionLine = e => {
+    const a = attentionInfo(e, today);
+    if (!a || a.key === 'new_today') return a ? <div style={{ fontSize: 10.5, marginTop: 4, color: C.muted }}>{a.text}</div> : null;
+    return <div style={{ fontSize: 10.5, marginTop: 4, fontWeight: 700, color: TONE[a.tone], maxWidth: 170, lineHeight: 1.3 }}>{a.text}</div>;
+  };
+
+  const details = e => {
+    const pendingFollowup = openFollowUp(e);
+    const lbl = { fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 3 };
+    return (
+      <div style={{ padding: '14px 4px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: mobile ? '1fr' : 'repeat(3, 1fr)', gap: '10px 24px', fontSize: 12.5 }}>
+          <div><div style={lbl}>Description</div><div style={{ color: C.ink }}>{e.description || '—'}</div></div>
+          <div><div style={lbl}>Category</div><div style={{ color: C.ink }}>{e.category || '—'}</div></div>
+          <div><div style={lbl}>Estimated value</div><div style={{ color: C.ink }}>KES {(e.estimated_value || 0).toLocaleString('en-KE')}</div></div>
+          <div><div style={lbl}>Contact</div><div style={{ color: C.ink }}>{e.prospect_contact || e.customers?.phone || '—'}</div></div>
+          <div><div style={lbl}>Next follow-up</div><div style={{ color: pendingFollowup ? C.ink : C.muted }}>{pendingFollowup ? fmtDate(pendingFollowup.due_date) : 'None scheduled'}</div></div>
+          <div><div style={lbl}>Source</div><div style={{ color: C.ink }}>{e.source ? e.source.replace('_', ' ') : '—'}</div></div>
+          {e.stage === 'lost' && e.lost_reason && (
+            <div style={{ gridColumn: '1 / -1' }}><div style={{ ...lbl, color: C.red }}>Lost reason</div><div style={{ color: C.ink }}>{e.lost_reason}</div></div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const actions = e => {
+    const act = enquiryPrimary(e);
+    const items = enquiryMenu(e);
+    const busy = advancing === e.id;
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }} onClick={ev => ev.stopPropagation()}>
+        {act && <Btn small primary={act.key === 'contacted'} disabled={busy} onClick={() => onAction(act.key, e)}>{busy ? '…' : act.label}</Btn>}
+        {items.length > 0 && <RowMenu quote={e} items={items} onAction={onAction} disabled={busy} />}
+      </div>
+    );
+  };
+
+  const cards = (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10, padding: '14px 17px 0' }}>
+      <StatCard label="New, not contacted" value={summary.newCount} sub={summary.newWaiting > 0 ? `${summary.newWaiting} waiting 1+ day` : 'None waiting'} alert={summary.newWaiting > 0} onClick={() => setTab('new')} />
+      <StatCard label="Needs attention" value={summary.attention} sub={summary.overdueFollowUps > 0 ? `${summary.overdueFollowUps} follow-up${summary.overdueFollowUps === 1 ? '' : 's'} overdue` : 'Waiting, or no follow-up set'} alert={summary.attention > 0} onClick={() => setTab('attention')} />
+      <StatCard label="Open pipeline" value={`KES ${fmtKes(summary.openValue)}`} sub="Estimated, new to quoted" />
+      <StatCard label="Win rate" value={summary.winRate === null ? '—' : `${summary.winRate}%`} sub={`${summary.won} won · ${summary.lost} lost`} />
+    </div>
+  );
+
+  const filters = (
+    <div style={{ padding: '14px 17px 0' }}>
+      <div role="tablist" aria-label="Enquiry stage" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+        {TABS.map(t => {
+          const active = tab === t;
+          const n = counts[t] ?? 0;
+          if (t === 'attention' && n === 0 && !active) return null;
+          return (
+            <button key={t} type="button" role="tab" aria-selected={active} onClick={() => setTab(t)}
+              style={{ border: `1px solid ${active ? C.ink : C.line}`, background: active ? C.ink : C.card, color: active ? '#fff' : C.ink, borderRadius: 20, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}
+            >{TAB_NAME[t]} <span style={{ opacity: 0.7, fontWeight: 600 }}>{n}</span></button>
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingBottom: 14 }}>
+        <TInput value={q} onChange={e => setQ(e.target.value)} placeholder="Search enquiry number, name or description" />
+      </div>
+    </div>
+  );
+
+  const nameCell = e => (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={label(e)}>
+        {label(e)}{!e.customers?.name && label(e) !== '—' && <span style={{ marginLeft: 6 }}><Chip>Prospect</Chip></span>}
+      </div>
+      <div style={{ color: C.muted, fontSize: 11.5, marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.description || ''}>
+        {e.description || 'No description'}
+      </div>
+    </div>
+  );
+
+  const numCell = e => (
+    <button type="button" onClick={() => setExpanded(expanded === e.id ? null : e.id)} aria-expanded={expanded === e.id}
+      style={{ border: 0, background: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: C.ink, padding: 0, whiteSpace: 'nowrap' }}>
+      {e.enq_num || '—'}
+    </button>
+  );
+
+  const body = loading ? (
+    <div style={{ textAlign: 'center', padding: '40px 0', color: C.muted, fontSize: 13 }}>Loading…</div>
+  ) : visible.length === 0 ? (
+    <div style={{ textAlign: 'center', padding: '40px 16px', color: C.muted, fontSize: 13 }}>
+      {enquiries.length === 0 ? 'No enquiries yet.' : 'No enquiries match these filters.'}
+      {enquiries.length > 0 && (q || tab !== 'all') && (
+        <div style={{ marginTop: 10 }}><Btn small onClick={() => { setQ(''); setTab('all'); }}>Clear filters</Btn></div>
+      )}
+    </div>
+  ) : mobile ? (
+    <div style={{ padding: '0 12px 12px', display: 'grid', gap: 10 }}>
+      {visible.map(e => (
+        <div key={e.id} style={{ border: `1px solid ${C.line}`, borderRadius: 10, background: expanded === e.id ? C.bg : C.card, overflow: 'hidden' }}>
+          <div style={{ padding: 12 }} onClick={() => setExpanded(expanded === e.id ? null : e.id)}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
+              {numCell(e)}
+              <div style={{ textAlign: 'right' }}><Badge color={stageColor[e.stage] || 'gray'}>{e.stage}</Badge>{attentionLine(e)}</div>
+            </div>
+            <div style={{ marginTop: 8 }}>{nameCell(e)}</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontSize: 12, color: C.muted }}>
+              <strong style={{ color: C.ink }}>{e.estimated_value > 0 ? `KES ${fmtKes(e.estimated_value)}` : '—'}</strong>
+              <span>{fmtDate(e.created_at)}</span>
+            </div>
+          </div>
+          <div style={{ padding: '0 12px 12px' }}>{actions(e)}</div>
+          {expanded === e.id && <div style={{ background: C.bg, borderTop: `1px solid ${C.line}`, padding: '0 12px' }}>{details(e)}</div>}
+        </div>
+      ))}
+    </div>
+  ) : (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+        <thead>
+          <tr><Th>Enquiry</Th><Th>Customer / need</Th><Th right>Est. value</Th><Th>Stage</Th><Th>Created</Th><Th right>Action</Th></tr>
+        </thead>
+        <tbody>
+          {visible.map(e => {
+            const isOpen = expanded === e.id;
+            return (
+              <React.Fragment key={e.id}>
+                <tr onClick={() => setExpanded(isOpen ? null : e.id)} style={{ background: isOpen ? C.bg : C.card, cursor: 'pointer' }}>
+                  <Td style={{ whiteSpace: 'nowrap', width: 1 }}>{numCell(e)}{e.source && <div style={{ fontSize: 10.5, color: C.muted, marginTop: 1 }}>{e.source.replace('_', ' ')}</div>}</Td>
+                  <Td style={{ maxWidth: 360, width: '40%' }}>{nameCell(e)}</Td>
+                  <Td right style={{ whiteSpace: 'nowrap' }}><strong style={{ fontVariantNumeric: 'tabular-nums' }}>{e.estimated_value > 0 ? `KES ${fmtKes(e.estimated_value)}` : '—'}</strong></Td>
+                  <Td><Badge color={stageColor[e.stage] || 'gray'}>{e.stage}</Badge>{attentionLine(e)}</Td>
+                  <Td style={{ color: C.muted, whiteSpace: 'nowrap', fontSize: 12 }}>{fmtDate(e.created_at)}</Td>
+                  <Td right>{actions(e)}</Td>
+                </tr>
+                {isOpen && (
+                  <tr><td colSpan={6} style={{ background: C.bg, borderBottom: `1px solid ${C.line}`, padding: '0 16px' }}>{details(e)}</td></tr>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+
   return (
     <div>
       <Panel>
@@ -1053,106 +1239,22 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
               <Btn primary small onClick={() => setShowForm(true)}>+ New Enquiry</Btn>
             </div>
           } />
-        <Toolbar>
-          <TInput value={q} onChange={e => setQ(e.target.value)} placeholder="Search name, enquiry or description" />
-          <TSelect value={stage} onChange={e => setStage(e.target.value)}>
-            <option value="">All stages</option>
-            {STAGE_ORDER.map(s => <option key={s} value={s} style={{ textTransform: 'capitalize' }}>{s}</option>)}
-          </TSelect>
-        </Toolbar>
-        {loading ? (
-          <div style={{ textAlign: 'center', padding: '40px 0', color: C.muted, fontSize: 13 }}>Loading…</div>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
-              <thead>
-                <tr>{['Enquiry', 'Customer / Prospect', 'What they need', 'Source', 'Stage', 'Created', ''].map(h => <Th key={h}>{h}</Th>)}</tr>
-              </thead>
-              <tbody>
-                {enquiries.length === 0 && (
-                  <tr><td colSpan={7} style={{ textAlign: 'center', padding: '40px 0', color: C.muted }}>No enquiries found</td></tr>
-                )}
-                {enquiries.map(e => {
-                  const isOpen = expanded === e.id;
-                  const pendingFollowup = (e.followups || []).find(f => !f.completed_at);
-                  return (
-                    <React.Fragment key={e.id}>
-                      <tr style={{ background: C.card, borderBottom: isOpen ? 'none' : undefined }}>
-                        <Td><strong>{e.enq_num || '—'}</strong></Td>
-                        <Td>{e.customers?.name || e.prospect_name || '—'}</Td>
-                        <Td style={{ maxWidth: 240 }}><div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.description || '—'}</div></Td>
-                        <Td>{e.source ? <Chip>{e.source.replace('_', ' ')}</Chip> : '—'}</Td>
-                        <Td><Badge color={stageColor[e.stage] || 'gray'}>{e.stage}</Badge></Td>
-                        <Td style={{ color: C.muted, whiteSpace: 'nowrap' }}>{fmtDate(e.created_at)}</Td>
-                        <Td><Btn small onClick={() => setExpanded(isOpen ? null : e.id)}>{isOpen ? 'Close' : 'View'}</Btn></Td>
-                      </tr>
-                      {isOpen && (
-                        <tr style={{ background: C.coralBg }}>
-                          <td colSpan={7} style={{ padding: '14px 16px' }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px 24px', fontSize: 12.5 }}>
-                              <div>
-                                <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 3 }}>Description</div>
-                                <div style={{ color: C.ink }}>{e.description || '—'}</div>
-                              </div>
-                              <div>
-                                <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 3 }}>Category</div>
-                                <div style={{ color: C.ink }}>{e.category || '—'}</div>
-                              </div>
-                              <div>
-                                <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 3 }}>Estimated Value</div>
-                                <div style={{ color: C.ink }}>KES {(e.estimated_value || 0).toLocaleString('en-KE')}</div>
-                              </div>
-                              <div>
-                                <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 3 }}>Contact</div>
-                                <div style={{ color: C.ink }}>{e.prospect_contact || e.customers?.phone || '—'}</div>
-                              </div>
-                              <div>
-                                <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 3 }}>Next Follow-up</div>
-                                <div style={{ color: pendingFollowup ? C.ink : C.muted }}>{pendingFollowup ? fmtDate(pendingFollowup.due_date) : 'None scheduled'}</div>
-                              </div>
-                              <div>
-                                <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 3 }}>Stage</div>
-                                <Badge color={stageColor[e.stage] || 'gray'}>{e.stage}</Badge>
-                              </div>
-                              {e.stage === 'lost' && e.lost_reason && (
-                                <div style={{ gridColumn: '1 / -1' }}>
-                                  <div style={{ fontSize: 10, fontWeight: 700, color: C.red, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 3 }}>Lost Reason</div>
-                                  <div style={{ color: C.ink }}>{e.lost_reason}</div>
-                                </div>
-                              )}
-                            </div>
-                            {/* Stage actions — only show relevant forward moves */}
-                            {(e.stage === 'new' || e.stage === 'contacted') && (
-                              <div style={{ display: 'flex', gap: 8, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.line}` }}>
-                                {e.stage === 'new' && (
-                                  <Btn small primary
-                                    disabled={advancing === e.id}
-                                    onClick={() => advanceStage(e.id, 'contacted')}>
-                                    {advancing === e.id ? 'Saving…' : 'Mark as Contacted'}
-                                  </Btn>
-                                )}
-                                {(e.stage === 'new' || e.stage === 'contacted') && (
-                                  <Btn small
-                                    style={{ color: C.red, border: `1px solid ${C.red}` }}
-                                    disabled={advancing === e.id}
-                                    onClick={() => openLostModal(e.id)}>
-                                    Mark as Lost
-                                  </Btn>
-                                )}
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {loadErr && <Notice color="red" style={{ margin: '10px 16px' }}>{loadErr}</Notice>}
+        {cards}
+        {filters}
+        {enquiries.length >= 200 && <Notice color="amber" style={{ margin: '0 17px 12px' }}>Showing the latest 200 enquiries. Older ones are not listed here.</Notice>}
+        {body}
       </Panel>
       {showForm && <EnquiryFormModal onSave={() => { setShowForm(false); load(); onRefresh(); }} onClose={() => setShowForm(false)} />}
+      {quoteFor && (
+        <QuoteFormModal
+          quote={null}
+          enquiries={enquiries}
+          prefill={{ enquiry_id: quoteFor.id, customer_id: quoteFor.customer_id || '', prospect_name: quoteFor.customers?.name ? '' : (quoteFor.prospect_name || '') }}
+          onSave={() => { setQuoteFor(null); load(); onRefresh(); }}
+          onClose={() => setQuoteFor(null)}
+        />
+      )}
 
       {/* Mark as Lost modal */}
       {lostModal && (
@@ -1346,16 +1448,276 @@ function QuotationDangerZone({ quoteId, quoteNum, onDeleted, onSuspended }) {
   );
 }
 
-// ─── Quotations tab ───────────────────────────────────────────────────────────
-// Statuses still shown in the filter dropdown (superseded quotes from old revisions can still be viewed)
-const QUOTE_STATUSES = ['draft', 'sent', 'accepted', 'rejected', 'expired', 'superseded'];
+// ─── Quotations list (presentation only) ─────────────────────────────────────
+// All decisions (status, primary action, urgency, counts) come from
+// shared/lib/quoteView.js; this component only lays them out. Actions are routed
+// to the parent through onAction(key, quote).
+const TAB_LABELS = { all: 'All', followup: 'Needs follow-up', draft: 'Draft', sent: 'Sent', accepted: 'Accepted', rejected: 'Rejected', expired: 'Expired', superseded: 'Superseded' };
+const TONE_COLOR = { red: C.red, amber: C.amber, muted: C.muted };
 
-function QuotationsTab({ onRefresh, refreshKey = 0 }) {
+function RowMenu({ quote, onAction, disabled, items: itemsProp }) {
+  const [pos, setPos] = useState(null);
+  const btnRef = useRef(null);
+  const items = itemsProp || menuActions(quote);
+
+  useEffect(() => {
+    if (!pos) return undefined;
+    const close = () => setPos(null);
+    const onKey = e => { if (e.key === 'Escape') { close(); btnRef.current?.focus(); } };
+    const onDown = e => { if (!e.target.closest?.('[data-rowmenu]') && e.target !== btnRef.current) close(); };
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('mousedown', onDown);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('mousedown', onDown);
+    };
+  }, [pos]);
+
+  const open = () => {
+    const r = btnRef.current.getBoundingClientRect();
+    const menuH = items.length * 36 + 8;
+    const below = window.innerHeight - r.bottom > menuH + 8;
+    setPos({ top: below ? r.bottom + 4 : r.top - menuH - 4, right: Math.max(8, window.innerWidth - r.right) });
+  };
+
+  return (
+    <>
+      <button
+        ref={btnRef} type="button" disabled={disabled}
+        aria-label={`More actions for ${quote.quote_num || quote.enq_num || 'item'}`} aria-haspopup="menu" aria-expanded={!!pos}
+        onClick={e => { e.stopPropagation(); pos ? setPos(null) : open(); }}
+        style={{ width: 34, height: 34, borderRadius: 8, border: `1px solid ${C.line}`, background: C.card, color: C.ink, cursor: disabled ? 'not-allowed' : 'pointer', fontSize: 16, fontWeight: 800, lineHeight: 1, opacity: disabled ? 0.45 : 1 }}
+      >⋯</button>
+      {pos && (
+        <div
+          data-rowmenu role="menu"
+          style={{ position: 'fixed', top: pos.top, right: pos.right, zIndex: 9000, background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, boxShadow: '0 10px 30px rgba(0,0,0,.14)', padding: 4, minWidth: 176 }}
+        >
+          {items.map(it => (
+            <button
+              key={it.key} type="button" role="menuitem"
+              onClick={e => { e.stopPropagation(); setPos(null); onAction(it.key, quote); }}
+              style={{ display: 'block', width: '100%', textAlign: 'left', border: 0, background: 'none', padding: '8px 10px', borderRadius: 7, fontSize: 12.5, fontWeight: 600, cursor: 'pointer', color: it.danger ? C.red : C.ink, borderTop: it.danger ? `1px solid ${C.line}` : 0, marginTop: it.danger ? 4 : 0 }}
+              onMouseEnter={e => { e.currentTarget.style.background = it.danger ? C.redBg : C.bg; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'none'; }}
+            >{it.label}</button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function RowActions({ quote, busy, onAction, today }) {
+  const act = primaryAction(quote);
+  const fu = followUpState(quote, today);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }} onClick={e => e.stopPropagation()}>
+      {fu.due && (
+        <Btn small disabled={busy} onClick={() => onAction('contact', quote)}
+          style={{ background: C.amberBg, color: C.amber, border: `1px solid ${C.amberBd}` }}>Log contact</Btn>
+      )}
+      <div style={{ textAlign: 'right' }}>
+        {act && (
+          <Btn
+            small primary={act.key === 'send' || act.key === 'convert'}
+            disabled={busy || !!act.disabledReason}
+            onClick={() => onAction(act.key, quote)}
+            style={act.key === 'accept' && !act.disabledReason ? { background: C.greenBg, color: C.green, border: `1px solid ${C.greenBd}` } : undefined}
+          >{busy ? '…' : act.label}</Btn>
+        )}
+        {act?.disabledReason && (
+          <div style={{ fontSize: 10.5, color: C.amber, marginTop: 3, maxWidth: 150, lineHeight: 1.3 }}>{act.disabledReason}</div>
+        )}
+      </div>
+      <RowMenu quote={quote} onAction={onAction} disabled={busy} />
+    </div>
+  );
+}
+
+function QuotationList({
+  quotes, allCount, loading, tab, setTab, counts, summary, search, setSearch,
+  showSuspended, setShowSuspended, expanded, toggleExpand, renderExpanded,
+  busyId, onAction, today, truncated,
+}) {
+  const width = useWindowWidth();
+  const mobile = width < 760;
+  const tabs = ['all', 'followup', ...STATUS_ORDER];
+
+  const cards = (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10, padding: '14px 17px 0' }}>
+      <StatCard label="Awaiting reply" value={summary.openCount} sub={`KES ${fmtKes(summary.openValue)} in sent quotes`} onClick={() => setTab('sent')} />
+      <StatCard label="Expiring within 7 days" value={summary.expiringSoon} sub="Draft or sent, incl. lapsed" alert={summary.expiringSoon > 0} onClick={() => setTab('sent')} />
+      <StatCard label="Needs follow-up" value={summary.followUpDue} sub="Sent, no contact in 3+ days" alert={summary.followUpDue > 0} onClick={() => setTab('followup')} />
+      <StatCard label="Accepted, no order yet" value={summary.toConvert} sub={`KES ${fmtKes(summary.toConvertValue)} waiting to start`} alert={summary.toConvert > 0} onClick={() => setTab('accepted')} />
+    </div>
+  );
+
+  const filters = (
+    <div style={{ padding: '14px 17px 0' }}>
+      <div role="tablist" aria-label="Quotation status" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+        {tabs.map(t => {
+          const active = tab === t;
+          const n = counts[t] ?? 0;
+          if (t !== 'all' && t !== tab && n === 0) return null;
+          return (
+            <button
+              key={t} type="button" role="tab" aria-selected={active} onClick={() => setTab(t)}
+              style={{ border: `1px solid ${active ? C.ink : C.line}`, background: active ? C.ink : C.card, color: active ? '#fff' : C.ink, borderRadius: 20, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}
+            >{TAB_LABELS[t]} <span style={{ opacity: 0.7, fontWeight: 600 }}>{n}</span></button>
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingBottom: 14 }}>
+        <TInput value={search} onChange={e => setSearch(e.target.value)} placeholder="Search quote number, customer or project" />
+        <button
+          type="button" onClick={() => setShowSuspended(s => !s)} aria-pressed={showSuspended}
+          style={{ padding: '7px 11px', borderRadius: 8, cursor: 'pointer', border: `1px solid ${showSuspended ? '#d97706' : C.line}`, background: showSuspended ? '#fffbeb' : C.card, color: showSuspended ? '#d97706' : C.muted, fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap' }}
+        >{showSuspended ? 'Hide suspended' : 'Show suspended'}</button>
+      </div>
+    </div>
+  );
+
+  const followFlag = qt => {
+    const fu = followUpState(qt, today);
+    if (!fu.applies || (!fu.due && !fu.snoozed)) return null;
+    return (
+      <div style={{ fontSize: 10.5, marginTop: 4, fontWeight: 700, color: fu.due ? (fu.idleDays >= 7 ? C.red : C.amber) : C.muted, whiteSpace: 'normal', maxWidth: 170, lineHeight: 1.3 }}>
+        {fu.label}
+      </div>
+    );
+  };
+
+  const validityCell = qt => {
+    const v = validityInfo(qt, today);
+    return (
+      <div>
+        {v
+          ? <div style={{ color: TONE_COLOR[v.tone], fontWeight: v.tone === 'muted' ? 500 : 700, fontSize: 12 }}>{v.text}</div>
+          : <div style={{ color: C.muted, fontSize: 12 }}>{qt.status === 'accepted' || qt.status === 'rejected' || qt.status === 'superseded' ? '—' : fmtDate(qt.valid_until)}</div>}
+        {v && <div style={{ color: C.muted, fontSize: 10.5, marginTop: 1 }}>{fmtDate(qt.valid_until)}</div>}
+      </div>
+    );
+  };
+
+  const customerCell = qt => {
+    const c = customerLabel(qt);
+    return (
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.name}>
+          {c.name}{!c.isCustomer && c.name !== '—' && <span style={{ marginLeft: 6 }}><Chip>Prospect</Chip></span>}
+        </div>
+        <div style={{ color: C.muted, fontSize: 11.5, marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={qt.project_description || ''}>
+          {qt.project_description || 'No project description'}
+        </div>
+      </div>
+    );
+  };
+
+  const quoteCell = qt => (
+    <div>
+      <button type="button" onClick={() => toggleExpand(qt.id)} aria-expanded={expanded === qt.id}
+        style={{ border: 0, background: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: C.ink, padding: 0, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+        {qt.quote_num || '—'}
+      </button>
+      {((qt.revision || 1) > 1 || qt.suspended_at) && (
+        <div style={{ fontSize: 10.5, color: C.muted, marginTop: 1 }}>
+          {(qt.revision || 1) > 1 && <>Rev {qt.revision}</>}
+          {qt.suspended_at && <span style={{ marginLeft: (qt.revision || 1) > 1 ? 6 : 0, color: '#d97706', fontWeight: 700 }}>Suspended</span>}
+        </div>
+      )}
+    </div>
+  );
+
+  const body = loading ? (
+    <div style={{ textAlign: 'center', padding: '40px 0', color: C.muted, fontSize: 13 }}>Loading…</div>
+  ) : quotes.length === 0 ? (
+    <div style={{ textAlign: 'center', padding: '40px 16px', color: C.muted, fontSize: 13 }}>
+      {allCount === 0 ? 'No quotations yet.' : 'No quotations match these filters.'}
+      {allCount > 0 && (search || tab !== 'all') && (
+        <div style={{ marginTop: 10 }}><Btn small onClick={() => { setSearch(''); setTab('all'); }}>Clear filters</Btn></div>
+      )}
+    </div>
+  ) : mobile ? (
+    <div style={{ padding: '0 12px 12px', display: 'grid', gap: 10 }}>
+      {quotes.map(qt => {
+        const st = statusView(qt);
+        return (
+          <div key={qt.id} style={{ border: `1px solid ${C.line}`, borderRadius: 10, background: expanded === qt.id ? C.bg : C.card, overflow: 'hidden' }}>
+            <div style={{ padding: 12 }} onClick={() => toggleExpand(qt.id)}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
+                {quoteCell(qt)}
+                <div style={{ textAlign: 'right' }}><Badge color={st.color}>{st.label}</Badge>{followFlag(qt)}</div>
+              </div>
+              <div style={{ marginTop: 8 }}>{customerCell(qt)}</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 10 }}>
+                <strong style={{ fontVariantNumeric: 'tabular-nums' }}>{qt.total ? `KES ${fmtKes(qt.total)}` : '—'}</strong>
+                {validityCell(qt)}
+              </div>
+            </div>
+            <div style={{ padding: '0 12px 12px' }}><RowActions quote={qt} busy={busyId === qt.id} onAction={onAction} today={today} /></div>
+            {expanded === qt.id && <div style={{ background: C.bg, borderTop: `1px solid ${C.line}`, padding: '0 12px 14px' }}>{renderExpanded(qt)}</div>}
+          </div>
+        );
+      })}
+    </div>
+  ) : (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+        <thead>
+          <tr>
+            <Th>Quote</Th><Th>Customer / project</Th><Th right>Total incl. VAT</Th><Th>Status</Th><Th>Valid until</Th><Th right>Action</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {quotes.map(qt => {
+            const isExp = expanded === qt.id;
+            const st = statusView(qt);
+            return (
+              <React.Fragment key={qt.id}>
+                <tr onClick={() => toggleExpand(qt.id)} style={{ background: isExp ? C.bg : C.card, cursor: 'pointer' }}>
+                  <Td style={{ whiteSpace: 'nowrap', width: 1 }}>{quoteCell(qt)}</Td>
+                  <Td style={{ maxWidth: 360, width: '38%' }}>{customerCell(qt)}</Td>
+                  <Td right style={{ whiteSpace: 'nowrap' }}><strong style={{ fontVariantNumeric: 'tabular-nums' }}>{qt.total ? `KES ${fmtKes(qt.total)}` : '—'}</strong></Td>
+                  <Td><Badge color={st.color}>{st.label}</Badge>{followFlag(qt)}</Td>
+                  <Td style={{ whiteSpace: 'nowrap' }}>{validityCell(qt)}</Td>
+                  <Td right><RowActions quote={qt} busy={busyId === qt.id} onAction={onAction} today={today} /></Td>
+                </tr>
+                {isExp && (
+                  <tr>
+                    <td colSpan={6} style={{ background: C.bg, borderBottom: `1px solid ${C.line}`, padding: '0 16px 16px' }}>{renderExpanded(qt)}</td>
+                  </tr>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  return (
+    <>
+      {cards}
+      {filters}
+      {truncated && <Notice color="amber" style={{ margin: '0 17px 12px' }}>Showing the latest {allCount} quotations. Older ones are not listed here.</Notice>}
+      {body}
+    </>
+  );
+}
+
+// ─── Quotations tab ───────────────────────────────────────────────────────────
+
+function QuotationsTab({ onRefresh, refreshKey = 0, initialFilter }) {
   const { ref: portalRef, isActive } = React.useContext(CrmPortalContext);
   const { userRole } = useAuth();
   const [quotes, setQuotes]               = useState([]);
   const [loading, setLoading]             = useState(true);
-  const [status, setStatus]               = useState('');
+  const [tab, setTab]                       = useState(initialFilter === 'followup' ? 'followup' : 'all');
   const [q, setQ]                         = useState('');
   const [showSuspended, setShowSuspended] = useState(false);
   const [converting, setConv]             = useState(null);
@@ -1371,17 +1733,22 @@ function QuotationsTab({ onRefresh, refreshKey = 0 }) {
   const [confirmAction, setConfirmAction] = useState(null);
   useQuickActionsLock(!!confirmAction && isActive);
 
+  // Status tabs and search are applied in the browser so the tab counts stay correct
+  // and search covers quote number and customer (the API only searched project text).
   const load = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams();
-    if (status)        params.set('status', status);
-    if (q)             params.set('q', q);
     if (showSuspended) params.set('include_suspended', 'true');
-    const res = await fetch(`/api/crm/quotations?${params}`);
-    const json = await res.json();
-    setQuotes(json.data || []);
+    try {
+      const res = await fetch(`/api/crm/quotations?${params}`);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Could not load quotations');
+      setQuotes(json.data || []);
+    } catch (e) {
+      setConvErr(e.message || 'Could not load quotations');
+    }
     setLoading(false);
-  }, [status, q, showSuspended, refreshKey]);
+  }, [showSuspended, refreshKey]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { fetch('/api/crm/enquiries?limit=100').then(r => r.json()).then(j => setEnquiries(j.data || [])).catch(() => {}); }, []);
@@ -1437,116 +1804,65 @@ function QuotationsTab({ onRefresh, refreshKey = 0 }) {
 
   const onFormSave = () => { setShowForm(false); setEditQuote(null); load(); onRefresh(); };
 
-  return (
-    <div>
-      <Panel>
-        <PanelHead title="Quotations" sub="Draft, Sent, Accepted, Rejected, Expired or Superseded."
-          actions={<Btn primary small onClick={() => { setEditQuote(null); setShowForm(true); }}>+ New Quote</Btn>} />
-        <Toolbar>
-          <TInput value={q} onChange={e => setQ(e.target.value)} placeholder="Search quote, customer or project" />
-          <TSelect value={status} onChange={e => setStatus(e.target.value)}>
-            <option value="">All statuses</option>
-            {QUOTE_STATUSES.map(s => <option key={s} value={s} style={{ textTransform: 'capitalize' }}>{s}</option>)}
-          </TSelect>
-          <button
-            onClick={() => setShowSuspended(s => !s)}
-            title={showSuspended ? 'Hide suspended quotations' : 'Show suspended quotations'}
-            style={{
-              padding: '6px 10px', borderRadius: 6, cursor: 'pointer', border: '1.5px solid',
-              borderColor: showSuspended ? '#d97706' : C.line,
-              background: showSuspended ? '#fffbeb' : C.card,
-              color: showSuspended ? '#d97706' : C.muted,
-              fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap',
-            }}
-          >⏸</button>
-        </Toolbar>
+  const today = useMemo(() => {
+    const n = new Date();
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  }, []);
+  const searched = useMemo(() => quotes.filter(qt => matchesSearch(qt, q)), [quotes, q]);
+  const counts   = useMemo(() => ({ ...tabCounts(searched), followup: followUpSummary(searched, today).dueCount }), [searched, today]);
+  const summary  = useMemo(() => ({ ...summarise(quotes, today), followUpDue: followUpSummary(quotes, today).dueCount }), [quotes, today]);
+  const visible  = useMemo(() => {
+    if (tab === 'all') return searched;
+    if (tab === 'followup') return followUpSummary(searched, today).due.map(d => d.quote);
+    return searched.filter(qt => qt.status === tab);
+  }, [searched, tab, today]);
 
-        {convErr && <Notice color="red" style={{ margin: '10px 16px' }}>{convErr}</Notice>}
+  // Log contact dialog + snooze
+  const [contactFor, setContactFor]   = useState(null);
+  const [contactMethod, setCMethod]   = useState('call');
+  const [contactNote, setCNote]       = useState('');
+  const [contactBusy, setCBusy]       = useState(false);
+  const [contactErr, setCErr]         = useState('');
 
-        {loading ? (
-          <div style={{ textAlign: 'center', padding: '40px 0', color: C.muted, fontSize: 13 }}>Loading…</div>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
-              <thead>
-                <tr>
-                  <Th>Quote</Th><Th>Customer</Th><Th>Project</Th>
-                  <Th right>Total incl. VAT</Th><Th>Status</Th><Th>Valid Until</Th><Th>Action</Th>
-                </tr>
-              </thead>
-              <tbody>
-                {quotes.length === 0 && (
-                  <tr><td colSpan={7} style={{ textAlign: 'center', padding: '40px 0', color: C.muted }}>No quotations found</td></tr>
-                )}
-                {quotes.map(qt => {
-                  const busy = actioning === qt.id || converting === qt.id;
-                  const isExp = expanded === qt.id;
-                  return (
-                    <React.Fragment key={qt.id}>
-                      <tr style={{ background: isExp ? C.bg : C.card, borderBottom: `1px solid ${C.line}` }}>
-                        <Td>
-                          <button onClick={() => toggleExpand(qt.id)} style={{ border: 0, background: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: C.ink, padding: 0 }}>
-                            {qt.quote_num || '—'}
-                          </button>
-                          <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>
-                            Rev {qt.revision || 1}
-                            {qt.suspended_at && (
-                              <span style={{ marginLeft: 5, color: '#d97706', fontWeight: 700 }}>⏸ Suspended</span>
-                            )}
-                          </div>
-                        </Td>
-                        <Td>{qt.customers?.name || qt.prospect_name || '—'}
-                          <div style={{ fontSize: 10.5, color: C.muted }}>{qt.customers ? 'Customer' : 'Prospect'}</div>
-                        </Td>
-                        <Td style={{ maxWidth: 200 }}>
-                          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{qt.project_description || '—'}</div>
-                        </Td>
-                        <Td right><strong style={{ fontVariantNumeric: 'tabular-nums' }}>{qt.total ? `KES ${fmtKes(qt.total)}` : '—'}</strong></Td>
-                        <Td><Badge color={statusColor[qt.status] || 'gray'}>{qt.status}</Badge></Td>
-                        <Td style={{ color: C.muted, whiteSpace: 'nowrap', fontSize: 11 }}>{fmtDate(qt.valid_until)}</Td>
-                        <Td>
-                          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
-                            <Btn small onClick={() => downloadPdf(qt.id, qt.quote_num)}>PDF</Btn>
-                            {/* Any quote that hasn't been converted can still be edited */}
-                            {!qt.converted_order_id && <Btn small onClick={() => openEdit(qt)} disabled={busy}>Edit</Btn>}
-                            {qt.status === 'draft' && <Btn small primary onClick={() => patchStatus(qt.id, 'sent')} disabled={busy}>{busy ? '…' : 'Send'}</Btn>}
-                            {qt.status === 'sent' && <>
-                              <Btn small
-                                onClick={() => setConfirmAction({ type: 'accept', qt })}
-                                disabled={busy || !qt.customer_id}
-                                title={!qt.customer_id ? 'Edit quote and link to a customer profile before accepting' : 'Mark as accepted'}
-                                style={{ background: C.greenBg, color: qt.customer_id ? C.green : C.muted, border: `1px solid ${qt.customer_id ? C.greenBd : C.line}` }}>
-                                {busy ? '…' : 'Accept'}
-                              </Btn>
-                              <Btn small onClick={() => setConfirmAction({ type: 'reject', qt })} disabled={busy} style={{ background: C.redBg, color: C.red, border: `1px solid ${C.redBd}` }}>{busy ? '…' : 'Reject'}</Btn>
-                            </>}
-                            {qt.status === 'accepted' && !qt.converted_order_id && (
-                              <Btn small primary
-                                onClick={() => setConfirmAction({ type: 'convert', qt })}
-                                disabled={busy || !qt.customer_id}
-                                title={!qt.customer_id ? 'Link to a real customer profile before converting' : 'Convert to order'}
-                              >{busy ? '…' : 'Convert to Order'}</Btn>
-                            )}
-                            {qt.converted_order_id && (
-                              <>
-                                <Badge color="green">Converted</Badge>
-                                {qt.orders?.invoice_number && (
-                                  <Btn small style={{ marginLeft: 4 }}
-                                    onClick={() => window.open(`/api/crm/quotations/${qt.id}/pdf?invoice=1`, '_blank')}
-                                    title={`Download Invoice ${qt.orders.invoice_number}`}>
-                                    Invoice PDF
-                                  </Btn>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        </Td>
-                      </tr>
+  const submitContact = async () => {
+    setCBusy(true); setCErr('');
+    try {
+      const res  = await fetch(`/api/crm/quotations/${contactFor.id}/follow-up`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'contact', method: contactMethod, note: contactNote }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) { setCErr(json.error || 'Could not record the contact.'); return; }
+      setContactFor(null); setCNote('');
+      load(); onRefresh();
+    } finally { setCBusy(false); }
+  };
 
-                      {isExp && (
-                        <tr key={`${qt.id}-exp`}>
-                          <td colSpan={7} style={{ background: C.bg, borderBottom: `1px solid ${C.line}`, padding: '0 16px 16px' }}>
-                            {(() => {
+  const snooze = async (qt) => {
+    setActioning(qt.id);
+    try {
+      const res  = await fetch(`/api/crm/quotations/${qt.id}/follow-up`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'snooze', days: 3 }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) { setConvErr(json.error || 'Could not snooze.'); return; }
+      setConvErr(''); load();
+    } finally { setActioning(null); }
+  };
+
+  const onAction = (key, qt) => {
+    if (key === 'send')    return patchStatus(qt.id, 'sent');
+    if (key === 'accept' || key === 'reject' || key === 'convert') return setConfirmAction({ type: key, qt });
+    if (key === 'pdf')     return downloadPdf(qt.id, qt.quote_num);
+    if (key === 'invoice') return window.open(`/api/crm/quotations/${qt.id}/pdf?invoice=1`, '_blank');
+    if (key === 'edit')    return openEdit(qt);
+    if (key === 'contact') { setContactFor(qt); setCMethod('call'); setCNote(''); setCErr(''); return undefined; }
+    if (key === 'snooze')  return snooze(qt);
+    return undefined;
+  };
+
+  const renderExpanded = (qt) => {
                               const allItems   = [...(qt.quote_items || [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
                               const products   = allItems.filter(it => (it.line_type || 'product') === 'product');
                               const charges    = allItems.filter(it => (it.line_type || 'product') !== 'product');
@@ -1640,11 +1956,11 @@ function QuotationsTab({ onRefresh, refreshKey = 0 }) {
                               const log = changelog[qt.id];
                               const TYPE_COLOR = {
                                 created: C.green, edited: '#2563eb', status_change: '#7c3aed',
-                                superseded: C.muted, converted: C.green,
+                                superseded: C.muted, converted: C.green, contact_logged: C.amber, follow_up_snoozed: C.muted,
                               };
                               const TYPE_LABEL = {
                                 created: 'created', edited: 'edited', status_change: 'status',
-                                superseded: 'superseded', converted: 'converted',
+                                superseded: 'superseded', converted: 'converted', contact_logged: 'contact', follow_up_snoozed: 'snoozed',
                               };
                               const ChangeLog = (
                                 <div style={{ marginTop: 16, borderTop: `1px dashed ${C.line}`, paddingTop: 10 }}>
@@ -1722,17 +2038,28 @@ function QuotationsTab({ onRefresh, refreshKey = 0 }) {
                                   )}
                                 </>
                               );
-                            })()}
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+  };
+
+  return (
+    <div>
+      <Panel>
+        <PanelHead title="Quotations" sub="Draft, Sent, Accepted, Rejected, Expired or Superseded."
+          actions={<Btn primary small onClick={() => { setEditQuote(null); setShowForm(true); }}>+ New Quote</Btn>} />
+        {convErr && <Notice color="red" style={{ margin: '10px 16px' }}>{convErr}</Notice>}
+
+        <QuotationList
+          quotes={visible}
+          allCount={quotes.length}
+          truncated={quotes.length >= 200}
+          loading={loading}
+          tab={tab} setTab={setTab} counts={counts} summary={summary}
+          search={q} setSearch={setQ}
+          showSuspended={showSuspended} setShowSuspended={setShowSuspended}
+          expanded={expanded} toggleExpand={toggleExpand} renderExpanded={renderExpanded}
+          busyId={actioning || converting}
+          onAction={onAction}
+          today={today}
+        />
       </Panel>
 
       <Notice color="amber">
@@ -1740,6 +2067,34 @@ function QuotationsTab({ onRefresh, refreshKey = 0 }) {
       </Notice>
 
       {showForm && <QuoteFormModal quote={editQuote} enquiries={enquiries} onSave={onFormSave} onClose={() => { setShowForm(false); setEditQuote(null); }} />}
+
+      {contactFor && (
+        <Modal title={`Log contact — ${contactFor.quote_num}`} onClose={() => setContactFor(null)}>
+          <div style={{ fontSize: 13, color: C.muted, marginBottom: 14, lineHeight: 1.5 }}>
+            Record that you reached {customerLabel(contactFor).name}. This restarts the 3-day follow-up reminder and is kept in the quote's history.
+          </div>
+          <Field label="How did you reach them?" full>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {CONTACT_METHODS.map(m => (
+                <button key={m} type="button" onClick={() => setCMethod(m)} aria-pressed={contactMethod === m}
+                  style={{ border: `1px solid ${contactMethod === m ? C.ink : C.line}`, background: contactMethod === m ? C.ink : C.card, color: contactMethod === m ? '#fff' : C.ink, borderRadius: 20, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer', textTransform: 'capitalize' }}>
+                  {m === 'whatsapp' ? 'WhatsApp' : m}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <Field label="What was said? (optional)" full>
+            <textarea value={contactNote} onChange={e => setCNote(e.target.value)} rows={3} maxLength={500}
+              placeholder="e.g. Client wants a lower price on the sofa; will confirm Friday"
+              style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', border: `1px solid ${C.line}`, borderRadius: 8, fontSize: 13, resize: 'vertical', fontFamily: 'inherit', outline: 'none' }} />
+          </Field>
+          {contactErr && <div style={{ color: C.red, fontSize: 12, marginBottom: 10 }}>{contactErr}</div>}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <Btn small onClick={() => setContactFor(null)}>Cancel</Btn>
+            <Btn small primary disabled={contactBusy} onClick={submitContact}>{contactBusy ? 'Saving…' : 'Save contact'}</Btn>
+          </div>
+        </Modal>
+      )}
 
       {/* ── Confirm action overlay ── */}
       {confirmAction && createPortal(
@@ -2462,11 +2817,12 @@ function EmailInboxTab({ onRefresh, refreshKey = 0 }) {
 // ─── Root component ───────────────────────────────────────────────────────────
 const TABS = ['Pipeline', 'Email Inbox', 'Enquiries', 'Quotations', 'Invoices', 'Follow-ups', 'Insights'];
 
-export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnquiryId, workspaceActive = true, actionNonce, refreshKey = 0 } = {}) {
+export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnquiryId, defaultTab, defaultFilter, workspaceActive = true, actionNonce, refreshKey = 0 } = {}) {
   const containerRef = useRef(null);
-  const [tab, setTab]           = useState('Pipeline');
+  const startTab = TABS.includes(defaultTab) ? defaultTab : 'Pipeline';
+  const [tab, setTab]           = useState(startTab);
   // visited: Set of tab names that have been mounted at least once (lazy keep-mounted)
-  const [visited, setVisited]   = useState(() => new Set(['Pipeline']));
+  const [visited, setVisited]   = useState(() => new Set(['Pipeline', startTab]));
   // tabState: per-tab { key (refresh counter), stale (needs reload on next visit) }
   const [tabState, setTabState] = useState(() =>
     Object.fromEntries(TABS.map(t => [t, { key: 0, stale: false }]))
@@ -2614,7 +2970,7 @@ export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnq
         <EnquiriesTab onRefresh={refresh} refreshKey={tabState.Enquiries.key} />
       </CrmTabPane>
       <CrmTabPane name="Quotations" activeTab={tab} workspaceActive={workspaceActive} visited={visited.has('Quotations')}>
-        <QuotationsTab onRefresh={refresh} refreshKey={tabState.Quotations.key} />
+        <QuotationsTab onRefresh={refresh} refreshKey={tabState.Quotations.key} initialFilter={defaultFilter} />
       </CrmTabPane>
       <CrmTabPane name="Invoices" activeTab={tab} workspaceActive={workspaceActive} visited={visited.has('Invoices')}>
         <InvoicesTab refreshKey={tabState.Invoices.key} />

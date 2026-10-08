@@ -12,6 +12,8 @@ function CrmPageContent() {
   const newParam     = searchParams.get('new');       // 'enquiry' | 'quote'
   const customerId   = searchParams.get('customer_id') || undefined;
   const enquiryId    = searchParams.get('enquiry_id')  || undefined;
+  const tabParam     = searchParams.get('tab')    || undefined;   // e.g. Quotations
+  const filterParam  = searchParams.get('filter') || undefined;   // e.g. followup
 
   // Strip ?new= after reading so Back doesn't re-trigger the modal
   useEffect(() => {
@@ -30,6 +32,8 @@ function CrmPageContent() {
       defaultAction={defaultAction}
       defaultCustomerId={customerId}
       defaultEnquiryId={enquiryId}
+      defaultTab={tabParam}
+      defaultFilter={filterParam}
     />
   );
 }
