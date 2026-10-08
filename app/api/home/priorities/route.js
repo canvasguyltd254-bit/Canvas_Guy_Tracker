@@ -17,7 +17,7 @@
  * Response shape:
  *   {
  *     queue: [{
- *       type: 'customer_overdue' | 'production_blocked' | 'production_qc_ready',
+ *       type: 'customer_overdue' | 'production_blocked' | 'production_qc_ready' | 'quote_followup' | 'quote_followup_more',
  *       id, title, subtitle,
  *       chip: { tone: 'red'|'amber'|'blue', label },
  *       source: { module: 'customers'|'production', path },
@@ -35,7 +35,9 @@ export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, serviceClient } from '@/shared/lib/api-auth';
-import { DELIVERED_STATUSES, CAN_SEE_PRODUCTION, CAN_SEE_CUSTOMERS } from '@/shared/lib/homeAccess';
+import { DELIVERED_STATUSES, CAN_SEE_PRODUCTION, CAN_SEE_CUSTOMERS, CAN_SEE_CRM } from '@/shared/lib/homeAccess';
+import { followUpSummary } from '@/shared/lib/quoteFollowUp';
+import { nairobiToday } from '@/shared/lib/reports/dateBounds';
 
 const QUEUE_LIMIT = 25;
 const FLOOR_STATUSES = ['Awaiting Materials', 'Materials Ready', 'In Production', 'Quality Control', 'Paused'];
@@ -76,6 +78,50 @@ export async function GET() {
                 chip: { tone: 'red', label: `${daysOverdue} day${daysOverdue === 1 ? '' : 's'} overdue` },
                 source: { module: 'customers', path: `/customers?order=${order.id}` },
                 sortWeight: -daysOverdue, // most overdue first (more negative sorts earlier)
+              });
+            }
+          })
+      );
+    }
+
+    // ── Sent quotes that have gone quiet (CRM) ─────────────────────────────
+    // Same rule as the Quotations tab (shared/lib/quoteFollowUp.js). Shows the
+    // quietest few individually, then one roll-up row so a long backlog cannot
+    // bury the rest of the queue. Skipped quietly if the follow-up migration has
+    // not been applied yet.
+    if (CAN_SEE_CRM.includes(role)) {
+      tasks.push(
+        serviceClient
+          .from('quotations')
+          .select('id, quote_num, status, total, sent_at, last_contact_at, follow_up_snoozed_until, converted_order_id, suspended_at, updated_at, created_at, prospect_name, customers(name)')
+          .eq('status', 'sent')
+          .is('suspended_at', null)
+          .is('converted_order_id', null)
+          .limit(500)
+          .then(({ data, error }) => {
+            if (error) { console.error('home/priorities quote follow-ups:', error.message); return; }
+            const { dueCount, due } = followUpSummary(data || [], nairobiToday());
+            const SHOW = 4;
+            for (const { quote, state } of due.slice(0, SHOW)) {
+              queue.push({
+                type: 'quote_followup',
+                id: quote.id,
+                title: `${quote.customers?.name || String(quote.prospect_name || '').replace(/^~+\s*/, '') || 'Prospect'} · ${quote.quote_num}`,
+                subtitle: `KES ${Number(quote.total || 0).toLocaleString('en-KE', { maximumFractionDigits: 0 })} · ${state.label}`,
+                chip: { tone: state.idleDays >= 7 ? 'red' : 'amber', label: 'Chase quote' },
+                source: { module: 'crm', path: '/crm?tab=Quotations&filter=followup' },
+                sortWeight: 5 - Math.min(state.idleDays, 30) / 100,
+              });
+            }
+            if (dueCount > SHOW) {
+              queue.push({
+                type: 'quote_followup_more',
+                id: 'quote-followups',
+                title: `${dueCount - SHOW} more quote${dueCount - SHOW === 1 ? '' : 's'} to chase`,
+                subtitle: 'Sent quotes with no logged contact in 3+ days',
+                chip: { tone: 'amber', label: 'Chase quotes' },
+                source: { module: 'crm', path: '/crm?tab=Quotations&filter=followup' },
+                sortWeight: 6,
               });
             }
           })

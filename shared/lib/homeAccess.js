@@ -16,6 +16,7 @@ export const DELIVERED_STATUSES  = ['Partially Delivered', 'Delivered'];
 
 export const CAN_SEE_PRODUCTION  = ['admin', 'production_manager', 'head_of_sales', 'production_staff'];
 export const CAN_SEE_CUSTOMERS   = ['admin', 'production_manager', 'head_of_sales', 'sales'];
+export const CAN_SEE_CRM         = ['admin', 'head_of_sales', 'sales'];
 export const CAN_SEE_SUPPLIERS   = ['admin', 'production_manager', 'head_of_sales'];
 export const CAN_SEE_ACCOUNTING  = ['admin', 'production_manager', 'head_of_sales'];
 export const CAN_SEE_ADMIN       = ['admin'];
