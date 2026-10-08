@@ -43,17 +43,44 @@ export function formatDay(s) {
 // ── period ──────────────────────────────────────────────────────────────────
 
 export const PERIOD_PRESETS = [
+  { key: 'this_week',    label: 'This week' },
+  { key: 'last_week',    label: 'Last week' },
   { key: 'this_month',   label: 'This month' },
   { key: 'last_month',   label: 'Last month' },
   { key: 'last_3_months', label: 'Last 3 months' },
+  { key: 'this_quarter', label: 'This quarter' },
   { key: 'this_year',    label: 'This year' },
   { key: 'all',          label: 'All time' },
 ];
+
+// Monday-based week (Kenya). Returns the Monday of the week containing y-m-d, as a UTC Date.
+function mondayOf(y, m, d) {
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const dow = (dt.getUTCDay() + 6) % 7; // Mon=0 … Sun=6
+  dt.setUTCDate(dt.getUTCDate() - dow);
+  return dt;
+}
+const isoOf = dt => iso(dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate());
 
 /** { from, to } (either may be null = open-ended) for a preset, relative to `today`. */
 export function presetRange(key, today) {
   const [y, m, d] = today.split('-').map(Number);
   switch (key) {
+    case 'this_week': {
+      const mon = mondayOf(y, m, d);
+      const sun = new Date(mon); sun.setUTCDate(sun.getUTCDate() + 6);
+      return { from: isoOf(mon), to: isoOf(sun) };
+    }
+    case 'last_week': {
+      const mon = mondayOf(y, m, d); mon.setUTCDate(mon.getUTCDate() - 7);
+      const sun = new Date(mon); sun.setUTCDate(sun.getUTCDate() + 6);
+      return { from: isoOf(mon), to: isoOf(sun) };
+    }
+    case 'this_quarter': {
+      const qm = Math.floor((m - 1) / 3) * 3 + 1;
+      const last = new Date(Date.UTC(y, qm + 2, 0)).getUTCDate();
+      return { from: iso(y, qm, 1), to: iso(y, qm + 2, last) };
+    }
     case 'this_month':
       return { from: iso(y, m, 1), to: today };
     case 'last_month': {

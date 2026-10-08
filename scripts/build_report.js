@@ -739,6 +739,450 @@ function buildCustomerOrdersDoc(doc, data, ctx) {
   drawCrFooters(doc, `${title}${filters.customer && filters.customer !== 'All customers' ? ' — ' + filters.customer : ''}`);
 }
 
+// ── Report PDFs v2: payments received, order P&L, order reports, suppliers ──────
+// All use the same look as the customer reports (brand band, title + filters, KPI
+// cards, zebra table, coral totals bar, "Page x of y" footer).
+
+const SUB_H = 5.5 * MM;
+
+const SUP2_COLS = mmCols([
+  { key: 'supplier_name', header: 'Supplier',      x:   0, w: 52, bold: true },
+  { key: 'purchase_date', header: 'Date',          x:  52, w: 24 },
+  { key: 'items_bought',  header: 'Items',         x:  76, w: 70 },
+  { key: 'total',         header: 'Total (KES)',   x: 146, w: 33, right: true },
+  { key: 'paid',          header: 'Paid (KES)',    x: 179, w: 33, right: true },
+  { key: 'balance',       header: 'Balance (KES)', x: 212, w: 33, right: true, bold: true },
+  { key: 'status',        header: 'Status',        x: 245, w: 28 },
+]);
+
+const PAY_COLS = mmCols([
+  { key: 'date',      header: 'Date',         x:   0, w: 24 },
+  { key: 'customer',  header: 'Customer',     x:  24, w: 60, bold: true },
+  { key: 'order_num', header: 'Order #',      x:  84, w: 24, size: 6 },
+  { key: 'invoice',   header: 'Invoice #',    x: 108, w: 26, size: 6 },
+  { key: 'method',    header: 'Method',       x: 134, w: 26 },
+  { key: 'reference', header: 'Reference',    x: 160, w: 52 },
+  { key: 'banked',    header: 'Banked',       x: 212, w: 24 },
+  { key: 'amount',    header: 'Amount (KES)', x: 236, w: 37, right: true, bold: true },
+]);
+
+const PRODCASH_COLS = mmCols([
+  { key: 'category',    header: 'Category',         x:   0, w: 50, bold: true },
+  { key: 'cash',        header: 'Cash received',    x:  50, w: 31, right: true, bold: true },
+  { key: 'orders',      header: 'Orders',           x:  81, w: 13, right: true },
+  { key: 'invoiced',    header: 'Invoiced',         x:  94, w: 30, right: true },
+  { key: 'collected',   header: 'Collected',        x: 124, w: 30, right: true },
+  { key: 'outstanding', header: 'Outstanding',      x: 154, w: 30, right: true },
+  { key: 'revenue',     header: 'Revenue ex-VAT',   x: 184, w: 30, right: true },
+  { key: 'cost',        header: 'Est. cost',        x: 214, w: 28, right: true },
+  { key: 'margin',      header: 'Est. margin',      x: 242, w: 31, right: true },
+]);
+
+const PNL2_COLS = mmCols([
+  { key: 'order_num', header: 'Order #',      x:   0, w: 24, size: 6 },
+  { key: 'client',    header: 'Client',       x:  24, w: 46, bold: true },
+  { key: 'status',    header: 'Status',       x:  70, w: 28 },
+  { key: 'revenue',   header: 'Revenue ex-VAT', x:  98, w: 30, right: true },
+  { key: 'materials', header: 'Materials',    x: 128, w: 27, right: true },
+  { key: 'labour',    header: 'Labour',       x: 155, w: 24, right: true },
+  { key: 'direct',    header: 'Direct exp.',  x: 179, w: 24, right: true },
+  { key: 'profit',    header: 'Profit',       x: 203, w: 32, right: true, bold: true },
+  { key: 'margin',    header: 'Margin',       x: 235, w: 38, right: true },
+]);
+
+const ORDFIN_COLS = mmCols([
+  { key: 'client',    header: 'Client',        x:   0, w: 46, bold: true },
+  { key: 'order_num', header: 'Order #',       x:  46, w: 22, size: 6 },
+  { key: 'invoice',   header: 'Invoice #',     x:  68, w: 24, size: 6 },
+  { key: 'status',    header: 'Status',        x:  92, w: 30 },
+  { key: 'due',       header: 'Due',           x: 122, w: 22 },
+  { key: 'billable',  header: 'Invoiced',      x: 144, w: 32, right: true },
+  { key: 'paid',      header: 'Paid',          x: 176, w: 32, right: true },
+  { key: 'balance',   header: 'Balance',       x: 208, w: 33, right: true, bold: true },
+  { key: 'late',      header: 'Days overdue',  x: 241, w: 32, centre: true },
+]);
+
+const dash = { t: '—', color: MUTED, bold: false };
+const money = v => (v >= 0.5 || v <= -0.5 ? fmtKes(v) : null);
+const mcell = (v, opts = {}) => { const t = money(v); return t === null ? dash : { t, ...opts }; };
+
+/** Segmented bar with a legend row (used for "by method"). */
+function drawCrSplit(doc, y, title, segs) {
+  const total = segs.reduce((s, g) => s + g.v, 0);
+  if (total <= 0) return y;
+  doc.font('Helvetica-Bold').fontSize(6.8).fillColor(INK).text(title, LM, y, { lineBreak: false, characterSpacing: 0.4 });
+  drawRight(doc, `Total KES ${fmtKes(total)}`, LW - LM, y, { font: 'Helvetica-Bold', size: 7, color: INK });
+  y += 4.6 * MM;
+  const barH = 4 * MM;
+  fillRect(doc, LM, y, LCW, barH, '#EFEDE8');
+  let x = LM;
+  segs.forEach(g => { if (g.v > 0) { const w = (g.v / total) * LCW; fillRect(doc, x, y, w, barH, g.color); x += w; } });
+  y += barH + 2.6 * MM;
+  const colW = LCW / Math.max(segs.length, 1);
+  segs.forEach((g, i) => {
+    const cx = LM + i * colW;
+    fillRect(doc, cx, y + 0.5 * MM, 2.4 * MM, 2.4 * MM, g.color);
+    doc.font('Helvetica-Bold').fontSize(6.6).fillColor(INK).text(fitText(doc, g.label, colW - 5 * MM, 'Helvetica-Bold', 6.6), cx + 3.6 * MM, y, { lineBreak: false });
+    doc.font('Helvetica').fontSize(6.6).fillColor(DGRAY)
+       .text(`KES ${fmtKes(g.v)}  (${Math.round((g.v / total) * 100)}%)`, cx + 3.6 * MM, y + 3.4 * MM, { lineBreak: false });
+  });
+  return y + 9 * MM;
+}
+
+/** Tinted sub-row (e.g. a supplier purchase under an order). */
+function drawCrSub(doc, y, cols, s) {
+  const totalW = cols.reduce((m, c) => Math.max(m, c.x + c.w), 0);
+  fillRect(doc, LM, y, totalW, SUB_H, '#FAF8F6');
+  drawLeft(doc, s.left, LM + 5 * MM, y + 1.2 * MM, { font: 'Helvetica-Bold', size: 5.8, color: '#555555', maxW: 90 * MM });
+  if (s.mid) drawLeft(doc, s.mid, LM + 98 * MM, y + 1.2 * MM, { size: 5.8, color: '#888888', maxW: 110 * MM });
+  if (s.right !== undefined) {
+    const col = cols.find(c => c.key === s.rightKey) || cols[cols.length - 1];
+    drawRight(doc, s.right, LM + col.x + col.w, y + 1.2 * MM, { font: 'Helvetica-Bold', size: 5.8, color: RED });
+  }
+  return y + SUB_H;
+}
+
+/** Group header band (e.g. a day) with a right-hand subtotal. */
+function drawCrBand(doc, y, cols, left, right) {
+  const totalW = cols.reduce((m, c) => Math.max(m, c.x + c.w), 0);
+  fillRect(doc, LM, y, totalW, ROW_H, TINT);
+  drawLeft(doc, left, LM, y + 1.6 * MM, { font: 'Helvetica-Bold', size: 7, color: CORAL, maxW: 160 * MM });
+  if (right) drawRight(doc, right, LM + totalW, y + 1.6 * MM, { font: 'Helvetica-Bold', size: 6.8, color: CORAL });
+  return y + ROW_H;
+}
+
+/**
+ * Generic v2 table report.
+ * spec: { title, meta, kpis, pre(doc,y)->y, section, cols, rows, totalsLeft, totalsRight, notes[], footer }
+ * rows: { values, fill?, subs? } | { band: [left, right] }
+ */
+function buildCrTableDoc(doc, ctx, spec) {
+  const { nowStr, userName } = ctx;
+  const { title, meta = [], kpis = [], pre, section, cols, rows, totalsLeft, totalsRight, notes = [], footer } = spec;
+
+  doc.addPage();
+  let y = drawCrBrandBand(doc);
+  y = drawCrTitleBlock(doc, y, { title, nowStr, user: userName, meta });
+  if (kpis.length) y = drawCrKpis(doc, y, kpis);
+  if (pre) y = pre(doc, y);
+
+  const headers = () => { y = drawColHeaders(doc, y, cols); };
+  const newPage = () => { doc.addPage(); y = drawCrCompactBand(doc, title); };
+
+  y = drawSectionBar(doc, y, section);
+  headers();
+
+  let idx = 0;
+  rows.forEach(r => {
+    if (r.band) {
+      // Keep a band together with the row that follows it.
+      if (y + 2 * ROW_H > LH - LBOTTOM) { newPage(); headers(); }
+      y = drawCrBand(doc, y, cols, r.band[0], r.band[1]);
+      idx = 0;
+      return;
+    }
+    const need = ROW_H + (r.subs ? r.subs.length * SUB_H + 1 * MM : 0);
+    if (y + need > LH - LBOTTOM) { newPage(); headers(); }
+    y = drawCrRow(doc, y, cols, r.values, idx++, { fill: r.fill });
+    if (r.subs && r.subs.length) {
+      r.subs.forEach(s => { y = drawCrSub(doc, y, cols, s); });
+      doc.save().moveTo(LM, y).lineTo(LM + LCW, y).lineWidth(0.4).stroke(MGRAY).restore();
+      y += 1 * MM;
+    }
+  });
+
+  if (y + 12 * MM > LH - LBOTTOM) newPage();
+  y = crTotalsBar(doc, y + 2 * MM, totalsLeft, totalsRight);
+  notes.filter(Boolean).forEach(n => {
+    y += 2.2 * MM;
+    if (y + 4 * MM > LH - LBOTTOM) { newPage(); }
+    doc.font('Helvetica').fontSize(6.6).fillColor(MUTED).text(n, LM, y, { lineBreak: false, width: LCW });
+    y += 2 * MM;
+  });
+  drawCrFooters(doc, footer || title);
+}
+
+const periodMeta = data => (data.dateFrom || data.dateTo)
+  ? [{ label: 'Period', value: `${data.dateFrom ? fmtDate(data.dateFrom) : '…'} – ${data.dateTo ? fmtDate(data.dateTo) : '…'}` }]
+  : [];
+
+function buildSupplierPurchasesDoc(doc, data, ctx) {
+  const list = data.supplierPurchases || [];
+  const tot = data.supplierTotals || {};
+  const total = tot.total != null ? crNum(tot.total) : list.reduce((s, p) => s + crNum(p.total_amount), 0);
+  const paid  = tot.paid  != null ? crNum(tot.paid)  : list.reduce((s, p) => s + crNum(p.amount_paid), 0);
+  const bal   = tot.balance != null ? crNum(tot.balance) : Math.max(total - paid, 0);
+  const label = data.reportLabel || 'Supplier Purchases';
+
+  buildCrTableDoc(doc, ctx, {
+    title: label,
+    meta: periodMeta(data),
+    kpis: [
+      { label: 'Purchases',   value: String(list.length) },
+      { label: 'Total',       value: `KES ${fmtKes(total)}` },
+      { label: 'Paid',        value: `KES ${fmtKes(paid)}` },
+      { label: 'Outstanding', value: `KES ${fmtKes(bal)}`, alert: bal >= 0.5, sub: bal >= 0.5 ? 'Still to pay' : 'Cleared' },
+    ],
+    section: 'SUPPLIER PURCHASES',
+    cols: SUP2_COLS,
+    rows: list.map(p => {
+      const name = (p.suppliers && typeof p.suppliers === 'object') ? (p.suppliers.name || p.supplier_name) : p.supplier_name;
+      const b = p.balance != null ? crNum(p.balance) : Math.max(crNum(p.total_amount) - crNum(p.amount_paid), 0);
+      const st = p.payment_status || '';
+      return { values: {
+        supplier_name: name || '—',
+        purchase_date: fmtDate(p.purchase_date),
+        items_bought:  p.items_bought || '—',
+        total:   fmtKes(p.total_amount),
+        paid:    mcell(crNum(p.amount_paid)),
+        balance: b >= 0.5 ? { t: fmtKes(b), color: RED, bold: true } : dash,
+        status:  { t: st, color: st === 'Paid' ? GREEN : st === 'Part Paid' ? AMBER : RED, bold: true },
+      } };
+    }),
+    totalsLeft: `TOTAL  |  ${list.length} purchase${list.length === 1 ? '' : 's'}`,
+    totalsRight: `Total: KES ${fmtKes(total)}   Paid: KES ${fmtKes(paid)}   Outstanding: KES ${fmtKes(bal)}`,
+  });
+}
+
+function buildPaymentsReceivedDoc(doc, data, ctx) {
+  const rep = data.paymentsReceived || {};
+  const f = data.filters || {};
+  const s = rep.summary || { total: 0, count: 0, average: 0, largest: 0 };
+  const rows = rep.rows || [];
+  const byDay = new Map();
+  rows.forEach(r => { if (!byDay.has(r.date)) byDay.set(r.date, []); byDay.get(r.date).push(r); });
+
+  const palette = [CORAL, '#245E9B', '#16794A', '#B7791F', '#7C3AED', '#6B7280'];
+  const methodSegs = (rep.byMethod || []).map((m, i) => ({ label: m.name, v: crNum(m.total), color: palette[i % palette.length] }));
+
+  const body = [];
+  [...byDay.entries()].forEach(([date, list]) => {
+    const sub = list.reduce((t, r) => t + crNum(r.amount), 0);
+    body.push({ band: [`${fmtDate(date)}   ·   ${list.length} payment${list.length === 1 ? '' : 's'}`, `KES ${fmtKes(sub)}`] });
+    list.forEach(r => body.push({ values: {
+      date: fmtDate(r.date),
+      customer: r.customer || '—',
+      order_num: r.order_num || '—',
+      invoice: r.invoice_number || '—',
+      method: r.method || '—',
+      reference: r.reference || '—',
+      banked: r.banked_date ? fmtDate(r.banked_date) : { t: 'Not banked', color: AMBER },
+      amount: fmtKes(r.amount),
+    } }));
+  });
+
+  const notes = [];
+  if (rep.reversed && rep.reversed.count > 0) notes.push(`Not included: ${rep.reversed.count} reversed payment${rep.reversed.count === 1 ? '' : 's'} (KES ${fmtKes(rep.reversed.total)}).`);
+  if (rep.excluded && rep.excluded.count > 0) notes.push(`Not included: ${rep.excluded.count} payment${rep.excluded.count === 1 ? '' : 's'} on cancelled or suspended orders (KES ${fmtKes(rep.excluded.total)}).`);
+
+  const kpis = [
+    { label: rep.basis === 'banked' ? 'Banked' : 'Received', value: `KES ${fmtKes(s.total)}`, sub: `${s.count} payment${s.count === 1 ? '' : 's'}` },
+    { label: 'Average payment', value: `KES ${fmtKes(s.average)}` },
+    { label: 'Largest payment', value: `KES ${fmtKes(s.largest)}` },
+  ];
+  if (rep.unbanked) kpis.push({ label: 'Received, not banked', value: `KES ${fmtKes(rep.unbanked.total)}`, alert: rep.unbanked.total >= 0.5, sub: `${rep.unbanked.count} payment${rep.unbanked.count === 1 ? '' : 's'}` });
+
+  buildCrTableDoc(doc, ctx, {
+    title: 'Payments Received',
+    meta: [
+      { label: 'Period', value: f.period },
+      { label: 'Basis', value: f.basis },
+      { label: 'Customer', value: f.customer },
+      { label: 'Method', value: f.method },
+    ],
+    kpis,
+    pre: (d, y) => drawCrSplit(d, y, 'BY PAYMENT METHOD', methodSegs),
+    section: 'PAYMENTS',
+    cols: PAY_COLS,
+    rows: body,
+    totalsLeft: `TOTAL  |  ${s.count} payment${s.count === 1 ? '' : 's'}`,
+    totalsRight: `Received: KES ${fmtKes(s.total)}`,
+    notes,
+  });
+}
+
+function buildOrderPnlDoc(doc, data, ctx) {
+  const rows = data.orderPnL || [];
+  const t = data.pnlTotals || {};
+  const f = data.filters || {};
+  const pc = v => (v === null || v === undefined ? '—' : `${crNum(v).toFixed(1)}%`);
+
+  const body = rows.map(o => {
+    const profit = crNum(o.profit);
+    const noCost = crNum(o.cost) === 0;
+    const margin = o.margin === null || o.margin === undefined ? null : crNum(o.margin);
+    return {
+      values: {
+        order_num: o.order_num || '—',
+        client: o.client || '—',
+        status: o.status || '—',
+        revenue: fmtKes(o.revenue) + (o.revenue_estimated ? ' ~' : ''),
+        materials: mcell(crNum(o.materials)),
+        labour: mcell(crNum(o.labour)),
+        direct: mcell(crNum(o.direct)),
+        profit: { t: fmtKes(profit), color: profit >= 0 ? GREEN : RED, bold: true },
+        margin: margin === null ? dash : { t: pc(margin) + (noCost ? '*' : ''), color: noCost ? MUTED : margin >= 30 ? GREEN : margin >= 10 ? AMBER : RED, bold: true },
+      },
+      subs: (Array.isArray(o.purchases) ? o.purchases : []).map(p => ({
+        left: `${p.supplier_name || '—'}${p.purchase_date ? '  ·  ' + fmtDate(p.purchase_date) : ''}`,
+        mid: p.items_bought || '—',
+        right: fmtKes(p.total_amount),
+        rightKey: 'materials',
+      })),
+    };
+  });
+
+  const profit = crNum(t.profit);
+  const notes = [];
+  if (crNum(t.uncosted) > 0) notes.push(`* ${t.uncosted} order${t.uncosted === 1 ? ' has' : 's have'} no costs recorded yet, so the margin shown for ${t.uncosted === 1 ? 'it' : 'them'} is not meaningful.`);
+  if (crNum(t.estimated) > 0) notes.push(`~ ${t.estimated} order${t.estimated === 1 ? '' : 's'} predate VAT line snapshots: revenue is estimated as total / 1.16.`);
+
+  buildCrTableDoc(doc, ctx, {
+    title: 'Order Profit & Loss',
+    meta: [{ label: 'Period', value: f.period }, { label: 'Revenue', value: 'Ex-VAT' }, { label: 'Costs', value: 'Materials + labour + direct expenses' }],
+    kpis: [
+      { label: 'Orders', value: String(rows.length) },
+      { label: 'Revenue (ex-VAT)', value: `KES ${fmtKes(t.revenue)}` },
+      { label: 'Total cost', value: `KES ${fmtKes(t.cost)}`, sub: `Mat ${fmtKes(t.materials)} · Lab ${fmtKes(t.labour)} · Dir ${fmtKes(t.direct)}` },
+      { label: 'Profit', value: `KES ${fmtKes(profit)}`, alert: profit < 0, sub: t.margin === null || t.margin === undefined ? undefined : `${crNum(t.margin).toFixed(1)}% margin` },
+    ],
+    section: 'ORDER P&L',
+    cols: PNL2_COLS,
+    rows: body,
+    totalsLeft: `TOTAL  |  ${rows.length} order${rows.length === 1 ? '' : 's'}  |  Margin: ${t.margin === null || t.margin === undefined ? '—' : crNum(t.margin).toFixed(1) + '%'}`,
+    totalsRight: `Revenue: KES ${fmtKes(t.revenue)}   Cost: KES ${fmtKes(t.cost)}   Profit: KES ${fmtKes(profit)}`,
+    notes,
+  });
+}
+
+function buildProductCashDoc(doc, data, ctx) {
+  const rep = data.productCash || {};
+  const f = data.filters || {};
+  const rows = rep.rows || [];
+  const t = rep.totals || {};
+  const rc = rep.reconciliation || {};
+  const fl = rep.flags || {};
+  const pc = v => (v === null || v === undefined ? '—' : `${crNum(v).toFixed(1)}%`);
+
+  const body = rows.map(r => {
+    const profit = crNum(r.profit);
+    const m = r.margin === null || r.margin === undefined ? null : crNum(r.margin);
+    return { values: {
+      category: r.category || '—',
+      cash: crNum(r.cash) >= 0.5 ? { t: fmtKes(r.cash), color: GREEN, bold: true } : dash,
+      orders: r.orders ? String(r.orders) : dash,
+      invoiced: mcell(crNum(r.invoiced)),
+      collected: mcell(crNum(r.collected)),
+      outstanding: crNum(r.outstanding) >= 0.5 ? { t: fmtKes(r.outstanding), color: AMBER, bold: true } : dash,
+      revenue: mcell(crNum(r.revenue)),
+      cost: mcell(crNum(r.cost)),
+      margin: r.uncosted ? { t: 'No cost recorded', color: MUTED } : m === null ? dash : { t: `${fmtKes(profit)}  (${pc(m)})`, color: profit >= 0 ? GREEN : RED, bold: true },
+    } };
+  });
+
+  const notes = [
+    'Cash is ALLOCATED: customers pay against orders, so each payment is split across the order\'s lines in proportion to their value. Category cash adds back to the payments total.',
+    'Invoiced / Collected / Outstanding / Revenue / Est. cost cover orders RAISED in the period (collected to date). Costs are held per order and split by sales value, so margin is an estimate.',
+  ];
+  if (crNum(rc.unallocated) >= 0.5) notes.push(`Cash not attributable to a category: KES ${fmtKes(rc.unallocated)} (${rc.unallocatedPayments} payment${rc.unallocatedPayments === 1 ? '' : 's'} on orders with no priced lines).`);
+  if (crNum(rc.excluded) >= 0.5) notes.push(`Not included: KES ${fmtKes(rc.excluded)} paid on cancelled or suspended orders.`);
+  if (crNum(fl.uncostedOrders) > 0) notes.push(`${fl.uncostedOrders} of ${fl.cohortOrders} orders have no costs recorded yet, so margins are overstated until costs are linked.`);
+  if (crNum(fl.estimatedOrders) > 0) notes.push(`${fl.estimatedOrders} order${fl.estimatedOrders === 1 ? '' : 's'} predate VAT line snapshots: revenue estimated as total / 1.16.`);
+  if (crNum(fl.ordersWithoutLines) > 0) notes.push(`${fl.ordersWithoutLines} invoiced order${fl.ordersWithoutLines === 1 ? ' has' : 's have'} no priced lines (KES ${fmtKes(fl.ordersWithoutLinesValue)}) and ${fl.ordersWithoutLines === 1 ? 'is' : 'are'} not in the category columns.`);
+  if (rc.ok === false) notes.push(`WARNING: allocated cash differs from the Payments Received total by KES ${fmtKes(Math.abs(crNum(rc.difference)))}.`);
+
+  buildCrTableDoc(doc, ctx, {
+    title: 'Cash by Product',
+    meta: [{ label: 'Period', value: f.period }, { label: 'Grouped by', value: 'Item category' }],
+    kpis: [
+      { label: 'Cash received', value: `KES ${fmtKes(rc.total)}`, sub: `KES ${fmtKes(rc.allocated)} allocated` },
+      { label: 'Orders raised', value: `KES ${fmtKes(t.invoiced)}`, sub: 'Invoiced in period' },
+      { label: 'Outstanding', value: `KES ${fmtKes(t.outstanding)}`, alert: crNum(t.outstanding) >= 0.5, sub: 'On those orders' },
+      { label: 'Est. margin', value: t.margin === null || t.margin === undefined ? '—' : pc(t.margin), sub: `KES ${fmtKes(t.profit)}` },
+    ],
+    section: 'CASH BY ITEM CATEGORY',
+    cols: PRODCASH_COLS,
+    rows: body,
+    totalsLeft: `TOTAL  |  ${rows.length} categor${rows.length === 1 ? 'y' : 'ies'}`,
+    totalsRight: `Cash: KES ${fmtKes(t.cash)}   Invoiced: KES ${fmtKes(t.invoiced)}   Outstanding: KES ${fmtKes(t.outstanding)}`,
+    notes,
+  });
+}
+
+function buildOrdersReportDoc(doc, data, ctx) {
+  const rows = data.reportRows || [];
+  const fin = !!data.showFinancials;
+  const allItems = data.allItems || {};
+  const s = data.summary || null;
+  const label = data.reportLabel || 'Orders';
+  const paymentDue = !!data.paymentDue;
+
+  let cols, body, kpis, totalsRight = '';
+  if (fin) {
+    cols = ORDFIN_COLS;
+    body = rows.map(r => {
+      const bal = r.balance;
+      return { values: {
+        client: r.client || '—',
+        order_num: r.order_num || '—',
+        invoice: r.invoice_number || '—',
+        status: { t: r.status || '—', color: statusColor(r.status), bold: true },
+        due: fmtDate(paymentDue ? r.payment_due_date : r.due_date),
+        billable: r.billable === null ? { t: 'n/a', color: MUTED } : fmtKes(r.billable),
+        paid: mcell(crNum(r.paid)),
+        balance: bal === null ? { t: 'n/a', color: MUTED } : bal >= 0.5 ? { t: fmtKes(bal), color: r.days_late > 0 ? RED : AMBER, bold: true } : dash,
+        late: r.days_late > 0 ? { t: String(r.days_late), color: RED, bold: true } : dash,
+      } };
+    });
+    const sm = s || {};
+    kpis = [
+      { label: 'Orders', value: String(rows.length) },
+      { label: 'Invoiced', value: `KES ${fmtKes(sm.billable)}` },
+      { label: 'Paid', value: `KES ${fmtKes(sm.paid)}` },
+      { label: 'Balance owed', value: `KES ${fmtKes(sm.balance)}`, alert: crNum(sm.balance) >= 0.5 },
+      { label: 'Overdue', value: `KES ${fmtKes(sm.overdue)}`, alert: crNum(sm.overdue) >= 0.5, sub: sm.overdueCount ? `${sm.overdueCount} order${sm.overdueCount === 1 ? '' : 's'}` : 'Nothing overdue' },
+    ];
+    totalsRight = `Invoiced: KES ${fmtKes(sm.billable)}   Paid: KES ${fmtKes(sm.paid)}   Balance: KES ${fmtKes(sm.balance)}`;
+  } else {
+    cols = PROD_COLS;
+    body = [];
+    rows.forEach(r => {
+      const items = allItems[r.id] || [];
+      const lead = { client: r.client || '', order_num: r.order_num || '', due_date: fmtDate(r.due_date), status: r.status || '' };
+      if (r.delivery_days_late > 0) lead.due_date = { t: fmtDate(r.due_date), color: RED, bold: true };
+      if (!items.length) {
+        body.push({ values: { ...lead, category: '—', description: r.items_text || '—', qty: '—', size: '—', finish: '—', wood: '—' } });
+        return;
+      }
+      items.forEach((item, i) => {
+        body.push({ values: {
+          client: i === 0 ? lead.client : '', order_num: i === 0 ? lead.order_num : '',
+          due_date: i === 0 ? lead.due_date : '', status: i === 0 ? lead.status : '',
+          category: item.category || '—', description: item.description || '—', qty: String(item.quantity || 1),
+          size: item.size || '—', finish: [item.finish_type, item.finish_color].filter(Boolean).join(' / ') || '—', wood: item.wood_type || '—',
+        } });
+      });
+    });
+    const units = rows.reduce((t, r) => t + crNum(r.units || 1), 0);
+    kpis = [{ label: 'Orders', value: String(rows.length) }, { label: 'Units', value: String(units) }];
+    totalsRight = '';
+  }
+
+  const workload = data.workloadSummary || [];
+  buildCrTableDoc(doc, ctx, {
+    title: label,
+    meta: periodMeta(data),
+    kpis,
+    pre: workload.length ? (d, y) => drawWorkloadCards(d, y, workload) : null,
+    section: fin ? 'ORDERS' : 'ORDER DETAILS',
+    cols,
+    rows: body,
+    totalsLeft: `TOTAL  |  ${rows.length} order${rows.length === 1 ? '' : 's'}${fin ? '' : `  |  ${rows.reduce((t, r) => t + crNum(r.units || 1), 0)} units`}`,
+    totalsRight,
+    notes: [fin && s && s.unknown > 0 ? `${s.unknown} order${s.unknown === 1 ? '' : 's'} left out of the totals: delivery value unavailable.` : null],
+  });
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 function buildReportPDF(data) {
@@ -760,57 +1204,24 @@ function buildReportPDF(data) {
       const chunks = [];
       let   doc;
 
-      // ── Supplier purchases ────────────────────────────────────────────────
-      const supplierPurchases = data.supplierPurchases;
-      if (supplierPurchases != null) {
-        doc = new PDFDocument({ size: [LW, LH], autoFirstPage: false, margin: 0 });
+      // ── Payments received ─────────────────────────────────────────────────
+      if (data.paymentsReceived != null) {
+        doc = new PDFDocument({ size: [LW, LH], autoFirstPage: false, margin: 0, bufferPages: true });
         doc.on('data', c => chunks.push(c));
         doc.on('end',  () => resolve(Buffer.concat(chunks)));
         doc.on('error', reject);
+        buildPaymentsReceivedDoc(doc, data, { nowStr, userName });
+        doc.end();
+        return;
+      }
 
-        const cols = SUPPLIER_COLS;
-        const rows = supplierPurchases.map(p => {
-          const t   = parseFloat(p.total_amount || 0);
-          const pd  = parseFloat(p.amount_paid  || 0);
-          const bal = Math.max(t - pd, 0);
-          const supName = (typeof p.suppliers === 'object' && p.suppliers)
-            ? (p.suppliers.name || p.supplier_name || '—')
-            : (p.supplier_name || '—');
-          return {
-            supplier_name: supName,
-            purchase_date: fmtDate(p.purchase_date),
-            items_bought:  p.items_bought || '—',
-            total:         fmtKes(t),
-            paid:          fmtKes(pd),
-            balance:       fmtKes(bal),
-            status:        p.payment_status || '',
-          };
-        });
-
-        let pageNum = 1;
-        doc.addPage();
-        let y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum);
-        y = drawSectionBar(doc, y, 'SUPPLIER PURCHASES');
-        y = drawColHeaders(doc, y, cols);
-
-        rows.forEach((row, idx) => {
-          if (y + ROW_H > LH - LBOTTOM) {
-            doc.addPage();
-            pageNum++;
-            y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum);
-            y = drawSectionBar(doc, y, 'SUPPLIER PURCHASES (continued)');
-            y = drawColHeaders(doc, y, cols);
-          }
-          y = drawDataRow(doc, y, cols, row, idx);
-        });
-
-        if (y + 10 * MM > LH - LBOTTOM) { doc.addPage(); pageNum++; y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum); }
-        const n = supplierPurchases.length;
-        const tv = supplierPurchases.reduce((s, p) => s + parseFloat(p.total_amount || 0), 0);
-        const tp = supplierPurchases.reduce((s, p) => s + parseFloat(p.amount_paid  || 0), 0);
-        drawTotalsBar(doc, y + 2 * MM,
-          `TOTAL  |  ${n} purchase${n !== 1 ? 's' : ''}`,
-          `Total: KES ${fmtKes(tv)}   Paid: KES ${fmtKes(tp)}   Outstanding: KES ${fmtKes(Math.max(tv-tp,0))}`);
+      // ── Supplier purchases / payables ─────────────────────────────────────
+      if (data.supplierPurchases != null) {
+        doc = new PDFDocument({ size: [LW, LH], autoFirstPage: false, margin: 0, bufferPages: true });
+        doc.on('data', c => chunks.push(c));
+        doc.on('end',  () => resolve(Buffer.concat(chunks)));
+        doc.on('error', reject);
+        buildSupplierPurchasesDoc(doc, data, { nowStr, userName });
         doc.end();
         return;
       }
@@ -1010,118 +1421,24 @@ function buildReportPDF(data) {
         return;
       }
 
-      // ── Order P&L ─────────────────────────────────────────────────────────
-      const orderPnL = data.orderPnL;
-      if (orderPnL != null) {
-        doc = new PDFDocument({ size: [LW, LH], autoFirstPage: false, margin: 0 });
+      // ── Cash by product ───────────────────────────────────────────────────
+      if (data.productCash != null) {
+        doc = new PDFDocument({ size: [LW, LH], autoFirstPage: false, margin: 0, bufferPages: true });
         doc.on('data', c => chunks.push(c));
         doc.on('end',  () => resolve(Buffer.concat(chunks)));
         doc.on('error', reject);
+        buildProductCashDoc(doc, data, { nowStr, userName });
+        doc.end();
+        return;
+      }
 
-        const cols    = ORDER_PNL_COLS;
-        // Sub-row height is slightly smaller than main ROW_H
-        const SUB_H   = 5.5 * MM;
-        const CORAL_A = '#E8512A';
-
-        // Helper to draw a purchase sub-row under an order summary row
-        function drawPurchaseSubRow(doc, y, p, isLast) {
-          const subBg = '#FAF8F6';
-          fillRect(doc, LM, y, LCW, SUB_H, subBg);
-          if (!isLast) {
-            doc.save().moveTo(LM, y + SUB_H).lineTo(LM + LCW, y + SUB_H).lineWidth(0.15).stroke('#EDE9E3').restore();
-          }
-          // Coral arrow indicator
-          doc.font('Helvetica-Bold').fontSize(6).fillColor(CORAL_A)
-            .text('>>', LM + 3 * MM, y + 1.2 * MM, { lineBreak: false });
-          // Supplier name (bold)
-          const supplierText = String(p.supplier_name || '—');
-          const dateStr = p.purchase_date ? fmtDate(p.purchase_date) : '';
-          const metaText = dateStr ? `${supplierText}  ·  ${dateStr}` : supplierText;
-          drawLeft(doc, metaText, LM + 7 * MM, y + 1.2 * MM, { font: 'Helvetica-Bold', size: 5.5, color: '#555', maxW: 70 * MM });
-          // Items description
-          drawLeft(doc, p.items_bought || '—', LM + 80 * MM, y + 1.2 * MM, { size: 5.5, color: '#888', maxW: 90 * MM });
-          // Cost right-aligned to 'costs' column
-          const costsCol = cols.find(c => c.key === 'costs');
-          if (costsCol) {
-            drawRight(doc, fmtKes(parseFloat(p.total_amount || 0)),
-              LM + costsCol.x + costsCol.w, y + 1.2 * MM,
-              { font: 'Helvetica-Bold', size: 5.5, color: '#C62828', maxW: costsCol.w });
-          }
-          return y + SUB_H;
-        }
-
-        let pageNum = 1;
-        doc.addPage();
-        let y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum);
-        y = drawSectionBar(doc, y, 'ORDER P&L  —  DIRECT MATERIAL COSTS ONLY');
-        y = drawColHeaders(doc, y, cols);
-
-        orderPnL.forEach((o, idx) => {
-          const revenue   = parseFloat(o.revenue       || 0);
-          const costs     = parseFloat(o.material_cost || 0);
-          const collected = parseFloat(o.collected     || 0);
-          const profit    = revenue - costs;
-          const margin    = revenue > 0 ? (profit / revenue * 100) : 0;
-          const purchases = Array.isArray(o.purchases) ? o.purchases : [];
-          const neededH   = ROW_H + purchases.length * SUB_H + 2 * MM;
-
-          if (y + neededH > LH - LBOTTOM) {
-            doc.addPage(); pageNum++;
-            y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum);
-            y = drawSectionBar(doc, y, 'ORDER P&L (continued)');
-            y = drawColHeaders(doc, y, cols);
-          }
-
-          const row = {
-            order_num: o.order_num || '—',
-            client:    o.client    || '—',
-            status:    o.status    || '—',
-            revenue:   fmtKes(revenue),
-            collected: fmtKes(collected),
-            costs:     costs > 0 ? fmtKes(costs) : '—',
-            profit:    fmtKes(profit),
-            margin:    margin.toFixed(1) + '%',
-          };
-
-          // Summary row — no bottom border if sub-rows follow
-          const totalW = cols.reduce((s, c) => Math.max(s, c.x + c.w), 0);
-          fillRect(doc, LM, y, totalW, ROW_H, idx % 2 === 0 ? LGRAY : WHITE);
-          if (purchases.length === 0) {
-            doc.save().moveTo(LM, y + ROW_H).lineTo(LM + totalW, y + ROW_H).lineWidth(0.2).stroke(MGRAY).restore();
-          }
-          cols.forEach(col => {
-            const raw  = row[col.key];
-            const text = (raw === null || raw === undefined || raw === '') ? '—' : String(raw);
-            const font  = col.bold ? 'Helvetica-Bold' : 'Helvetica';
-            const size  = col.size || 6.5;
-            const x     = LM + col.x;
-            const opts  = { font, size, color: DGRAY, maxW: col.w };
-            if (col.right)   drawRight(doc, text, x + col.w, y + 1.5 * MM, opts);
-            else if (col.centre) drawCenter(doc, text, x + col.w / 2, y + 1.5 * MM, opts);
-            else             drawLeft(doc, text, x, y + 1.5 * MM, opts);
-          });
-          y += ROW_H;
-
-          // Purchase sub-rows
-          purchases.forEach((p, pIdx) => {
-            y = drawPurchaseSubRow(doc, y, p, pIdx === purchases.length - 1);
-          });
-          // Separator after last sub-row
-          if (purchases.length > 0) {
-            doc.save().moveTo(LM, y).lineTo(LM + LCW, y).lineWidth(0.4).stroke(MGRAY).restore();
-            y += 1 * MM;
-          }
-        });
-
-        if (y + 10 * MM > LH - LBOTTOM) { doc.addPage(); pageNum++; y = drawLandscapeHeader(doc, reportLabel, subtitle, nowStr, userName, pageNum); }
-        const n         = orderPnL.length;
-        const totalRev  = orderPnL.reduce((s, o) => s + parseFloat(o.revenue       || 0), 0);
-        const totalCost = orderPnL.reduce((s, o) => s + parseFloat(o.material_cost || 0), 0);
-        const totalProf = totalRev - totalCost;
-        const avgMargin = totalRev > 0 ? (totalProf / totalRev * 100) : 0;
-        drawTotalsBar(doc, y + 2 * MM,
-          `TOTAL  |  ${n} order${n !== 1 ? 's' : ''}  |  Avg Margin: ${avgMargin.toFixed(1)}%`,
-          `Revenue: KES ${fmtKes(totalRev)}   Costs: KES ${fmtKes(totalCost)}   Gross Profit: KES ${fmtKes(totalProf)}`);
+      // ── Order P&L ─────────────────────────────────────────────────────────
+      if (data.orderPnL != null) {
+        doc = new PDFDocument({ size: [LW, LH], autoFirstPage: false, margin: 0, bufferPages: true });
+        doc.on('data', c => chunks.push(c));
+        doc.on('end',  () => resolve(Buffer.concat(chunks)));
+        doc.on('error', reject);
+        buildOrderPnlDoc(doc, data, { nowStr, userName });
         doc.end();
         return;
       }
@@ -2234,6 +2551,17 @@ function buildReportPDF(data) {
            .text(quote.quote_num || '', PM, PH - 7 * MM,
              { align: 'right', width: PCW, lineBreak: false });
 
+        doc.end();
+        return;
+      }
+
+      // ── Orders report v2 (rows precomputed by the Reports tab) ─────────────
+      if (Array.isArray(data.reportRows)) {
+        doc = new PDFDocument({ size: [LW, LH], autoFirstPage: false, margin: 0, bufferPages: true });
+        doc.on('data', c => chunks.push(c));
+        doc.on('end',  () => resolve(Buffer.concat(chunks)));
+        doc.on('error', reject);
+        buildOrdersReportDoc(doc, data, { nowStr, userName });
         doc.end();
         return;
       }

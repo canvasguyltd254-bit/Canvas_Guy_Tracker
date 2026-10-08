@@ -122,7 +122,7 @@ export function CustomerPicker({ customers, value, onChange, allLabel = "All cus
 }
 
 // ── Date range modal ─────────────────────────────────────────────────────────
-export function PeriodModal({ range, today, onApply, onClose }) {
+export function PeriodModal({ range, today, onApply, onClose, subject = "orders dated", title = "Report period" }) {
   const [from, setFrom] = useState(range.from || "");
   const [to, setTo]     = useState(range.to || "");
   const [error, setError] = useState("");
@@ -143,7 +143,7 @@ export function PeriodModal({ range, today, onApply, onClose }) {
 
   return (
     <Modal
-      title="Report period"
+      title={title}
       onClose={onClose}
       footer={
         <>
@@ -187,7 +187,7 @@ export function PeriodModal({ range, today, onApply, onClose }) {
       </div>
 
       <div style={{ fontSize: 12.5, color: C.muted, marginTop: 2 }}>
-        Showing orders dated <strong style={{ color: C.ink }}>{describePeriod(current)}</strong>
+        Showing {subject} <strong style={{ color: C.ink }}>{describePeriod(current)}</strong>
         {preset === "custom" ? " (custom range)" : ""}.
       </div>
 

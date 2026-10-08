@@ -26,6 +26,17 @@ test('presets: this month, last month (incl. January rollover and leap February)
   assert.deepEqual(presetRange('all', TODAY), { from: null, to: null });
 });
 
+test('week (Monday start) and quarter presets', () => {
+  // 7 Oct 2026 is a Wednesday
+  assert.deepEqual(presetRange('this_week', TODAY), { from: '2026-10-05', to: '2026-10-11' });
+  assert.deepEqual(presetRange('last_week', TODAY), { from: '2026-09-28', to: '2026-10-04' });
+  assert.deepEqual(presetRange('this_week', '2026-10-11'), { from: '2026-10-05', to: '2026-10-11' }); // Sunday
+  assert.deepEqual(presetRange('this_week', '2026-10-05'), { from: '2026-10-05', to: '2026-10-11' }); // Monday
+  assert.deepEqual(presetRange('this_quarter', TODAY), { from: '2026-10-01', to: '2026-12-31' });
+  assert.deepEqual(presetRange('this_quarter', '2026-02-10'), { from: '2026-01-01', to: '2026-03-31' });
+  assert.deepEqual(presetRange('this_quarter', '2024-05-01'), { from: '2024-04-01', to: '2024-06-30' });
+});
+
 test('matchPreset recognises presets and falls back to custom', () => {
   assert.equal(matchPreset(presetRange('last_month', TODAY), TODAY), 'last_month');
   assert.equal(matchPreset({ from: null, to: null }, TODAY), 'all');
