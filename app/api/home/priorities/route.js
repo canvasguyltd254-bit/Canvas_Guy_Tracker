@@ -17,12 +17,14 @@
  * Response shape:
  *   {
  *     queue: [{
- *       type: 'customer_overdue' | 'production_blocked' | 'production_qc_ready' | 'quote_followup' | 'quote_followup_more',
+ *       type: 'customer_overdue' | 'production_blocked' | 'production_qc_ready' | 'quote_followup' | 'quote_followup_more'
+ *             | 'enquiry_reply' | 'enquiry_reply_more' | 'enquiry_match_review',
  *       id, title, subtitle,
  *       chip: { tone: 'red'|'amber'|'blue', label },
  *       source: { module: 'customers'|'production', path },
  *       sortWeight: number,   // lower sorts first within the queue
  *     }],
+ *     web: null | { waiting, overdue, oldestWaitingMs, matchReview },  // CRM roles only; a field is null if unknown
  *     floor: [{
  *       jobId, jobNum, orderNum, client, description, category,
  *       plannedQuantity, acceptedQty, inProductionQty, awaitingQcQty,
@@ -37,6 +39,7 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, serviceClient } from '@/shared/lib/api-auth';
 import { DELIVERED_STATUSES, CAN_SEE_PRODUCTION, CAN_SEE_CUSTOMERS, CAN_SEE_CRM } from '@/shared/lib/homeAccess';
 import { followUpSummary } from '@/shared/lib/quoteFollowUp';
+import { responseClock, REPLY_OPEN_STAGES, formatDuration, formatDue } from '@/shared/lib/webEnquiry';
 import { nairobiToday } from '@/shared/lib/reports/dateBounds';
 
 const QUEUE_LIMIT = 25;
@@ -49,6 +52,9 @@ export async function GET() {
 
     const today = new Date().toISOString().split('T')[0];
     const queue = [];
+    // Website-queue numbers for the Home cards. A field stays null when its query
+    // failed (or the migration is missing), so the UI never shows a false "0".
+    const web = { waiting: null, overdue: null, oldestWaitingMs: null, matchReview: null };
     let floorTask = Promise.resolve([]);
     const tasks = [];
 
@@ -124,6 +130,86 @@ export async function GET() {
                 sortWeight: 6,
               });
             }
+          })
+      );
+    }
+
+    // ── Website enquiries still waiting for a first reply (CRM) ────────────
+    // The deadline (reply_due_at) is calculated by the database; this only compares
+    // it with now, using the same helper as the Enquiries tab. Only an explicit
+    // "Log contact" clears an item. Skipped quietly until enquiry_response_control.sql
+    // has been applied.
+    if (CAN_SEE_CRM.includes(role)) {
+      tasks.push(
+        serviceClient
+          .from('enquiries')
+          .select('id, enq_num, stage, created_at, reply_due_at, first_contact_at, prospect_name, customers(name)')
+          .eq('source', 'website')
+          .is('first_contact_at', null)
+          .not('reply_due_at', 'is', null)
+          .in('stage', REPLY_OPEN_STAGES)
+          .order('reply_due_at', { ascending: true })
+          .limit(200)
+          .then(({ data, error }) => {
+            if (error) { console.error('home/priorities website enquiries:', error.message); return; }
+            const now = Date.now();
+            const waiting = (data || [])
+              .map(e => ({ e, clock: responseClock(e, now) }))
+              .filter(x => x.clock && x.clock.state !== 'contacted');
+            web.waiting = waiting.length;
+            web.overdue = waiting.filter(x => x.clock.state === 'overdue').length;
+            web.oldestWaitingMs = waiting.length
+              ? Math.max(...waiting.map(x => now - Date.parse(x.e.created_at)))
+              : null;
+            const SHOW = 4;
+            for (const { e, clock } of waiting.slice(0, SHOW)) {
+              const who = e.customers?.name || String(e.prospect_name || '').replace(/^~+\s*/, '') || 'Website enquiry';
+              const overdue = clock.state === 'overdue';
+              queue.push({
+                type: 'enquiry_reply',
+                id: e.id,
+                title: `${who} · ${e.enq_num}`,
+                subtitle: overdue
+                  ? `Website enquiry · waiting ${formatDuration(now - Date.parse(e.created_at))} · reply was due ${formatDue(e.reply_due_at, now)}`
+                  : `Website enquiry · reply by ${formatDue(e.reply_due_at, now)}`,
+                chip: { tone: overdue ? 'red' : clock.state === 'due_soon' ? 'amber' : 'blue', label: overdue ? 'Reply overdue' : clock.state === 'due_soon' ? 'Reply due soon' : 'New enquiry' },
+                source: { module: 'crm', path: `/crm?tab=Enquiries&filter=website_waiting&open=${e.id}` },
+                sortWeight: overdue ? -100 - Math.min(clock.overdueMs / 60000, 2880) / 100 : clock.state === 'due_soon' ? 1 : 2,
+              });
+            }
+            if (waiting.length > SHOW) {
+              queue.push({
+                type: 'enquiry_reply_more',
+                id: 'website-enquiries',
+                title: `${waiting.length - SHOW} more website enquir${waiting.length - SHOW === 1 ? 'y' : 'ies'} waiting for a reply`,
+                subtitle: `${waiting.filter(x => x.clock.state === 'overdue').length} overdue in total`,
+                chip: { tone: 'amber', label: 'Reply needed' },
+                source: { module: 'crm', path: '/crm?tab=Enquiries&filter=website_waiting' },
+                sortWeight: 3,
+              });
+            }
+          })
+      );
+
+      // Website enquiries whose phone/email matched several customers: a person must decide.
+      tasks.push(
+        serviceClient
+          .from('web_form_submissions')
+          .select('id', { count: 'exact', head: true })
+          .eq('match_status', 'ambiguous')
+          .then(({ count, error }) => {
+            if (error) { console.error('home/priorities match review:', error.message); return; }
+            web.matchReview = count || 0;
+            if (!count) return;
+            queue.push({
+              type: 'enquiry_match_review',
+              id: 'website-match-review',
+              title: `${count} website enquir${count === 1 ? 'y needs' : 'ies need'} a customer check`,
+              subtitle: 'Several customers share the phone or email. Pick the right one.',
+              chip: { tone: 'blue', label: 'Check match' },
+              source: { module: 'crm', path: '/crm?tab=Enquiries&filter=match_review' },
+              sortWeight: 4,
+            });
           })
       );
     }
@@ -211,6 +297,7 @@ export async function GET() {
       data: {
         queue: queue.slice(0, QUEUE_LIMIT),
         floor,
+        web: CAN_SEE_CRM.includes(role) ? web : null,
       },
     });
   } catch (err) {

@@ -3,6 +3,7 @@ export const runtime = 'nodejs';
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
+import { shapeWebSubmission } from '@/shared/lib/webEnquiry';
 
 const ROLES_CRM = ['admin', 'head_of_sales', 'sales'];
 
@@ -19,27 +20,40 @@ export async function GET(request) {
     const source = searchParams.get('source');
     const q      = searchParams.get('q');
 
-    let query = serviceClient
-      .from('enquiries')
-      .select(`
-        *,
-        customers(id, name, phone, email),
-        followups(id, due_date, completed_at)
-      `)
-      .order('created_at', { ascending: false })
-      .limit(200);
+    const run = (withWeb) => {
+      let query = serviceClient
+        .from('enquiries')
+        .select(`
+          *,
+          customers(id, name, phone, email),
+          followups(id, due_date, completed_at)${withWeb ? ',\n          web_form_submissions(*)' : ''}
+        `)
+        .order('created_at', { ascending: false })
+        .limit(200);
+      if (stage)  query = query.eq('stage', stage);
+      if (source) query = query.eq('source', source);
+      if (q)      query = query.ilike('description', `%${q}%`);
+      return query;
+    };
 
-    if (stage)  query = query.eq('stage', stage);
-    if (source) query = query.eq('source', source);
-    if (q)      query = query.ilike('description', `%${q}%`);
-
-    const { data, error } = await query;
+    let { data, error } = await run(true);
+    if (error && /relationship|web_form_submissions|schema cache/i.test(`${error.code} ${error.message}`)) {
+      // web_form_enquiries.sql not applied on this database yet: the list still works.
+      console.warn('GET /api/crm/enquiries: web_form_submissions unavailable, listing without website details');
+      ({ data, error } = await run(false));
+    }
     if (error) {
       console.error('GET /api/crm/enquiries:', error);
       return NextResponse.json({ error: 'Failed to fetch enquiries' }, { status: 500 });
     }
 
-    return NextResponse.json({ data });
+    // Website details are reduced to a safe, flat shape; the raw payload never leaves the server.
+    const shaped = (data || []).map(({ web_form_submissions, ...row }) => ({
+      ...row,
+      web: shapeWebSubmission(Array.isArray(web_form_submissions) ? web_form_submissions[0] : web_form_submissions),
+    }));
+
+    return NextResponse.json({ data: shaped });
   } catch (err) {
     console.error('GET /api/crm/enquiries:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

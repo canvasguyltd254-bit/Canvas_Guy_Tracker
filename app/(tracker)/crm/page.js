@@ -14,6 +14,7 @@ function CrmPageContent() {
   const enquiryId    = searchParams.get('enquiry_id')  || undefined;
   const tabParam     = searchParams.get('tab')    || undefined;   // e.g. Quotations
   const filterParam  = searchParams.get('filter') || undefined;   // e.g. followup
+  const openParam    = searchParams.get('open')   || undefined;   // enquiry id to expand and scroll to
 
   // Strip ?new= after reading so Back doesn't re-trigger the modal
   useEffect(() => {
@@ -34,6 +35,7 @@ function CrmPageContent() {
       defaultEnquiryId={enquiryId}
       defaultTab={tabParam}
       defaultFilter={filterParam}
+      defaultOpen={openParam}
     />
   );
 }

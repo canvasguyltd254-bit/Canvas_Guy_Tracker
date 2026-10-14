@@ -7,6 +7,7 @@
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { describeSource } from './webEnquiry.js';
 
 const MAX_AGE_SEC = 300;
 
@@ -126,15 +127,8 @@ export function parseEnquiryFields(fields) {
   };
 }
 
-function hostOf(u) { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } }
-
-/** Short human summary of where the lead came from, or '' when unknown/direct. */
-export function describeSource(a = {}) {
-  const tagged = [a.utm_source, a.utm_medium, a.utm_campaign].filter(Boolean).join(' / ');
-  if (tagged) return tagged;
-  const host = hostOf(a.referrer);
-  return host && !/theseatingcompany\./i.test(host) ? host : '';
-}
+// describeSource lives in webEnquiry.js (no node-only imports, so the browser can use it too).
+export { describeSource };
 
 /** What the salesperson sees as the enquiry description. */
 export function buildDescription(v) {

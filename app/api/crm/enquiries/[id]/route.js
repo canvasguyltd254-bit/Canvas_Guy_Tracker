@@ -25,6 +25,15 @@ export async function PATCH(request, props) {
       return NextResponse.json({ error: 'No updatable fields provided' }, { status: 422 });
     }
 
+    // "Contacted" is a recorded action (who, when, how), not just a stage edit:
+    // a quote can be started from a New enquiry without anyone reaching the customer.
+    if (safe.stage === 'contacted') {
+      return NextResponse.json(
+        { error: 'Use "Log contact" to mark an enquiry as contacted so who and how are recorded.' },
+        { status: 422 },
+      );
+    }
+
     // A lost stage requires a non-empty reason (mirrors the DB CHECK constraint)
     if (safe.stage === 'lost' && !safe.lost_reason?.trim()) {
       return NextResponse.json({ error: 'A reason is required when marking an enquiry as lost.' }, { status: 422 });

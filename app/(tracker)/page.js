@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import Link                    from "next/link";
 import { useAuth }             from "@/shared/context/AuthContext";
+import { formatDuration }      from "@/shared/lib/webEnquiry";
 import {
   C, StatCard, Panel, PanelHead, Badge, Empty, Loading, MetricBar, Btn, fmtKes,
 } from "@/shared/ui/ds";
@@ -102,6 +103,7 @@ export default function HomeDashboard() {
 
   const queue = priorities?.queue || [];
   const floor = priorities?.floor || [];
+  const web   = priorities?.web || null;   // null for roles that cannot see CRM
   const visibleQueue = showAllQueue ? queue : queue.slice(0, 4);
 
   return (
@@ -127,6 +129,33 @@ export default function HomeDashboard() {
             sub={`${customers.overdue} overdue · ${customers.dueThisWeek} due this week`}
             alert={customers.overdue > 0}
           />
+        )}
+        {/* Website enquiries (CRM roles). A null count means "unknown", never shown as 0. */}
+        {web && (
+          <Link href="/crm?tab=Enquiries&filter=website_waiting" aria-label="Open website enquiry queue"
+            style={{ textDecoration: "none", color: "inherit", display: "block", minHeight: 44 }}>
+            <StatCard
+              label="Website enquiries"
+              value={web.waiting === null ? "—" : `${web.waiting} awaiting contact`}
+              sub={
+                web.waiting === null ? "Could not load the website queue"
+                  : web.waiting === 0 ? "Nobody is waiting for a first reply"
+                  : `${web.overdue ? `${web.overdue} overdue · ` : ""}oldest ${formatDuration(web.oldestWaitingMs)} · Open website queue →`
+              }
+              alert={!!web.overdue}
+            />
+          </Link>
+        )}
+        {web && web.matchReview > 0 && (
+          <Link href="/crm?tab=Enquiries&filter=match_review" aria-label="Review website enquiries that need a customer check"
+            style={{ textDecoration: "none", color: "inherit", display: "block", minHeight: 44 }}>
+            <StatCard
+              label="Customer check"
+              value={`${web.matchReview} to review`}
+              sub="Several customers share the phone or email →"
+              alert
+            />
+          </Link>
         )}
         {production && (
           <StatCard

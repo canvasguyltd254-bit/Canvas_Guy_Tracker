@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, useId } from 'react';
 import { createPortal } from 'react-dom';
 import calcTotals from '@/shared/lib/calcTotals';
 import LineItemEditor, { BLANK_ITEM, BLANK_CHARGE } from '@/shared/components/LineItemEditor';
@@ -12,9 +12,13 @@ import {
 } from '@/shared/lib/quoteView';
 import { followUpState, followUpSummary, CONTACT_METHODS } from '@/shared/lib/quoteFollowUp';
 import {
-  ENQUIRY_STAGES, openFollowUp, attentionInfo, enquiryPrimary, enquiryMenu, matchesEnquirySearch,
-  enquiryTabCounts, needsAttention, summariseEnquiries,
+  ENQUIRY_STAGES, BRAND_LABEL, BRANDS, openFollowUp, attentionInfo, enquiryPrimary, enquiryMenu,
+  enquiryTabCounts, needsAttention, summariseEnquiries, filterEnquiries, sourceOptions,
+  isWebsite, needsMatchReview, awaitingFirstReply,
 } from '@/shared/lib/enquiryView';
+import {
+  responseClock, formatDuration, formatDue, MATCH_LABEL, CONTACT_METHODS as ENQ_CONTACT_METHODS,
+} from '@/shared/lib/webEnquiry';
 
 // ─── Portal context ───────────────────────────────────────────────────────────
 // { ref, isActive }
@@ -115,18 +119,20 @@ const PanelHead = ({ title, sub, actions }) => (
 const Toolbar = ({ children }) => (
   <div style={{ padding: '12px 17px', borderBottom: `1px solid ${C.line}`, display: 'flex', gap: 8, flexWrap: 'wrap' }}>{children}</div>
 );
-const TInput = ({ value, onChange, placeholder, style }) => (
-  <input value={value} onChange={onChange} placeholder={placeholder}
+const TInput = ({ value, onChange, placeholder, style, ...rest }) => (
+  <input value={value} onChange={onChange} placeholder={placeholder} {...rest}
     style={{ border: `1px solid ${C.line}`, background: C.card, borderRadius: 8, padding: '8px 10px', fontSize: 12, flex: 1, minWidth: 190, outline: 'none', ...style }} />
 );
-const TSelect = ({ value, onChange, children, style }) => (
-  <select value={value} onChange={onChange}
+const TSelect = ({ value, onChange, children, style, ...rest }) => (
+  <select value={value} onChange={onChange} {...rest}
     style={{ border: `1px solid ${C.line}`, background: C.card, borderRadius: 8, padding: '8px 10px', fontSize: 12, outline: 'none', ...style }}>
     {children}
   </select>
 );
 const StatCard = ({ label, value, sub, alert, onClick }) => (
-  <div onClick={onClick} style={{ background: alert ? C.redBg : C.card, border: `1px solid ${alert ? C.redBd : C.line}`, borderRadius: 10, padding: '10px 13px', cursor: onClick ? 'pointer' : 'default' }}>
+  <div onClick={onClick}
+    {...(onClick ? { role: 'button', tabIndex: 0, onKeyDown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(e); } } } : {})}
+    style={{ background: alert ? C.redBg : C.card, border: `1px solid ${alert ? C.redBd : C.line}`, borderRadius: 10, padding: '10px 13px', cursor: onClick ? 'pointer' : 'default' }}>
     <div style={{ color: alert ? C.red : C.muted, fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</div>
     <div style={{ fontSize: 18, fontWeight: 800, marginTop: 4, color: alert ? C.red : C.ink, whiteSpace: 'nowrap' }}>{value}</div>
     {sub && <div style={{ color: C.muted, marginTop: 2, fontSize: 11 }}>{sub}</div>}
@@ -176,9 +182,40 @@ const Fta = ({ ...props }) => (
 );
 
 // ─── Modal shell ──────────────────────────────────────────────────────────────
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 const Modal = ({ title, onClose, footer, children, wide }) => {
   const { ref: portalRef, isActive } = React.useContext(CrmPortalContext);
   useQuickActionsLock(isActive);
+  const dialogRef = useRef(null);
+  const closeRef  = useRef(onClose);
+  closeRef.current = onClose;
+  const titleId = useId();
+
+  // Dialog behaviour: remember the opener, move focus in, trap Tab, close on Esc, restore focus.
+  useEffect(() => {
+    const dlg = dialogRef.current;
+    if (!dlg) return undefined;
+    const opener = document.activeElement;
+    const focusables = () => Array.from(dlg.querySelectorAll(FOCUSABLE)).filter(el => !el.closest('[hidden]') && window.getComputedStyle(el).visibility !== 'hidden');
+    // First field if there is one, otherwise the first control, otherwise the dialog itself.
+    const first = dlg.querySelector('input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled])') || focusables()[0];
+    (first || dlg).focus();
+    const onKey = ev => {
+      if (ev.key === 'Escape') { ev.stopPropagation(); closeRef.current?.(); return; }
+      if (ev.key !== 'Tab') return;
+      const items = focusables();
+      if (!items.length) { ev.preventDefault(); dlg.focus(); return; }
+      const a = items[0], z = items[items.length - 1], cur = document.activeElement;
+      if (ev.shiftKey && (cur === a || cur === dlg || !dlg.contains(cur))) { ev.preventDefault(); z.focus(); }
+      else if (!ev.shiftKey && (cur === z || !dlg.contains(cur))) { ev.preventDefault(); a.focus(); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => {
+      document.removeEventListener('keydown', onKey, true);
+      if (opener && typeof opener.focus === 'function' && document.contains(opener)) opener.focus();
+    };
+  }, []);
+
   if (typeof document === 'undefined') return null;
   const target = portalRef?.current ?? document.body;
   return createPortal(
@@ -186,10 +223,11 @@ const Modal = ({ title, onClose, footer, children, wide }) => {
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
       style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflowY: 'auto', padding: '72px 14px 60px' }}
     >
-      <div style={{ background: C.card, borderRadius: 13, width: '100%', maxWidth: wide ? 760 : 640, boxShadow: '0 24px 80px rgba(0,0,0,.3)', flexShrink: 0 }}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
+        style={{ background: C.card, borderRadius: 13, width: '100%', maxWidth: wide ? 760 : 640, boxShadow: '0 24px 80px rgba(0,0,0,.3)', flexShrink: 0, outline: 'none' }}>
         <div style={{ padding: '15px 18px', borderBottom: `1px solid ${C.line}`, display: 'flex', alignItems: 'center' }}>
-          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: C.ink }}>{title}</h3>
-          <button onClick={onClose} style={{ marginLeft: 'auto', border: 0, background: 'none', fontSize: 22, cursor: 'pointer', color: C.muted, lineHeight: 1, padding: '0 4px' }}>×</button>
+          <h3 id={titleId} style={{ margin: 0, fontSize: 16, fontWeight: 800, color: C.ink }}>{title}</h3>
+          <button type="button" aria-label="Close dialog" onClick={onClose} style={{ marginLeft: 'auto', border: 0, background: 'none', fontSize: 22, cursor: 'pointer', color: C.muted, lineHeight: 1, padding: '0 4px', minWidth: 44, minHeight: 44 }}>×</button>
         </div>
         <div style={{ padding: 17 }}>{children}</div>
         {footer && <div style={{ padding: '15px 18px', borderTop: `1px solid ${C.line}`, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>{footer}</div>}
@@ -966,13 +1004,84 @@ function PipelineTab({ enquiries, stats }) {
   );
 }
 
+// ─── Website enquiry pieces ───────────────────────────────────────────────────
+const ICON_PATHS = {
+  globe: <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18" /></>,
+  clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
+  warn:  <><path d="M12 9v4M12 17h.01" /><path d="M10.3 3.9L2 18a2 2 0 001.7 3h16.6a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" /></>,
+  check: <path d="M5 12l5 5L20 7" />,
+  chevron: <path d="M6 9l6 6 6-6" />,
+};
+const Icon = ({ name, size = 12 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false" style={{ flexShrink: 0 }}>{ICON_PATHS[name]}</svg>
+);
+const Tag = ({ bg, fg, bd, icon, children }) => (
+  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: bg, color: fg, border: `1px solid ${bd || bg}`, padding: '2px 8px', borderRadius: 20, fontWeight: 700, fontSize: 10.5, whiteSpace: 'nowrap' }}>
+    {icon && <Icon name={icon} size={11} />}{children}
+  </span>
+);
+const WebBadge = () => <Tag bg={C.coralBg} fg="#9a3417" bd="#f5c2b0" icon="globe">Website</Tag>;
+const BrandBadge = ({ brand }) => {
+  if (!brand) return null;
+  return brand === 'seating_company'
+    ? <Tag bg={C.amberBg} fg={C.amber} bd={C.amberBd}>{BRAND_LABEL[brand]}</Tag>
+    : <Tag bg={C.blueBg} fg={C.blue} bd={C.blueBd}>{BRAND_LABEL[brand] || brand}</Tag>;
+};
+const InfoCard = ({ title, children }) => (
+  <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, padding: '11px 13px', minWidth: 0 }}>
+    <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>{title}</div>
+    {children}
+  </div>
+);
+// Rows with an empty value are left out.
+const KV = ({ rows }) => (
+  <dl style={{ display: 'grid', gridTemplateColumns: '98px 1fr', gap: '4px 10px', margin: 0, fontSize: 12.5 }}>
+    {rows.filter(r => r[1]).map(([k, v]) => (
+      <React.Fragment key={k}><dt style={{ color: C.muted }}>{k}</dt><dd style={{ margin: 0, wordBreak: 'break-word', color: C.ink }}>{v}</dd></React.Fragment>
+    ))}
+  </dl>
+);
+const ExtLink = ({ href }) => (href && /^https?:\/\//i.test(href)
+  ? <a href={href} target="_blank" rel="noopener noreferrer nofollow" style={{ color: C.blue, wordBreak: 'break-all' }}>{href.replace(/^https?:\/\/(www\.)?/i, '').slice(0, 70)}</a>
+  : null);
+const fmtDateTime = d => (d ? new Date(d).toLocaleString('en-KE', { timeZone: 'Africa/Nairobi', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '');
+
+const FOCUS_LABEL = {
+  website_waiting: 'Website enquiries waiting for a first reply',
+  match_review: 'Website enquiries needing a customer check',
+};
+const CONTACT_PROMPT = {
+  call: 'Call', whatsapp: 'WhatsApp', email: 'Email', visit: 'Visit', other: 'Other',
+};
+
+// Reply-clock lines. Status is always words + icon, never colour alone.
+function ClockLine({ e, now }) {
+  const c = responseClock(e, now);
+  if (!c || c.state === 'contacted') return null;
+  const color = c.state === 'overdue' ? C.red : c.state === 'due_soon' ? C.amber : C.blue;
+  const word = c.state === 'overdue' ? 'Overdue' : c.state === 'due_soon' ? 'Due soon' : 'Waiting';
+  const waited = formatDuration(now - Date.parse(e.created_at));
+  return (
+    <div style={{ marginTop: 5, fontSize: 11.5, lineHeight: 1.35 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontWeight: 800, color }}>
+        <Icon name="clock" size={12} />{word} · {waited}
+      </div>
+      <div style={{ color: C.muted, fontSize: 11 }}>{c.state === 'overdue' ? 'Reply was due' : 'Reply by'} {formatDue(e.reply_due_at, now)}</div>
+    </div>
+  );
+}
+
 // ─── Enquiries tab ────────────────────────────────────────────────────────────
-function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
+function EnquiriesTab({ onRefresh, refreshKey = 0, initialFilter, initialOpen }) {
   const [enquiries, setEnquiries] = useState([]);
   const [loading, setLoading]     = useState(true);
   const [loadErr, setLoadErr]     = useState('');
   const [tab, setTab]             = useState('all');
   const [q, setQ]                 = useState('');
+  const [brand, setBrand]         = useState('');
+  const [source, setSource]       = useState('');
+  const [webOnly, setWebOnly]     = useState(false);
+  const [focus, setFocus]         = useState(() => (FOCUS_LABEL[initialFilter] ? initialFilter : null));
   const [showForm, setShowForm]   = useState(false);
   const [quoteFor, setQuoteFor]   = useState(null);   // enquiry a quote is being created from
   const [expanded, setExpanded]   = useState(null); // enquiry id
@@ -981,15 +1090,40 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
   const [lostReason, setLostReason]   = useState('');
   const [lostError, setLostError]     = useState('');
   const [exportingPdf, setExportingPdf] = useState(false);
+  // Log contact dialog
+  const [contactFor, setContactFor]   = useState(null);
+  const [cMethod, setCMethod]         = useState('call');
+  const [cNote, setCNote]             = useState('');
+  const [cBusy, setCBusy]             = useState(false);
+  const [cErr, setCErr]               = useState('');
+  const [flash, setFlash]             = useState('');
+  // Customer-match resolution
+  const [candidates, setCandidates]   = useState({});     // enquiry id -> { loading | list | err }
+  const [confirmLink, setConfirmLink] = useState(null);   // { enqId, key } key = customer id | 'keep'
+  const [resolving, setResolving]     = useState(null);
+  const [resolveErr, setResolveErr]   = useState({});
+  const [now, setNow]                 = useState(() => Date.now());
   const width  = useWindowWidth();
   const mobile = width < 760;
+  const touch  = mobile ? { minHeight: 44 } : undefined;   // 44px touch targets on phones
 
-  const today = useMemo(() => {
-    const n = new Date();
-    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  // The reply clock must keep moving while the page stays open.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(t);
   }, []);
 
-  // Stage tabs and search run in the browser so the counts stay correct.
+  // A Home link can change the focus while this tab is already mounted.
+  useEffect(() => {
+    if (FOCUS_LABEL[initialFilter]) { setFocus(initialFilter); setTab('all'); }
+  }, [initialFilter]);
+
+  const today = useMemo(() => {
+    const n = new Date(now);
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+  }, [now]);
+
+  // Filtering runs in the browser so the counts stay correct.
   const load = useCallback(async () => {
     setLoading(true); setLoadErr('');
     try {
@@ -1005,14 +1139,50 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const searched = useMemo(() => enquiries.filter(e => matchesEnquirySearch(e, q)), [enquiries, q]);
-  const counts   = useMemo(() => ({ ...enquiryTabCounts(searched), attention: searched.filter(e => needsAttention(e, today)).length }), [searched, today]);
-  const summary  = useMemo(() => summariseEnquiries(enquiries, today), [enquiries, today]);
-  const visible  = useMemo(() => {
-    if (tab === 'all') return searched;
-    if (tab === 'attention') return searched.filter(e => needsAttention(e, today));
-    return searched.filter(e => e.stage === tab);
-  }, [searched, tab, today]);
+  // ONE filtered dataset feeds both the desktop table and the mobile cards.
+  const { base, visible } = useMemo(
+    () => filterEnquiries(enquiries, { tab, q, brand, source, webOnly, focus }, today, now),
+    [enquiries, tab, q, brand, source, webOnly, focus, today, now]);
+  const counts  = useMemo(() => ({ ...enquiryTabCounts(base), attention: base.filter(e => needsAttention(e, today, now)).length }), [base, today, now]);
+  const summary = useMemo(() => summariseEnquiries(enquiries, today, now), [enquiries, today, now]);
+  const sources = useMemo(() => sourceOptions(enquiries), [enquiries]);
+  const webCount = useMemo(() => base.filter(isWebsite).length, [base]);
+  const matchReviewCount = useMemo(() => enquiries.filter(needsMatchReview).length, [enquiries]);
+  const hasFilters = !!(q || tab !== 'all' || brand || source || webOnly || focus);
+  const clearFilters = () => { setQ(''); setTab('all'); setBrand(''); setSource(''); setWebOnly(false); setFocus(null); };
+
+  // Deep link from Home (?open=<id>): once the list has loaded, make sure the enquiry is
+  // visible (dropping filters only if they hide it), expand it and scroll to it. Runs once per id.
+  const [pendingOpen, setPendingOpen] = useState(initialOpen || null);
+  useEffect(() => { if (initialOpen) setPendingOpen(initialOpen); }, [initialOpen]);
+  useEffect(() => {
+    if (!pendingOpen || loading) return;
+    const target = enquiries.find(x => x.id === pendingOpen);
+    if (!target) {
+      setFlash('That enquiry could not be found. It may have been removed.');
+      setPendingOpen(null);
+      return;
+    }
+    if (!visible.some(x => x.id === target.id)) { clearFilters(); return; }
+    setExpanded(target.id);
+    setPendingOpen(null);
+    // Not cleaned up on purpose: clearing pendingOpen re-runs this effect and would cancel it.
+    setTimeout(() => {
+      const el = typeof document !== 'undefined' ? document.getElementById(`enq-row-${target.id}`) : null;
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, 60);
+  }, [pendingOpen, loading, enquiries, visible]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load the candidate customers when an enquiry with an unsettled match is opened.
+  useEffect(() => {
+    const e = enquiries.find(x => x.id === expanded);
+    if (!e || !needsMatchReview(e) || candidates[e.id]) return;
+    setCandidates(c => ({ ...c, [e.id]: { loading: true } }));
+    fetch(`/api/crm/enquiries/${e.id}/customer-match`)
+      .then(r => r.json().then(j => ({ ok: r.ok, j })))
+      .then(({ ok, j }) => setCandidates(c => ({ ...c, [e.id]: ok ? { list: j.data || [] } : { err: j.error || 'Could not load matching customers.' } })))
+      .catch(() => setCandidates(c => ({ ...c, [e.id]: { err: 'Could not load matching customers.' } })));
+  }, [expanded, enquiries]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const advanceStage = async (enqId, newStage) => {
     setAdvancing(enqId);
@@ -1053,6 +1223,39 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
     }
   };
 
+  const submitContact = async () => {
+    setCBusy(true); setCErr('');
+    try {
+      const res  = await fetch(`/api/crm/enquiries/${contactFor.id}/contact`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: cMethod, note: cNote }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) { setCErr(json.error || 'Could not record the contact.'); return; }
+      setFlash(json.data?.already ? 'Someone has already logged first contact for this enquiry. Nothing was changed.' : '');
+      setContactFor(null); setCNote('');
+      load(); onRefresh();
+    } finally { setCBusy(false); }
+  };
+
+  const resolveMatch = async (e, action, customerId) => {
+    setResolving(e.id); setResolveErr(r => ({ ...r, [e.id]: '' }));
+    try {
+      const res  = await fetch(`/api/crm/enquiries/${e.id}/customer-match`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(action === 'link' ? { action, customer_id: customerId } : { action }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setResolveErr(r => ({ ...r, [e.id]: json.error || 'Could not save the decision.' }));
+        if (res.status === 409) load();    // someone else decided first: show their result
+        return;
+      }
+      setConfirmLink(null);
+      load(); onRefresh();
+    } finally { setResolving(null); }
+  };
+
   const exportReport = async () => {
     setExportingPdf(true);
     try {
@@ -1072,7 +1275,8 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
   };
 
   const onAction = (key, e) => {
-    if (key === 'contacted') return advanceStage(e.id, 'contacted');
+    // "Contacted" is a recorded action (who, when, how), never just a stage edit.
+    if (key === 'contacted' || key === 'log_contact') { setContactFor(e); setCMethod('call'); setCNote(''); setCErr(''); return undefined; }
     if (key === 'lost')      return openLostModal(e.id);
     if (key === 'quote')     return setQuoteFor(e);
     return undefined;
@@ -1082,29 +1286,171 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
   const TAB_NAME = { all: 'All', attention: 'Needs attention', new: 'New', contacted: 'Contacted', quoted: 'Quoted', won: 'Won', lost: 'Lost' };
   const TONE = { red: C.red, amber: C.amber, muted: C.muted };
   const label = e => e.customers?.name || String(e.prospect_name || '').replace(/^~+\s*/, '').trim() || '—';
+  // A New website enquiry nobody has answered yet.
+  const hot = e => isWebsite(e) && e.stage === 'new' && awaitingFirstReply(e, now);
 
   const attentionLine = e => {
-    const a = attentionInfo(e, today);
+    const a = attentionInfo(e, today, now);
     if (!a || a.key === 'new_today') return a ? <div style={{ fontSize: 10.5, marginTop: 4, color: C.muted }}>{a.text}</div> : null;
     return <div style={{ fontSize: 10.5, marginTop: 4, fontWeight: 700, color: TONE[a.tone], maxWidth: 170, lineHeight: 1.3 }}>{a.text}</div>;
+  };
+
+  const stageCell = e => {
+    const c = responseClock(e, now);
+    return (
+      <>
+        <Badge color={stageColor[e.stage] || 'gray'}>{e.stage}</Badge>
+        {c && c.state !== 'contacted' ? <ClockLine e={e} now={now} /> : attentionLine(e)}
+      </>
+    );
+  };
+
+  const matchChip = e => {
+    const m = e.web?.match_status;
+    if (m === 'ambiguous')      return <Tag bg={C.amberBg} fg={C.amber} bd={C.amberBd} icon="warn">Check customer match</Tag>;
+    if (m === 'matched_phone')  return <Tag bg={C.greenBg} fg={C.green} bd={C.greenBd} icon="check">Matched by phone</Tag>;
+    if (m === 'matched_email')  return <Tag bg={C.greenBg} fg={C.green} bd={C.greenBd} icon="check">Matched by email</Tag>;
+    if (m === 'manually_linked') return <Tag bg={C.greenBg} fg={C.green} bd={C.greenBd} icon="check">Linked by team</Tag>;
+    return null;
+  };
+
+  const badges = e => (
+    <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 5 }}>
+      {isWebsite(e) ? <WebBadge /> : e.source && <Chip>{e.source.replace('_', ' ')}</Chip>}
+      <BrandBadge brand={e.brand} />
+    </div>
+  );
+
+  const matchPanel = e => {
+    const cs   = candidates[e.id];
+    const err  = resolveErr[e.id];
+    const busy = resolving === e.id;
+    const confirming = key => confirmLink?.enqId === e.id && confirmLink.key === key;
+    return (
+      <div style={{ background: C.amberBg, border: `1px solid ${C.amberBd}`, borderRadius: 10, padding: '12px 14px', marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 800, fontSize: 12.5, color: C.amber }}>
+          <Icon name="warn" size={14} />Several customers share this phone number or email
+        </div>
+        <div style={{ fontSize: 12.5, color: '#5c3f05', margin: '4px 0 2px', lineHeight: 1.45 }}>
+          Nothing was linked automatically, so no customer is merged by mistake. Pick the right customer, or keep this as a new prospect.
+          The website contact ({label(e)}{e.prospect_contact ? ` · ${e.prospect_contact}` : ''}) stays in the history either way.
+        </div>
+        {cs?.loading && <div style={{ fontSize: 12.5, color: C.muted, marginTop: 8 }}>Loading matching customers…</div>}
+        {cs?.err && <div role="alert" style={{ fontSize: 12.5, color: C.red, marginTop: 8 }}>{cs.err}</div>}
+        {cs?.list && cs.list.length === 0 && <div style={{ fontSize: 12.5, color: C.muted, marginTop: 8 }}>No matching customers were found any more. You can keep this as a new prospect.</div>}
+        {(cs?.list || []).map(c => (
+          <div key={c.id} style={{ background: C.card, border: `1px solid ${C.amberBd}`, borderRadius: 8, padding: '8px 10px', marginTop: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>{c.name}</div>
+                <div style={{ color: C.muted, fontSize: 11.5 }}>{[c.phone, c.email].filter(Boolean).join(' · ') || 'No contact details'}</div>
+                <div style={{ color: C.ink, fontSize: 11.5, marginTop: 2 }}>
+                  {c.order_count > 0
+                    ? `${c.order_count} order${c.order_count === 1 ? '' : 's'} · last order ${c.last_order_at ? new Date(c.last_order_at).toLocaleDateString('en-GB', { month: 'short', year: 'numeric', timeZone: 'Africa/Nairobi' }) : 'date unknown'}`
+                    : 'No orders yet'}
+                </div>
+              </div>
+              {confirming(c.id) ? (
+                <span style={{ display: 'flex', gap: 6 }}>
+                  <Btn small primary disabled={busy} style={touch} onClick={() => resolveMatch(e, 'link', c.id)}>{busy ? 'Saving…' : 'Confirm link'}</Btn>
+                  <Btn small disabled={busy} style={touch} onClick={() => setConfirmLink(null)}>Cancel</Btn>
+                </span>
+              ) : (
+                <Btn small disabled={busy} style={touch} onClick={() => setConfirmLink({ enqId: e.id, key: c.id })}>Link to this customer</Btn>
+              )}
+            </div>
+            {confirming(c.id) && <div style={{ fontSize: 11.5, color: C.muted, marginTop: 6 }}>This enquiry will belong to {c.name}. The decision is recorded and cannot be changed from here.</div>}
+          </div>
+        ))}
+        <div style={{ marginTop: 10, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+          {confirming('keep') ? (
+            <>
+              <Btn small primary disabled={busy} style={touch} onClick={() => resolveMatch(e, 'keep_prospect')}>{busy ? 'Saving…' : 'Confirm: keep as new prospect'}</Btn>
+              <Btn small disabled={busy} style={touch} onClick={() => setConfirmLink(null)}>Cancel</Btn>
+            </>
+          ) : (
+            <Btn small disabled={busy} style={touch} onClick={() => setConfirmLink({ enqId: e.id, key: 'keep' })}>Keep as new prospect</Btn>
+          )}
+        </div>
+        {err && <div role="alert" style={{ color: C.red, fontSize: 12, marginTop: 8 }}>{err}</div>}
+      </div>
+    );
+  };
+
+  const webPanel = e => {
+    const w = e.web;
+    const a = w.attribution || {};
+    const digits = String(w.contact_phone || '').replace(/\D/g, '');
+    const consent = w.consent || {};
+    return (
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>Website enquiry details</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 10 }}>
+          <InfoCard title="Brief">
+            <KV rows={[
+              ['Project type', w.project_type], ['Product', w.product_interest],
+              ['Quantity', w.quantity ? String(w.quantity) : ''], ['Budget', w.budget],
+              ['Reference', <ExtLink key="r" href={w.reference_link} />],
+            ]} />
+            {!w.project_type && !w.product_interest && !w.quantity && !w.budget && !w.reference_link && <div style={{ fontSize: 12.5, color: C.muted }}>Only the written brief was given.</div>}
+          </InfoCard>
+          <InfoCard title="Contact">
+            <KV rows={[
+              ['Name', label(e)],
+              ['Phone', w.contact_phone && (<span>{w.contact_phone}{digits && <> · <a href={`https://wa.me/${digits}`} target="_blank" rel="noopener noreferrer" style={{ color: C.blue }}>WhatsApp</a></>}</span>)],
+              ['Email', w.contact_email && <a href={`mailto:${w.contact_email}`} style={{ color: C.blue }}>{w.contact_email}</a>],
+              ['Company', w.company], ['Location', w.location],
+            ]} />
+          </InfoCard>
+          <InfoCard title="Where it came from">
+            <KV rows={[
+              ['Source', w.source_label || 'Direct or unknown'],
+              ['Campaign', a.utm_campaign],
+              ['Landing page', <ExtLink key="l" href={a.landing_page} />],
+              ['Referrer', <ExtLink key="f" href={a.referrer} />],
+            ]} />
+          </InfoCard>
+          <InfoCard title="Consent record">
+            <KV rows={[
+              ['Consent given', consent.given
+                ? <Tag key="c" bg={C.greenBg} fg={C.green} bd={C.greenBd} icon="check">Yes</Tag>
+                : <Tag key="c" bg={C.redBg} fg={C.red} bd={C.redBd} icon="warn">Not recorded</Tag>],
+              ['Wording version', consent.version],
+              ['Recorded at', fmtDateTime(consent.recorded_at)],
+              ['Shopify submission', w.submission_id && <span key="s" style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: 11.5 }}>{w.submission_id}</span>],
+              ['Shop', w.shop_domain],
+            ]} />
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 8, lineHeight: 1.4 }}>“Recorded at” is when the CRM received the form, which may be a moment after the customer ticked the box.</div>
+          </InfoCard>
+        </div>
+      </div>
+    );
   };
 
   const details = e => {
     const pendingFollowup = openFollowUp(e);
     const lbl = { fontSize: 10, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 3 };
     return (
-      <div style={{ padding: '14px 4px' }}>
+      <div id={`enq-detail-${e.id}`} role="region" aria-label={`Details for ${e.enq_num}`} style={{ padding: '14px 4px' }}>
+        {needsMatchReview(e) && matchPanel(e)}
         <div style={{ display: 'grid', gridTemplateColumns: mobile ? '1fr' : 'repeat(3, 1fr)', gap: '10px 24px', fontSize: 12.5 }}>
-          <div><div style={lbl}>Description</div><div style={{ color: C.ink }}>{e.description || '—'}</div></div>
+          <div><div style={lbl}>Description</div><div style={{ color: C.ink, whiteSpace: 'pre-line' }}>{e.description || '—'}</div></div>
           <div><div style={lbl}>Category</div><div style={{ color: C.ink }}>{e.category || '—'}</div></div>
           <div><div style={lbl}>Estimated value</div><div style={{ color: C.ink }}>KES {(e.estimated_value || 0).toLocaleString('en-KE')}</div></div>
           <div><div style={lbl}>Contact</div><div style={{ color: C.ink }}>{e.prospect_contact || e.customers?.phone || '—'}</div></div>
           <div><div style={lbl}>Next follow-up</div><div style={{ color: pendingFollowup ? C.ink : C.muted }}>{pendingFollowup ? fmtDate(pendingFollowup.due_date) : 'None scheduled'}</div></div>
           <div><div style={lbl}>Source</div><div style={{ color: C.ink }}>{e.source ? e.source.replace('_', ' ') : '—'}</div></div>
+          {e.first_contact_at && (
+            <div><div style={lbl}>First contact</div><div style={{ color: C.ink }}>{fmtDateTime(e.first_contact_at)} · {CONTACT_PROMPT[e.first_contact_method] || e.first_contact_method}</div></div>
+          )}
+          {e.web?.match_status && (
+            <div><div style={lbl}>Customer match</div><div style={{ color: C.ink }}>{MATCH_LABEL[e.web.match_status] || e.web.match_status}{e.web.resolved_at ? ` · ${fmtDateTime(e.web.resolved_at)}` : ''}</div></div>
+          )}
           {e.stage === 'lost' && e.lost_reason && (
             <div style={{ gridColumn: '1 / -1' }}><div style={{ ...lbl, color: C.red }}>Lost reason</div><div style={{ color: C.ink }}>{e.lost_reason}</div></div>
           )}
         </div>
+        {e.web && webPanel(e)}
       </div>
     );
   };
@@ -1113,22 +1459,43 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
     const act = enquiryPrimary(e);
     const items = enquiryMenu(e);
     const busy = advancing === e.id;
+    const open = expanded === e.id;
+    const size = mobile ? 44 : 34;
     return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }} onClick={ev => ev.stopPropagation()}>
-        {act && <Btn small primary={act.key === 'contacted'} disabled={busy} onClick={() => onAction(act.key, e)}>{busy ? '…' : act.label}</Btn>}
-        {items.length > 0 && <RowMenu quote={e} items={items} onAction={onAction} disabled={busy} />}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end', flexWrap: mobile ? 'wrap' : 'nowrap' }}>
+        {act && <Btn small primary={act.key === 'contacted'} disabled={busy} style={touch} onClick={() => onAction(act.key, e)}>{busy ? '…' : act.label}</Btn>}
+        {items.length > 0 && <RowMenu quote={e} items={items} onAction={onAction} disabled={busy} touch={mobile} />}
+        <button type="button" aria-expanded={open} aria-controls={`enq-detail-${e.id}`}
+          aria-label={`${open ? 'Hide' : 'Show'} details for ${e.enq_num}`}
+          onClick={() => setExpanded(open ? null : e.id)}
+          style={{ width: size, height: size, borderRadius: 8, border: `1px solid ${C.line}`, background: C.card, color: C.ink, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+          <span style={{ display: 'inline-flex', transform: open ? 'rotate(180deg)' : 'none' }}><Icon name="chevron" size={16} /></span>
+        </button>
       </div>
     );
   };
 
   const cards = (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10, padding: '14px 17px 0' }}>
+      <StatCard label="Website · waiting for reply" value={summary.websiteWaiting}
+        sub={summary.websiteWaiting === 0 ? 'None waiting'
+          : `${summary.websiteOverdue > 0 ? `${summary.websiteOverdue} overdue · ` : ''}oldest ${formatDuration(summary.websiteOldestWaitingMs)}`}
+        alert={summary.websiteOverdue > 0} onClick={() => { setFocus('website_waiting'); setTab('all'); }} />
+      <StatCard label="Match review" value={matchReviewCount}
+        sub={matchReviewCount === 0 ? 'No customer checks pending' : 'Several customers share the contact'}
+        alert={matchReviewCount > 0} onClick={() => { setTab('all'); setFocus('match_review'); }} />
       <StatCard label="New, not contacted" value={summary.newCount} sub={summary.newWaiting > 0 ? `${summary.newWaiting} waiting 1+ day` : 'None waiting'} alert={summary.newWaiting > 0} onClick={() => setTab('new')} />
       <StatCard label="Needs attention" value={summary.attention} sub={summary.overdueFollowUps > 0 ? `${summary.overdueFollowUps} follow-up${summary.overdueFollowUps === 1 ? '' : 's'} overdue` : 'Waiting, or no follow-up set'} alert={summary.attention > 0} onClick={() => setTab('attention')} />
       <StatCard label="Open pipeline" value={`KES ${fmtKes(summary.openValue)}`} sub="Estimated, new to quoted" />
       <StatCard label="Win rate" value={summary.winRate === null ? '—' : `${summary.winRate}%`} sub={`${summary.won} won · ${summary.lost} lost`} />
     </div>
   );
+
+  const pillStyle = (active, extra) => ({
+    border: `1px solid ${active ? C.ink : C.line}`, background: active ? C.ink : C.card, color: active ? '#fff' : C.ink,
+    borderRadius: 20, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap',
+    minHeight: mobile ? 44 : undefined, display: 'inline-flex', alignItems: 'center', gap: 6, ...extra,
+  });
 
   const filters = (
     <div style={{ padding: '14px 17px 0' }}>
@@ -1138,15 +1505,33 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
           const n = counts[t] ?? 0;
           if (t === 'attention' && n === 0 && !active) return null;
           return (
-            <button key={t} type="button" role="tab" aria-selected={active} onClick={() => setTab(t)}
-              style={{ border: `1px solid ${active ? C.ink : C.line}`, background: active ? C.ink : C.card, color: active ? '#fff' : C.ink, borderRadius: 20, padding: '6px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}
-            >{TAB_NAME[t]} <span style={{ opacity: 0.7, fontWeight: 600 }}>{n}</span></button>
+            <button key={t} type="button" role="tab" aria-selected={active} onClick={() => setTab(t)} style={pillStyle(active)}>
+              {TAB_NAME[t]} <span style={{ opacity: 0.7, fontWeight: 600 }}>{n}</span>
+            </button>
           );
         })}
       </div>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingBottom: 14 }}>
-        <TInput value={q} onChange={e => setQ(e.target.value)} placeholder="Search enquiry number, name or description" />
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingBottom: focus ? 8 : 14, alignItems: 'center' }}>
+        <button type="button" aria-pressed={webOnly} onClick={() => setWebOnly(v => !v)} style={pillStyle(webOnly, webOnly ? { background: C.coral, borderColor: C.coral } : undefined)}>
+          <Icon name="globe" size={13} />Website only <span style={{ opacity: 0.75, fontWeight: 600 }}>{webCount}</span>
+        </button>
+        <TSelect value={brand} onChange={e => setBrand(e.target.value)} style={touch} aria-label="Brand">
+          <option value="">All brands</option>
+          {BRANDS.map(b => <option key={b} value={b}>{BRAND_LABEL[b]}</option>)}
+        </TSelect>
+        <TSelect value={source} onChange={e => setSource(e.target.value)} style={touch} aria-label="Source">
+          <option value="">All sources</option>
+          {sources.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+        </TSelect>
+        <TInput value={q} onChange={e => setQ(e.target.value)} style={touch} aria-label="Search enquiries" placeholder="Search number, name, phone, email, company or brief" />
       </div>
+      {focus && (
+        <div style={{ paddingBottom: 14 }}>
+          <button type="button" onClick={() => setFocus(null)} style={pillStyle(false, { borderColor: C.coral, color: '#9a3417', background: C.coralBg })}>
+            Showing: {FOCUS_LABEL[focus]} <span aria-hidden="true">×</span><span style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>Clear this filter</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 
@@ -1155,36 +1540,33 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
       <div style={{ fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={label(e)}>
         {label(e)}{!e.customers?.name && label(e) !== '—' && <span style={{ marginLeft: 6 }}><Chip>Prospect</Chip></span>}
       </div>
-      <div style={{ color: C.muted, fontSize: 11.5, marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.description || ''}>
+      {e.web?.company && <div style={{ color: C.muted, fontSize: 11.5 }}>{e.web.company}{e.web.location ? ` · ${e.web.location}` : ''}</div>}
+      {matchChip(e) && <div style={{ marginTop: 4 }}>{matchChip(e)}</div>}
+      <div style={{ color: C.muted, fontSize: 11.5, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.description || ''}>
         {e.description || 'No description'}
       </div>
     </div>
   );
 
-  const numCell = e => (
-    <button type="button" onClick={() => setExpanded(expanded === e.id ? null : e.id)} aria-expanded={expanded === e.id}
-      style={{ border: 0, background: 'none', cursor: 'pointer', fontWeight: 800, fontSize: 13, color: C.ink, padding: 0, whiteSpace: 'nowrap' }}>
-      {e.enq_num || '—'}
-    </button>
-  );
+  const numCell = e => <span style={{ fontWeight: 800, fontSize: 13, color: C.ink, whiteSpace: 'nowrap' }}>{e.enq_num || '—'}</span>;
 
   const body = loading ? (
     <div style={{ textAlign: 'center', padding: '40px 0', color: C.muted, fontSize: 13 }}>Loading…</div>
   ) : visible.length === 0 ? (
     <div style={{ textAlign: 'center', padding: '40px 16px', color: C.muted, fontSize: 13 }}>
       {enquiries.length === 0 ? 'No enquiries yet.' : 'No enquiries match these filters.'}
-      {enquiries.length > 0 && (q || tab !== 'all') && (
-        <div style={{ marginTop: 10 }}><Btn small onClick={() => { setQ(''); setTab('all'); }}>Clear filters</Btn></div>
+      {enquiries.length > 0 && hasFilters && (
+        <div style={{ marginTop: 10 }}><Btn small style={touch} onClick={clearFilters}>Clear filters</Btn></div>
       )}
     </div>
   ) : mobile ? (
     <div style={{ padding: '0 12px 12px', display: 'grid', gap: 10 }}>
       {visible.map(e => (
-        <div key={e.id} style={{ border: `1px solid ${C.line}`, borderRadius: 10, background: expanded === e.id ? C.bg : C.card, overflow: 'hidden' }}>
-          <div style={{ padding: 12 }} onClick={() => setExpanded(expanded === e.id ? null : e.id)}>
+        <div key={e.id} id={`enq-row-${e.id}`} style={{ scrollMarginTop: 90, border: `1px solid ${C.line}`, borderLeft: hot(e) ? `4px solid ${C.coral}` : `1px solid ${C.line}`, borderRadius: 10, background: expanded === e.id ? C.bg : C.card, overflow: 'hidden' }}>
+          <div style={{ padding: 12 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
-              {numCell(e)}
-              <div style={{ textAlign: 'right' }}><Badge color={stageColor[e.stage] || 'gray'}>{e.stage}</Badge>{attentionLine(e)}</div>
+              <div>{numCell(e)}{badges(e)}</div>
+              <div style={{ textAlign: 'right' }}>{stageCell(e)}</div>
             </div>
             <div style={{ marginTop: 8 }}>{nameCell(e)}</div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontSize: 12, color: C.muted }}>
@@ -1201,18 +1583,18 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
     <div style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
         <thead>
-          <tr><Th>Enquiry</Th><Th>Customer / need</Th><Th right>Est. value</Th><Th>Stage</Th><Th>Created</Th><Th right>Action</Th></tr>
+          <tr><Th>Enquiry</Th><Th>Customer / need</Th><Th right>Est. value</Th><Th>Stage / reply</Th><Th>Created</Th><Th right>Action</Th></tr>
         </thead>
         <tbody>
           {visible.map(e => {
             const isOpen = expanded === e.id;
             return (
               <React.Fragment key={e.id}>
-                <tr onClick={() => setExpanded(isOpen ? null : e.id)} style={{ background: isOpen ? C.bg : C.card, cursor: 'pointer' }}>
-                  <Td style={{ whiteSpace: 'nowrap', width: 1 }}>{numCell(e)}{e.source && <div style={{ fontSize: 10.5, color: C.muted, marginTop: 1 }}>{e.source.replace('_', ' ')}</div>}</Td>
-                  <Td style={{ maxWidth: 360, width: '40%' }}>{nameCell(e)}</Td>
+                <tr id={`enq-row-${e.id}`} style={{ background: isOpen ? C.bg : C.card, scrollMarginTop: 90 }}>
+                  <Td style={{ whiteSpace: 'nowrap', width: 1, borderLeft: hot(e) ? `3px solid ${C.coral}` : '3px solid transparent' }}>{numCell(e)}{badges(e)}</Td>
+                  <Td style={{ maxWidth: 360, width: '38%' }}>{nameCell(e)}</Td>
                   <Td right style={{ whiteSpace: 'nowrap' }}><strong style={{ fontVariantNumeric: 'tabular-nums' }}>{e.estimated_value > 0 ? `KES ${fmtKes(e.estimated_value)}` : '—'}</strong></Td>
-                  <Td><Badge color={stageColor[e.stage] || 'gray'}>{e.stage}</Badge>{attentionLine(e)}</Td>
+                  <Td>{stageCell(e)}</Td>
                   <Td style={{ color: C.muted, whiteSpace: 'nowrap', fontSize: 12 }}>{fmtDate(e.created_at)}</Td>
                   <Td right>{actions(e)}</Td>
                 </tr>
@@ -1230,7 +1612,7 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
   return (
     <div>
       <Panel>
-        <PanelHead title="Enquiries" sub="New, Contacted, Quoted, Won or Lost. Quoted and Won update automatically."
+        <PanelHead title="Enquiries" sub="New, Contacted, Quoted, Won or Lost. Quoted and Won update automatically. Contacted is recorded with Log contact."
           actions={
             <div style={{ display: 'flex', gap: 8 }}>
               <Btn small onClick={exportReport} disabled={exportingPdf}>
@@ -1240,6 +1622,7 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
             </div>
           } />
         {loadErr && <Notice color="red" style={{ margin: '10px 16px' }}>{loadErr}</Notice>}
+        {flash && <Notice color="blue" style={{ margin: '10px 16px' }}>{flash}</Notice>}
         {cards}
         {filters}
         {enquiries.length >= 200 && <Notice color="amber" style={{ margin: '0 17px 12px' }}>Showing the latest 200 enquiries. Older ones are not listed here.</Notice>}
@@ -1254,6 +1637,35 @@ function EnquiriesTab({ onRefresh, refreshKey = 0 }) {
           onSave={() => { setQuoteFor(null); load(); onRefresh(); }}
           onClose={() => setQuoteFor(null)}
         />
+      )}
+
+      {/* Log contact modal: the only way an enquiry becomes Contacted */}
+      {contactFor && (
+        <Modal title={`Log contact — ${contactFor.enq_num}`} onClose={() => setContactFor(null)}>
+          <div style={{ fontSize: 13, color: C.muted, marginBottom: 14, lineHeight: 1.5 }}>
+            Record that you have reached {label(contactFor)}. This stops the reply clock{contactFor.stage === 'new' ? ' and moves the enquiry to Contacted' : ''}, and is kept in the enquiry's history.
+            Only this action stops the clock. Creating a quotation or an automatic acknowledgement does not.
+          </div>
+          <Field label="How did you reach them?" full>
+            <div role="group" aria-label="How did you reach them?" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {ENQ_CONTACT_METHODS.map(m => (
+                <button key={m} type="button" onClick={() => setCMethod(m)} aria-pressed={cMethod === m} style={pillStyle(cMethod === m)}>
+                  {CONTACT_PROMPT[m]}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <Field label="What was said? (optional)" full>
+            <textarea value={cNote} onChange={e => setCNote(e.target.value)} rows={3} maxLength={500}
+              placeholder="e.g. Wants swatches before confirming; will call back Friday"
+              style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px', border: `1px solid ${C.line}`, borderRadius: 8, fontSize: 13, resize: 'vertical', fontFamily: 'inherit', outline: 'none' }} />
+          </Field>
+          {cErr && <div role="alert" style={{ color: C.red, fontSize: 12, marginBottom: 10 }}>{cErr}</div>}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <Btn small style={touch} onClick={() => setContactFor(null)}>Cancel</Btn>
+            <Btn small primary style={touch} disabled={cBusy} onClick={submitContact}>{cBusy ? 'Saving…' : 'Save contact'}</Btn>
+          </div>
+        </Modal>
       )}
 
       {/* Mark as Lost modal */}
@@ -1455,7 +1867,7 @@ function QuotationDangerZone({ quoteId, quoteNum, onDeleted, onSuspended }) {
 const TAB_LABELS = { all: 'All', followup: 'Needs follow-up', draft: 'Draft', sent: 'Sent', accepted: 'Accepted', rejected: 'Rejected', expired: 'Expired', superseded: 'Superseded' };
 const TONE_COLOR = { red: C.red, amber: C.amber, muted: C.muted };
 
-function RowMenu({ quote, onAction, disabled, items: itemsProp }) {
+function RowMenu({ quote, onAction, disabled, items: itemsProp, touch = false }) {
   const [pos, setPos] = useState(null);
   const btnRef = useRef(null);
   const items = itemsProp || menuActions(quote);
@@ -1490,7 +1902,7 @@ function RowMenu({ quote, onAction, disabled, items: itemsProp }) {
         ref={btnRef} type="button" disabled={disabled}
         aria-label={`More actions for ${quote.quote_num || quote.enq_num || 'item'}`} aria-haspopup="menu" aria-expanded={!!pos}
         onClick={e => { e.stopPropagation(); pos ? setPos(null) : open(); }}
-        style={{ width: 34, height: 34, borderRadius: 8, border: `1px solid ${C.line}`, background: C.card, color: C.ink, cursor: disabled ? 'not-allowed' : 'pointer', fontSize: 16, fontWeight: 800, lineHeight: 1, opacity: disabled ? 0.45 : 1 }}
+        style={{ width: touch ? 44 : 34, height: touch ? 44 : 34, borderRadius: 8, border: `1px solid ${C.line}`, background: C.card, color: C.ink, cursor: disabled ? 'not-allowed' : 'pointer', fontSize: 16, fontWeight: 800, lineHeight: 1, opacity: disabled ? 0.45 : 1 }}
       >⋯</button>
       {pos && (
         <div
@@ -2817,7 +3229,7 @@ function EmailInboxTab({ onRefresh, refreshKey = 0 }) {
 // ─── Root component ───────────────────────────────────────────────────────────
 const TABS = ['Pipeline', 'Email Inbox', 'Enquiries', 'Quotations', 'Invoices', 'Follow-ups', 'Insights'];
 
-export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnquiryId, defaultTab, defaultFilter, workspaceActive = true, actionNonce, refreshKey = 0 } = {}) {
+export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnquiryId, defaultTab, defaultFilter, defaultOpen, workspaceActive = true, actionNonce, refreshKey = 0 } = {}) {
   const containerRef = useRef(null);
   const startTab = TABS.includes(defaultTab) ? defaultTab : 'Pipeline';
   const [tab, setTab]           = useState(startTab);
@@ -2897,6 +3309,13 @@ export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnq
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defaultAction, actionNonce]);
 
+  // A deep link (Home → ?tab=...) can arrive while the module is already mounted
+  // inside the workspace; switch to the requested tab then too.
+  useEffect(() => {
+    if (defaultTab && TABS.includes(defaultTab)) handleTabChange(defaultTab);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultTab, defaultFilter, defaultOpen, actionNonce]);
+
   useEffect(() => {
     setEnqL(true);
     fetch('/api/crm/enquiries?limit=200')
@@ -2967,7 +3386,7 @@ export default function CrmModule({ defaultAction, defaultCustomerId, defaultEnq
         <EmailInboxTab onRefresh={refresh} refreshKey={tabState['Email Inbox'].key} />
       </CrmTabPane>
       <CrmTabPane name="Enquiries" activeTab={tab} workspaceActive={workspaceActive} visited={visited.has('Enquiries')}>
-        <EnquiriesTab onRefresh={refresh} refreshKey={tabState.Enquiries.key} />
+        <EnquiriesTab onRefresh={refresh} refreshKey={tabState.Enquiries.key} initialFilter={defaultFilter} initialOpen={defaultOpen} />
       </CrmTabPane>
       <CrmTabPane name="Quotations" activeTab={tab} workspaceActive={workspaceActive} visited={visited.has('Quotations')}>
         <QuotationsTab onRefresh={refresh} refreshKey={tabState.Quotations.key} initialFilter={defaultFilter} />

@@ -44,6 +44,13 @@ function extractModuleProps(moduleId, searchParams) {
     if (newParam === 'enquiry' || newParam === 'quote') props.defaultAction = newParam;
     if (customerId) props.defaultCustomerId = customerId;
     if (enquiryId)  props.defaultEnquiryId  = enquiryId;
+    // Deep links from Home: ?tab=Enquiries&filter=website_waiting&open=<enquiry id>
+    const tabParam    = searchParams.get('tab');
+    const filterParam = searchParams.get('filter');
+    const openParam   = searchParams.get('open');
+    if (tabParam)    props.defaultTab    = tabParam;
+    if (filterParam) props.defaultFilter = filterParam;
+    if (openParam)   props.defaultOpen   = openParam;
     return props;
   }
   if (moduleId === 'customers') {
