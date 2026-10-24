@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { createClient } from '@/shared/supabase/client';
 
 const ALLOWED_EXT = ['dxf', 'pdf', 'png', 'jpg', 'jpeg'];
 
@@ -101,29 +102,49 @@ export function DrawingsUpload({ orderId, drawings = [], onDrawingsUpdated, read
       return;
     }
 
+    let progressInterval;
     try {
-      const formData = new FormData();
-      formData.append('file', file);
+      const url = `/api/orders/${orderId}/drawings`;
+      // Never assume the server answered with JSON (proxies return plain text).
+      const post = async (payload) => {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const text = await res.text();
+        let json = null;
+        try { json = JSON.parse(text); } catch { /* not JSON */ }
+        if (!res.ok) throw new Error(json?.error || `Server error (${res.status})`);
+        return json;
+      };
 
-      // Simulate progress
-      const progressInterval = setInterval(() => {
-        setUploadProgress(prev => Math.min(prev + Math.random() * 30, 90));
-      }, 200);
+      progressInterval = setInterval(() => {
+        setUploadProgress(prev => Math.min(prev + Math.random() * 15, 90));
+      }, 300);
 
-      const response = await fetch(`/api/orders/${orderId}/drawings`, {
-        method: 'POST',
-        body: formData,
+      // 1. Ask the server for a one-time upload token
+      const init = await post({ action: 'init', file_name: file.name, file_size: file.size });
+
+      // 2. Upload straight to storage (bypasses the serverless body-size limit)
+      const sb = createClient();
+      const { error: upErr } = await sb.storage
+        .from('order-drawings')
+        .uploadToSignedUrl(init.path, init.token, file, {
+          contentType: file.type || 'application/octet-stream',
+        });
+      if (upErr) throw new Error(upErr.message || 'Storage upload failed');
+
+      // 3. Record it against the order
+      const data = await post({
+        action: 'complete',
+        path: init.path,
+        file_name: file.name,
+        mime_type: file.type || 'application/octet-stream',
       });
 
       clearInterval(progressInterval);
       setUploadProgress(100);
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Upload failed');
-      }
-
-      const data = await response.json();
 
       if (data.success && data.drawing) {
         const updated = [...activeDrawings, data.drawing];
@@ -137,6 +158,7 @@ export function DrawingsUpload({ orderId, drawings = [], onDrawingsUpdated, read
       }, 500);
 
     } catch (err) {
+      clearInterval(progressInterval);
       setError(`Failed to upload ${file.name}: ${err.message}`);
       setUploading(false);
       setUploadProgress(0);

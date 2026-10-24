@@ -93,6 +93,55 @@ export async function GET(request, { params }) {
   }
 }
 
+// ── Shared: insert metadata row and build the response ────────────────────────
+
+async function recordDrawing({ orderId, userId, fileName, storagePath, size, mime }) {
+  // Server-side fields injected; pick() strips any extras
+  const rawInsert = {
+    order_id: orderId,
+    file_name: fileName,
+    file_path: storagePath,
+    file_size: size,
+    mime_type: mime,
+    drawing_type: getDrawingType(fileName),
+    uploaded_by: userId,         // from verified session, never from body
+    uploaded_at: new Date().toISOString(),
+  };
+  const safeInsert = pick(rawInsert, ALLOWED_FIELDS.drawings.insert);
+
+  const { data: drawing, error: insertError } = await serviceClient
+    .from('drawings')
+    .insert(safeInsert)
+    .select()
+    .single();
+
+  if (insertError) {
+    console.error('DB insert error:', insertError);
+    await serviceClient.storage.from(STORAGE_BUCKET).remove([storagePath]); // no orphans
+    return NextResponse.json({ error: 'Failed to save file metadata' }, { status: 500 });
+  }
+
+  const { data: signedUrlData } = await serviceClient.storage
+    .from(STORAGE_BUCKET)
+    .createSignedUrl(storagePath, 3600);
+
+  return NextResponse.json({
+    success: true,
+    drawing: {
+      id: drawing.id,
+      order_id: drawing.order_id,
+      file_name: drawing.file_name,
+      file_path: drawing.file_path,
+      file_size: drawing.file_size,
+      mime_type: drawing.mime_type,
+      drawing_type: drawing.drawing_type,
+      uploaded_at: drawing.uploaded_at,
+      deleted_at: null,
+      signed_url: signedUrlData?.signedUrl || null,
+    },
+  });
+}
+
 // ── POST — upload drawing ─────────────────────────────────────────────────────
 
 export async function POST(request, props) {
@@ -120,22 +169,78 @@ export async function POST(request, props) {
     const suspendErr = await checkOrderSuspended(orderId);
     if (suspendErr) return suspendErr;
 
-    // 4. Parse file from FormData
+    // ── Direct-to-storage flow (JSON body) ───────────────────────────────────
+    // Vercel rejects request bodies over ~4.5 MB, so large files go from the
+    // browser straight to Supabase Storage. Two steps:
+    //   action 'init'     -> validate, return a one-time signed upload token
+    //   action 'complete' -> verify the object exists, then record metadata
+    const contentType = request.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const body = await request.json().catch(() => null);
+      const action = body?.action;
+      const prefix = `orders/${orderId}/drawings/`;
+
+      if (action === 'init') {
+        const fileName = String(body?.file_name || '');
+        const size = Number(body?.file_size);
+        const check = validateFile({ name: fileName, size });
+        if (!fileName || !Number.isFinite(size) || size <= 0 || !check.valid) {
+          return NextResponse.json({ error: check.error || 'Invalid file' }, { status: 400 });
+        }
+        const storagePath = `${prefix}${generateSafeFileName(fileName)}`;
+        const { data, error } = await serviceClient.storage
+          .from(STORAGE_BUCKET)
+          .createSignedUploadUrl(storagePath);
+        if (error || !data) {
+          console.error('Signed upload URL error:', error);
+          return NextResponse.json({ error: 'Could not start upload' }, { status: 500 });
+        }
+        return NextResponse.json({ success: true, path: data.path, token: data.token });
+      }
+
+      if (action === 'complete') {
+        const storagePath = String(body?.path || '');
+        const fileName = String(body?.file_name || '');
+        const check = validateFile({ name: fileName, size: 0 });
+        if (!storagePath.startsWith(prefix) || storagePath.includes('..') || !check.valid) {
+          return NextResponse.json({ error: 'Invalid upload reference' }, { status: 400 });
+        }
+        // Trust storage, not the client, for the real size.
+        const objName = storagePath.slice(prefix.length);
+        const { data: found } = await serviceClient.storage
+          .from(STORAGE_BUCKET)
+          .list(prefix.slice(0, -1), { search: objName, limit: 1 });
+        const obj = found?.find(o => o.name === objName);
+        if (!obj) {
+          return NextResponse.json({ error: 'Uploaded file not found in storage' }, { status: 400 });
+        }
+        const size = Number(obj.metadata?.size ?? 0);
+        if (size > MAX_FILE_SIZE) {
+          await serviceClient.storage.from(STORAGE_BUCKET).remove([storagePath]);
+          return NextResponse.json({ error: 'File too large. Maximum 70MB allowed.' }, { status: 400 });
+        }
+        return await recordDrawing({
+          orderId, userId: user.id, fileName, storagePath, size,
+          mime: String(body?.mime_type || obj.metadata?.mimetype || 'application/octet-stream'),
+        });
+      }
+
+      return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
+    }
+
+    // ── Legacy multipart flow (small files only on Vercel) ───────────────────
     const formData = await request.formData();
     const file = formData.get('file');
     if (!file) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
     }
 
-    // 5. Validate file
     const validation = validateFile(file);
     if (!validation.valid) {
       return NextResponse.json({ error: validation.error }, { status: 400 });
     }
 
-    // 6. Upload to Supabase Storage via service client
-    const safeFileName = generateSafeFileName(file.name);
-    const storagePath = `orders/${orderId}/drawings/${safeFileName}`;
+    const storagePath = `orders/${orderId}/drawings/${generateSafeFileName(file.name)}`;
     const buffer = await file.arrayBuffer();
 
     const { error: uploadError } = await serviceClient.storage
@@ -150,51 +255,9 @@ export async function POST(request, props) {
       return NextResponse.json({ error: 'Failed to upload file to storage' }, { status: 500 });
     }
 
-    // 7. Insert metadata — server-side fields injected; pick() strips any extras
-    const rawInsert = {
-      order_id: orderId,           // injected server-side
-      file_name: file.name,
-      file_path: storagePath,
-      file_size: file.size,
-      mime_type: file.type || 'application/octet-stream',
-      drawing_type: getDrawingType(file.name),
-      uploaded_by: user.id,        // injected from verified session, never from body
-      uploaded_at: new Date().toISOString(),
-    };
-    const safeInsert = pick(rawInsert, ALLOWED_FIELDS.drawings.insert);
-
-    const { data: drawing, error: insertError } = await serviceClient
-      .from('drawings')
-      .insert(safeInsert)
-      .select()
-      .single();
-
-    if (insertError) {
-      console.error('DB insert error:', insertError);
-      // Clean up orphaned storage file
-      await serviceClient.storage.from(STORAGE_BUCKET).remove([storagePath]);
-      return NextResponse.json({ error: 'Failed to save file metadata' }, { status: 500 });
-    }
-
-    // 8. Return signed URL for immediate display
-    const { data: signedUrlData } = await serviceClient.storage
-      .from(STORAGE_BUCKET)
-      .createSignedUrl(storagePath, 3600);
-
-    return NextResponse.json({
-      success: true,
-      drawing: {
-        id: drawing.id,
-        order_id: drawing.order_id,
-        file_name: drawing.file_name,
-        file_path: drawing.file_path,
-        file_size: drawing.file_size,
-        mime_type: drawing.mime_type,
-        drawing_type: drawing.drawing_type,
-        uploaded_at: drawing.uploaded_at,
-        deleted_at: null,
-        signed_url: signedUrlData?.signedUrl || null,
-      },
+    return await recordDrawing({
+      orderId, userId: user.id, fileName: file.name, storagePath,
+      size: file.size, mime: file.type || 'application/octet-stream',
     });
 
   } catch (err) {
