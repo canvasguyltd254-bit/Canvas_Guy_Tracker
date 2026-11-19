@@ -5,6 +5,8 @@ import { useAuth } from '@/shared/context/AuthContext';
 import { C, PageHeader, TabBar } from '@/shared/ui/ds';
 import { createClient } from '@/shared/supabase/client';
 import { isTypeAllowedInRun } from '@/shared/lib/payroll/runTypes';
+import { payrollTabsFor, canSeePayrollMoney } from '@/shared/lib/payroll/payrollAccess';
+import { canCreateEmployee } from '@/shared/lib/payroll/employeeAccess';
 
 const supabase = createClient();
 
@@ -277,6 +279,12 @@ function EmployeesTab({ userRole }) {
   const [editEmp, setEditEmp] = useState(null);
   const [saving, setSaving] = useState(false);
 
+  // What this role may see and write (mirrors shared/lib/payroll/employeeAccess.js;
+  // the server enforces it, this only keeps the screen honest).
+  const isAdmin     = userRole === 'admin';
+  const canSeeRate  = isAdmin || userRole === 'production_manager';
+  const canCreate   = canCreateEmployee(userRole);   // admin only
+
   const INITIAL_FORM = {
     name: '', type: 'casual', day_rate: '', monthly_salary: '', sha_amount: '300',
     phone: '', id_number: '', nssf_number: '', bank_account: '', bank_name: '',
@@ -324,7 +332,14 @@ function EmployeesTab({ userRole }) {
     setError('');
     const method  = editEmp ? 'PATCH' : 'POST';
     const url     = editEmp ? `/api/payroll/employees/${editEmp.id}` : '/api/payroll/employees';
-    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
+    // Non-admins send only the fields they may write; the server refuses anything else.
+    const payload = isAdmin
+      ? form
+      : {
+          name: form.name,
+          ...(canSeeRate && form.type !== 'permanent' ? { day_rate: form.day_rate } : {}),
+        };
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const data    = await res.json();
     setSaving(false);
     if (!res.ok) { setError(data.error || 'Save failed'); return; }
@@ -350,7 +365,7 @@ function EmployeesTab({ userRole }) {
       <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
         <input
           style={{ ...inputStyle, width: 220 }}
-          placeholder="Search name or phone…"
+          placeholder={isAdmin ? 'Search name or phone…' : 'Search name or number…'}
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
@@ -366,7 +381,7 @@ function EmployeesTab({ userRole }) {
           <option value="">All</option>
         </select>
         <div style={{ flex: 1 }} />
-        {canEdit && <Btn onClick={openNew}>+ Add Employee</Btn>}
+        {canCreate && <Btn onClick={openNew}>+ Add Employee</Btn>}
       </div>
 
       {loading ? <Spinner /> : employees.length === 0
@@ -378,7 +393,7 @@ function EmployeesTab({ userRole }) {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
                   <thead>
                     <tr style={{ background: LIGHT, borderBottom: `2px solid ${BORDER}` }}>
-                      {['#', 'Name', 'Type', 'Rate', 'SHA', 'Phone', 'Status', ''].map(h => (
+                      {['#', 'Name', 'Type', canSeeRate && 'Rate', isAdmin && 'SHA', isAdmin && 'Phone', 'Status', ''].filter(h => h !== false).map(h => (
                         <th key={h} style={{ textAlign: 'left', padding: '10px 12px', fontWeight: 600, color: '#374151', fontSize: 12 }}>{h}</th>
                       ))}
                     </tr>
@@ -389,13 +404,15 @@ function EmployeesTab({ userRole }) {
                         <td style={{ padding: '10px 12px', color: '#9ca3af', fontFamily: 'monospace', fontSize: 12 }}>{emp.employee_num}</td>
                         <td style={{ padding: '10px 12px', fontWeight: 600 }}>{emp.name}</td>
                         <td style={{ padding: '10px 12px' }}><StatusBadge status={emp.type} /></td>
-                        <td style={{ padding: '10px 12px', fontSize: 13 }}>
-                          {emp.type === 'permanent'
-                            ? `KES ${fmt(emp.monthly_salary)}/mo`
-                            : `KES ${fmt(emp.day_rate)}/day`}
-                        </td>
-                        <td style={{ padding: '10px 12px', fontSize: 13 }}>KES {fmt(emp.sha_amount)}</td>
-                        <td style={{ padding: '10px 12px', fontSize: 13, color: '#6b7280' }}>{emp.phone || '—'}</td>
+                        {canSeeRate && (
+                          <td style={{ padding: '10px 12px', fontSize: 13 }}>
+                            {emp.type === 'permanent'
+                              ? (isAdmin ? `KES ${fmt(emp.monthly_salary)}/mo` : '—')
+                              : `KES ${fmt(emp.day_rate)}/day`}
+                          </td>
+                        )}
+                        {isAdmin && <td style={{ padding: '10px 12px', fontSize: 13 }}>KES {fmt(emp.sha_amount)}</td>}
+                        {isAdmin && <td style={{ padding: '10px 12px', fontSize: 13, color: '#6b7280' }}>{emp.phone || '—'}</td>}
                         <td style={{ padding: '10px 12px' }}>
                           <Badge label={emp.is_active ? 'Active' : 'Inactive'} bg={emp.is_active ? '#dcfce7' : '#f3f4f6'} color={emp.is_active ? GREEN : '#6b7280'} />
                         </td>
@@ -429,9 +446,9 @@ function EmployeesTab({ userRole }) {
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px', fontSize: 13, marginBottom: 10 }}>
                     <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Type</span><br /><StatusBadge status={emp.type} /></div>
-                    <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Rate</span><br /><span style={{ fontWeight: 600 }}>{emp.type === 'permanent' ? `KES ${fmt(emp.monthly_salary)}/mo` : `KES ${fmt(emp.day_rate)}/day`}</span></div>
-                    <div><span style={{ color: '#9ca3af', fontSize: 11 }}>SHA</span><br />KES {fmt(emp.sha_amount)}</div>
-                    <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Phone</span><br />{emp.phone || '—'}</div>
+                    {canSeeRate && <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Rate</span><br /><span style={{ fontWeight: 600 }}>{emp.type === 'permanent' ? (isAdmin ? `KES ${fmt(emp.monthly_salary)}/mo` : '—') : `KES ${fmt(emp.day_rate)}/day`}</span></div>}
+                    {isAdmin && <div><span style={{ color: '#9ca3af', fontSize: 11 }}>SHA</span><br />KES {fmt(emp.sha_amount)}</div>}
+                    {isAdmin && <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Phone</span><br />{emp.phone || '—'}</div>}
                   </div>
                   {canEdit && (
                     <div style={{ display: 'flex', gap: 8 }}>
@@ -461,46 +478,59 @@ function EmployeesTab({ userRole }) {
             <Field label="Full Name" required>
               <input style={inputStyle} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
             </Field>
-            <Field label="Employee Type" required>
-              <select style={inputStyle} value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
-                <option value="casual">Casual (daily)</option>
-                <option value="permanent">Permanent (monthly)</option>
-                <option value="skilled_casual">Skilled Casual</option>
-              </select>
-            </Field>
+            {isAdmin && (
+              <Field label="Employee Type" required>
+                <select style={inputStyle} value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
+                  <option value="casual">Casual (daily)</option>
+                  <option value="permanent">Permanent (monthly)</option>
+                  <option value="skilled_casual">Skilled Casual</option>
+                </select>
+              </Field>
+            )}
             {form.type !== 'permanent'
-              ? <Field label="Day Rate (KES)">
-                  <input type="number" style={inputStyle} value={form.day_rate} onChange={e => setForm(f => ({ ...f, day_rate: e.target.value }))} />
-                </Field>
-              : <Field label="Monthly Salary (KES)">
-                  <input type="number" style={inputStyle} value={form.monthly_salary} onChange={e => setForm(f => ({ ...f, monthly_salary: e.target.value }))} />
-                </Field>
+              ? (canSeeRate && (
+                  <Field label="Day Rate (KES)">
+                    <input type="number" style={inputStyle} value={form.day_rate} onChange={e => setForm(f => ({ ...f, day_rate: e.target.value }))} />
+                  </Field>
+                ))
+              : (isAdmin && (
+                  <Field label="Monthly Salary (KES)">
+                    <input type="number" style={inputStyle} value={form.monthly_salary} onChange={e => setForm(f => ({ ...f, monthly_salary: e.target.value }))} />
+                  </Field>
+                ))
             }
-            <Field label="SHA Deduction (KES)">
-              <input type="number" style={inputStyle} value={form.sha_amount} onChange={e => setForm(f => ({ ...f, sha_amount: e.target.value }))} />
-            </Field>
-            <Field label="M-Pesa Phone">
-              <input style={inputStyle} value={form.phone} placeholder="07xx…" onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
-            </Field>
-            <Field label="ID Number">
-              <input style={inputStyle} value={form.id_number} onChange={e => setForm(f => ({ ...f, id_number: e.target.value }))} />
-            </Field>
-            <Field label="NSSF Number">
-              <input style={inputStyle} value={form.nssf_number} onChange={e => setForm(f => ({ ...f, nssf_number: e.target.value }))} />
-            </Field>
-            <Field label="Hire Date">
-              <input type="date" style={inputStyle} value={form.hire_date} onChange={e => setForm(f => ({ ...f, hire_date: e.target.value }))} />
-            </Field>
-            <Field label="Bank Account">
-              <input style={inputStyle} value={form.bank_account} onChange={e => setForm(f => ({ ...f, bank_account: e.target.value }))} />
-            </Field>
-            <Field label="Bank Name">
-              <input style={inputStyle} value={form.bank_name} onChange={e => setForm(f => ({ ...f, bank_name: e.target.value }))} />
-            </Field>
+            {isAdmin && <>
+              <Field label="SHA Deduction (KES)">
+                <input type="number" style={inputStyle} value={form.sha_amount} onChange={e => setForm(f => ({ ...f, sha_amount: e.target.value }))} />
+              </Field>
+              <Field label="M-Pesa Phone">
+                <input style={inputStyle} value={form.phone} placeholder="07xx…" onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
+              </Field>
+              <Field label="ID Number">
+                <input style={inputStyle} value={form.id_number} onChange={e => setForm(f => ({ ...f, id_number: e.target.value }))} />
+              </Field>
+              <Field label="NSSF Number">
+                <input style={inputStyle} value={form.nssf_number} onChange={e => setForm(f => ({ ...f, nssf_number: e.target.value }))} />
+              </Field>
+              <Field label="Hire Date">
+                <input type="date" style={inputStyle} value={form.hire_date} onChange={e => setForm(f => ({ ...f, hire_date: e.target.value }))} />
+              </Field>
+              <Field label="Bank Account">
+                <input style={inputStyle} value={form.bank_account} onChange={e => setForm(f => ({ ...f, bank_account: e.target.value }))} />
+              </Field>
+              <Field label="Bank Name">
+                <input style={inputStyle} value={form.bank_name} onChange={e => setForm(f => ({ ...f, bank_name: e.target.value }))} />
+              </Field>
+            </>}
           </div>
-          <Field label="Notes">
-            <textarea style={{ ...inputStyle, height: 60, resize: 'vertical' }} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
-          </Field>
+          {isAdmin
+            ? <Field label="Notes">
+                <textarea style={{ ...inputStyle, height: 60, resize: 'vertical' }} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+              </Field>
+            : <p style={{ fontSize: 12, color: '#6b7280', margin: '12px 0 0' }}>
+                Employee type, salary, statutory, contact and banking details are managed by an admin.
+              </p>
+          }
           {error && <ErrorBanner message={error} onDismiss={() => setError('')} />}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
             <Btn variant="secondary" onClick={() => setShowForm(false)}>Cancel</Btn>
@@ -587,6 +617,7 @@ function PayrollRunsTab({ userRole }) {
 
   const canCreate  = PAYROLL_ROLES.includes(userRole);
   const canApprove = ADMIN_ONLY.includes(userRole);
+  const showMoney  = canSeePayrollMoney(userRole);   // totals + PDF are admin-only
 
   async function exportRunPdf(run) {
     setExportingPdf(run.id);
@@ -636,7 +667,7 @@ function PayrollRunsTab({ userRole }) {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
               <thead>
                 <tr style={{ background: LIGHT, borderBottom: `2px solid ${BORDER}` }}>
-                  {['Run #', 'Type', 'Period', 'Status', 'Employees', 'Gross', 'Net', ''].map(h => (
+                  {['Run #', 'Type', 'Period', 'Status', 'Employees', showMoney && 'Gross', showMoney && 'Net', ''].filter(h => h !== false).map(h => (
                     <th key={h} style={{ textAlign: 'left', padding: '10px 12px', fontWeight: 600, color: '#374151', fontSize: 12 }}>{h}</th>
                   ))}
                 </tr>
@@ -649,12 +680,12 @@ function PayrollRunsTab({ userRole }) {
                     <td style={{ padding: '10px 12px', fontSize: 13, color: '#6b7280' }}>{fmtD(run.period_start)} – {fmtD(run.period_end)}</td>
                     <td style={{ padding: '10px 12px' }}><StatusBadge status={run.status} /></td>
                     <td style={{ padding: '10px 12px', textAlign: 'center' }}>{run.employee_count || '—'}</td>
-                    <td style={{ padding: '10px 12px', fontSize: 13 }}>KES {fmt(run.total_gross)}</td>
-                    <td style={{ padding: '10px 12px', fontWeight: 600 }}>KES {fmt(run.total_net)}</td>
+                    {showMoney && <td style={{ padding: '10px 12px', fontSize: 13 }}>KES {fmt(run.total_gross)}</td>}
+                    {showMoney && <td style={{ padding: '10px 12px', fontWeight: 600 }}>KES {fmt(run.total_net)}</td>}
                     <td style={{ padding: '10px 12px' }}>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         <Btn onClick={() => setSelectedRun(run)} variant="secondary" small>Open</Btn>
-                        <Btn onClick={() => exportRunPdf(run)} variant="secondary" small loading={exportingPdf === run.id} disabled={!!exportingPdf}>PDF</Btn>
+                        {showMoney && <Btn onClick={() => exportRunPdf(run)} variant="secondary" small loading={exportingPdf === run.id} disabled={!!exportingPdf}>PDF</Btn>}
                         {canApprove && run.status === 'draft' && (
                           <Btn onClick={() => approveRun(run.id)} variant="success" small>Approve</Btn>
                         )}
@@ -1222,16 +1253,22 @@ function RunDetail({ run: initialRun, userRole, onBack }) {
   const [adjForm, setAdjForm] = useState({ employee_id: '', adj_type: 'advance', amount: '', is_deduction: true, description: '' });
   const [savingAdj, setSavingAdj] = useState(false);
 
+  // Only admin sees pay figures, adjustments and payments. A production manager gets the
+  // attendance view: who is in the run, days worked, and the attendance grid.
+  const showMoney = canSeePayrollMoney(userRole);
+
   const loadEntries = useCallback(async () => {
     setLoading(true);
     const [entRes, adjRes] = await Promise.all([
       fetch(`/api/payroll/runs/${run.id}/entries`).then(r => r.json()),
-      fetch(`/api/payroll/runs/${run.id}/adjustments`).then(r => r.json()),
+      showMoney
+        ? fetch(`/api/payroll/runs/${run.id}/adjustments`).then(r => r.json())
+        : Promise.resolve({ adjustments: [] }),
     ]);
     setEntries(entRes.entries || []);
     setAdjustments(adjRes.adjustments || []);
     setLoading(false);
-  }, [run.id]);
+  }, [run.id, showMoney]);
 
   useEffect(() => { loadEntries(); }, [loadEntries]);
 
@@ -1371,12 +1408,14 @@ function RunDetail({ run: initialRun, userRole, onBack }) {
           </div>
         </div>
         <div style={{ flex: 1 }} />
-        <div style={{ textAlign: 'right' }}>
-          <div style={{ fontSize: 12, color: '#9ca3af' }}>
-            Outstanding
+        {showMoney && (
+          <div style={{ textAlign: 'right' }}>
+            <div style={{ fontSize: 12, color: '#9ca3af' }}>
+              Outstanding
+            </div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: liveNetPayable > 0 ? CORAL : GREEN }}>KES {fmt(liveNetPayable)}</div>
           </div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: liveNetPayable > 0 ? CORAL : GREEN }}>KES {fmt(liveNetPayable)}</div>
-        </div>
+        )}
       </div>
 
       <ErrorBanner message={error} onDismiss={() => setError('')} />
@@ -1385,7 +1424,7 @@ function RunDetail({ run: initialRun, userRole, onBack }) {
       <div style={{ display: 'flex', borderBottom: `1px solid ${BORDER}`, marginBottom: 16 }}>
         <span style={tabStyle('entries')} onClick={() => setActiveTab('entries')}>Entries ({entries.length})</span>
         <span style={tabStyle('attendance')} onClick={() => setActiveTab('attendance')}>Attendance</span>
-        <span style={tabStyle('adjustments')} onClick={() => setActiveTab('adjustments')}>Adjustments ({adjustments.length})</span>
+        {showMoney && <span style={tabStyle('adjustments')} onClick={() => setActiveTab('adjustments')}>Adjustments ({adjustments.length})</span>}
       </div>
 
       {/* ENTRIES */}
@@ -1414,6 +1453,27 @@ function RunDetail({ run: initialRun, userRole, onBack }) {
 
           {loading ? <Spinner /> : entries.length === 0
             ? <EmptyState icon="👥" message="No employees added to this run yet" />
+            : !showMoney
+            ? <Card style={{ padding: 0 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: LIGHT, borderBottom: `2px solid ${BORDER}` }}>
+                      {['Employee', 'Type', 'Days worked'].map(h => (
+                        <th key={h} style={{ textAlign: 'left', padding: '8px 10px', fontWeight: 600, color: '#6b7280', fontSize: 11 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {entries.map(entry => (
+                      <tr key={entry.id} style={{ borderBottom: `1px solid ${BORDER}` }}>
+                        <td style={{ padding: '8px 10px', fontWeight: 600 }}>{entry.snapshot_name}</td>
+                        <td style={{ padding: '8px 10px' }}><StatusBadge status={entry.snapshot_type} /></td>
+                        <td style={{ padding: '8px 10px' }}>{entry.days_worked ?? 0}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Card>
             : <Card style={{ padding: 0 }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                   <thead>
@@ -1520,7 +1580,7 @@ function RunDetail({ run: initialRun, userRole, onBack }) {
                         const totalOT   = Object.values(empGrid).filter(c => c.present).reduce((s, c) => s + Number(c.overtime_hours || 0), 0);
                         const liveGross = daysOn * Number(entry.snapshot_day_rate || 0) + totalOT;
                         const liveNet   = Math.max(0, liveGross - Number(entry.snapshot_sha || 0));
-                        const isExpanded = expandedEmp === entry.id;
+                        const isExpanded = showMoney && expandedEmp === entry.id;   // adjustments panel is admin-only
 
                         return (
                           <React.Fragment key={entry.id}>
@@ -1565,7 +1625,7 @@ function RunDetail({ run: initialRun, userRole, onBack }) {
                               <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 600, fontSize: 12, minWidth: 90 }}>
                                 <div style={{ color: daysOn > 0 ? GREEN : '#9ca3af' }}>{daysOn}d</div>
                                 {totalOT > 0 && <div style={{ color: AMBER, fontSize: 11 }}>+{fmt(totalOT)} OT</div>}
-                                <div style={{ color: CORAL, fontSize: 12, marginTop: 2 }}>KES {fmt(liveNet)}</div>
+                                {showMoney && <div style={{ color: CORAL, fontSize: 12, marginTop: 2 }}>KES {fmt(liveNet)}</div>}
                               </td>
                             </tr>
 
@@ -1972,7 +2032,7 @@ function PaymentsTab({ userRole }) {
   }
 
   const canCreateBatch    = PAYROLL_ROLES.includes(userRole);
-  const canExportBatch    = PAYROLL_ROLES.includes(userRole);
+  const canExportBatch    = ADMIN_ONLY.includes(userRole);   // export carries workers' M-Pesa numbers
   const canReconcileBatch = ADMIN_ONLY.includes(userRole);
   const canDeleteBatch    = ADMIN_ONLY.includes(userRole);
 
@@ -2476,8 +2536,8 @@ function ReportsTab({ userRole }) {
         ))}
       </div>
 
-      {/* ── Employee Payroll Report ── */}
-      <Card>
+      {/* ── Employee Payroll Report (admin only: carries phone, ID, SHA, banking) ── */}
+      {userRole === 'admin' && <Card>
         <h3 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 700 }}>Employee Payroll Report</h3>
         <p style={{ fontSize: 13, color: C.muted, marginBottom: 16, marginTop: 0 }}>
           Generate a full payroll history for one employee over a date range — includes gross earnings,
@@ -2535,7 +2595,7 @@ function ReportsTab({ userRole }) {
           </div>
         </div>
         {exportErr && <ErrorBanner message={exportErr} onDismiss={() => setExportErr('')} />}
-      </Card>
+      </Card>}
 
       {/* ── Run history + type breakdown ── */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
@@ -2576,7 +2636,7 @@ function ReportsTab({ userRole }) {
 // MAIN MODULE SHELL
 // ════════════════════════════════════════════════════════════════
 export default function PayrollModule({ refreshKey = 0 } = {}) {
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState(null);
   const { userRole, loaded }      = useAuth();
 
   if (!loaded) return <Spinner />;
@@ -2590,14 +2650,19 @@ export default function PayrollModule({ refreshKey = 0 } = {}) {
     );
   }
 
-  const TABS = [
-    { key: 'overview',   label: 'Overview' },
-    { key: 'employees',  label: 'Employees' },
-    { key: 'runs',       label: 'Payroll Runs' },
-    { key: 'payments',   label: 'Payments' },
-    { key: 'compliance', label: 'Compliance' },
-    { key: 'reports',    label: 'Reports' },
-  ];
+  // Screens by role: admin sees all; production_manager only Employees + Payroll Runs
+  // (attendance view, no money); head_of_sales only the Employees directory.
+  const ALL_TABS = {
+    overview:   'Overview',
+    employees:  'Employees',
+    runs:       'Payroll Runs',
+    payments:   'Payments',
+    compliance: 'Compliance',
+    reports:    'Reports',
+  };
+  const allowedTabs = payrollTabsFor(userRole);
+  const TABS = allowedTabs.map(key => ({ key, label: ALL_TABS[key] }));
+  const currentTab = allowedTabs.includes(activeTab) ? activeTab : allowedTabs[0];
 
   return (
     <div style={{ padding: '20px 16px', color: DARK }}>
@@ -2608,14 +2673,14 @@ export default function PayrollModule({ refreshKey = 0 } = {}) {
         description="Employee payroll management"
       />
 
-      <TabBar tabs={TABS} active={activeTab} onSelect={setActiveTab} style={{ marginBottom: 24 }} />
+      <TabBar tabs={TABS} active={currentTab} onSelect={setActiveTab} style={{ marginBottom: 24 }} />
 
-      {activeTab === 'overview'   && <OverviewTab    key={refreshKey} userRole={userRole} />}
-      {activeTab === 'employees'  && <EmployeesTab   key={refreshKey} userRole={userRole} />}
-      {activeTab === 'runs'       && <PayrollRunsTab key={refreshKey} userRole={userRole} />}
-      {activeTab === 'payments'   && <PaymentsTab    key={refreshKey} userRole={userRole} />}
-      {activeTab === 'compliance' && <ComplianceTab  key={refreshKey} userRole={userRole} />}
-      {activeTab === 'reports'    && <ReportsTab     key={refreshKey} userRole={userRole} />}
+      {currentTab === 'overview'   && <OverviewTab    key={refreshKey} userRole={userRole} />}
+      {currentTab === 'employees'  && <EmployeesTab   key={refreshKey} userRole={userRole} />}
+      {currentTab === 'runs'       && <PayrollRunsTab key={refreshKey} userRole={userRole} />}
+      {currentTab === 'payments'   && <PaymentsTab    key={refreshKey} userRole={userRole} />}
+      {currentTab === 'compliance' && <ComplianceTab  key={refreshKey} userRole={userRole} />}
+      {currentTab === 'reports'    && <ReportsTab     key={refreshKey} userRole={userRole} />}
     </div>
   );
 }

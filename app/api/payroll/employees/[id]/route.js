@@ -3,13 +3,18 @@
  * PATCH  /api/payroll/employees/:id  — update employee
  * DELETE /api/payroll/employees/:id  — deactivate only (never hard-delete; history is permanent)
  *
- * Access: admin, head_of_sales, production_manager
- * All roles can view and edit all employee fields including salaries.
+ * Access: admin, head_of_sales, production_manager — with different visibility
+ * (see shared/lib/payroll/employeeAccess.js). Pay basis (type), salary, statutory
+ * numbers, phone, banking, notes and employee documents are admin-only, for reads
+ * and writes.
  * Only admin can approve/reopen payroll runs (enforced in runs routes).
  */
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import {
+  EMPLOYEE_COLUMNS, employeeAccessLevel, canSeePrivateEmployeeData, partitionEmployeeWrite,
+} from '@/shared/lib/payroll/employeeAccess';
 
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 
@@ -20,9 +25,10 @@ export async function GET(request, props) {
     const authError = requireRole(user, role, ALLOWED_ROLES);
     if (authError) return authError;
 
+    // Only the columns this role may see are fetched (never select('*')).
     const { data: emp, error } = await serviceClient
       .from('employees')
-      .select('*')
+      .select(EMPLOYEE_COLUMNS[employeeAccessLevel(role)])
       .eq('id', params.id)
       .single();
 
@@ -30,14 +36,18 @@ export async function GET(request, props) {
       return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
     }
 
-    // Fetch documents
-    const { data: docs } = await serviceClient
-      .from('employee_documents')
-      .select('*')
-      .eq('employee_id', params.id)
-      .order('uploaded_at', { ascending: false });
+    // Employee documents (ID copies, contracts, …) are admin-only.
+    let docs = [];
+    if (canSeePrivateEmployeeData(role)) {
+      const { data } = await serviceClient
+        .from('employee_documents')
+        .select('*')
+        .eq('employee_id', params.id)
+        .order('uploaded_at', { ascending: false });
+      docs = data || [];
+    }
 
-    return NextResponse.json({ employee: emp, documents: docs || [] });
+    return NextResponse.json({ employee: emp, documents: docs });
   } catch (err) {
     console.error('GET /api/payroll/employees/[id] unexpected:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -53,11 +63,16 @@ export async function PATCH(request, props) {
 
     const body = await request.json();
 
-    // Whitelist updatable fields — all roles can update all employee fields
-    const allowed = ['name', 'type', 'day_rate', 'monthly_salary', 'piece_rate', 'sha_amount',
-                     'phone', 'hire_date', 'notes', 'is_active',
-                     'bank_account', 'bank_name', 'bank_branch', 'paybill_number',
-                     'nssf_number', 'id_number'];
+    // Role-based write whitelist. Pay, statutory, contact and banking fields are
+    // admin-only; a request that includes any of them from another role is
+    // refused outright (UI hiding alone is not a control).
+    const { allowed, forbidden } = partitionEmployeeWrite(role, body);
+    if (forbidden.length > 0) {
+      return NextResponse.json(
+        { error: `Only an admin can change: ${forbidden.join(', ')}`, code: 'ADMIN_ONLY_FIELDS', fields: forbidden },
+        { status: 403 }
+      );
+    }
 
     const NUMERIC_FIELDS = new Set(['day_rate', 'monthly_salary', 'piece_rate', 'sha_amount']);
     const DATE_FIELDS    = new Set(['hire_date']);
@@ -83,7 +98,7 @@ export async function PATCH(request, props) {
       .from('employees')
       .update(updates)
       .eq('id', params.id)
-      .select()
+      .select(EMPLOYEE_COLUMNS[employeeAccessLevel(role)])
       .single();
 
     if (error) {

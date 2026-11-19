@@ -8,7 +8,8 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { resolveShaDeduction } from '@/shared/lib/resolveShaDeduction';
 
-const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
+// Admin only: this route carries pay figures. production_manager and head_of_sales have no access.
+const ALLOWED_ROLES = ['admin'];
 
 export async function GET(request, props) {
   const params = await props.params;
@@ -114,7 +115,7 @@ export async function DELETE(request, props) {
   const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
-    const authError = requireRole(user, role, ['admin', 'head_of_sales', 'production_manager']);
+    const authError = requireRole(user, role, ALLOWED_ROLES);
     if (authError) return authError;
 
     const runId = params.id;

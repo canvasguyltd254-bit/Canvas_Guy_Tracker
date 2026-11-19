@@ -13,7 +13,8 @@
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 
-const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
+// Admin only: this route carries pay figures. production_manager and head_of_sales have no access.
+const ALLOWED_ROLES = ['admin'];
 
 /** Fetch order details for a set of order IDs */
 async function enrichOrders(orderIds) {

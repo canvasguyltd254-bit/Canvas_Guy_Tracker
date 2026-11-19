@@ -14,7 +14,8 @@ import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-aut
 import { spawn } from 'child_process';
 import { join } from 'path';
 
-const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
+// Admin only: this route carries pay figures. production_manager and head_of_sales have no access.
+const ALLOWED_ROLES = ['admin'];
 
 function spawnPdf(data) {
   return new Promise((resolve, reject) => {
@@ -57,7 +58,7 @@ export async function GET(request, props) {
     // ── Fetch entries ─────────────────────────────────────────────────────────
     const { data: entries, error: entErr } = await serviceClient
       .from('payroll_entries')
-      .select('*, employees(name, employee_num, phone, type)')
+      .select('*, employees(name, employee_num, type)')   // no phone: not rendered, admin-only data
       .eq('run_id', params.id)
       .order('snapshot_name');
 

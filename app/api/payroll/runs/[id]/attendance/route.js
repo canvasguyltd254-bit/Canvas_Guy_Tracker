@@ -10,7 +10,8 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { resolveShaDeduction } from '@/shared/lib/resolveShaDeduction';
 
-const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
+// admin and production_manager only; head_of_sales has no payroll-run access.
+const ALLOWED_ROLES = ['admin', 'production_manager'];
 const OVERTIME_RATE = 200;
 
 export async function GET(request, props) {
@@ -25,7 +26,7 @@ export async function GET(request, props) {
 
     let query = serviceClient
       .from('payroll_attendance')
-      .select('*')
+      .select('id, run_id, employee_id, work_date, present, overtime_hours, notes')
       .eq('run_id', params.id)
       .order('work_date');
 

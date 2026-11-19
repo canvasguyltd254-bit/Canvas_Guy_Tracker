@@ -25,7 +25,8 @@ import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-aut
 import { spawn } from 'child_process';
 import { join } from 'path';
 
-const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
+// The report carries phone, ID number, SHA and banking details: admin only.
+const ALLOWED_ROLES = ['admin'];
 
 function spawnPdf(data) {
   return new Promise((resolve, reject) => {

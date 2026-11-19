@@ -7,8 +7,10 @@
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { RUN_TYPES, entryTypesConflictingWithRun } from '@/shared/lib/payroll/runTypes';
+import { RUN_ATTENDANCE_ROLES, runColumnsFor, entryColumnsFor, entryJoinFor } from '@/shared/lib/payroll/payrollAccess';
 
-const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
+// admin: all figures; production_manager: attendance view only (no money); head_of_sales: no access.
+const ALLOWED_ROLES = RUN_ATTENDANCE_ROLES;
 
 export async function GET(request, props) {
   const params = await props.params;
@@ -19,7 +21,7 @@ export async function GET(request, props) {
 
     const { data: run, error } = await serviceClient
       .from('payroll_runs')
-      .select('*')
+      .select(runColumnsFor(role))
       .eq('id', params.id)
       .single();
 
@@ -30,7 +32,7 @@ export async function GET(request, props) {
     // Entries with employee names
     const { data: entries, error: entErr } = await serviceClient
       .from('payroll_entries')
-      .select('*, employees(name, employee_num, phone, type)')
+      .select(`${entryColumnsFor(role)}, ${entryJoinFor(role)}`)   // explicit columns: no pay figures for non-admin
       .eq('run_id', params.id)
       .order('snapshot_name');
 
@@ -112,7 +114,7 @@ export async function PATCH(request, props) {
       .from('payroll_runs')
       .update(updates)
       .eq('id', params.id)
-      .select()
+      .select(runColumnsFor(role))
       .single();
 
     if (error) {

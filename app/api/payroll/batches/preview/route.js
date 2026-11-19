@@ -71,7 +71,7 @@ function fifoSplit(entries, allocation) {
 export async function GET(request) {
   try {
     const { user, role } = await getAuthContext();
-    const authError = requireRole(user, role, ['admin', 'head_of_sales', 'production_manager']);
+    const authError = requireRole(user, role, ['admin'])   /* pay figures: admin only */;
     if (authError) return authError;
 
     const { searchParams } = new URL(request.url);

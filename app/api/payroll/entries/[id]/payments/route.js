@@ -16,7 +16,7 @@ export async function GET(request, props) {
   const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
-    const authError = requireRole(user, role, ['admin', 'head_of_sales', 'production_manager']);
+    const authError = requireRole(user, role, ['admin'])   /* payments and phone snapshots: admin only */;
     if (authError) return authError;
 
     const { data, error } = await serviceClient

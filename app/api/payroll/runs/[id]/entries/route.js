@@ -10,8 +10,11 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { resolveShaDeduction } from '@/shared/lib/resolveShaDeduction';
 import { runTypeMismatchMessage } from '@/shared/lib/payroll/runTypes';
+import { RUN_ATTENDANCE_ROLES, entryColumnsFor, entryJoinFor } from '@/shared/lib/payroll/payrollAccess';
 
-const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
+// Admin sees every figure; production_manager gets the attendance view (no pay, rates or
+// deductions); head_of_sales has no payroll-run access. See payrollAccess.js.
+const ALLOWED_ROLES = RUN_ATTENDANCE_ROLES;
 const OVERTIME_RATE = 200; // KES per hour
 
 export async function GET(request, props) {
@@ -23,7 +26,9 @@ export async function GET(request, props) {
 
     const { data: entries, error } = await serviceClient
       .from('payroll_entries')
-      .select('*, employees(name, employee_num, phone, type, day_rate, monthly_salary)')
+      // Explicit, role-scoped columns: never payroll_entries.* (that carries salary
+      // snapshots, gross/net pay and deductions).
+      .select(`${entryColumnsFor(role)}, ${entryJoinFor(role)}`)
       .eq('run_id', params.id)
       .order('snapshot_name');
 
@@ -67,10 +72,11 @@ export async function POST(request, props) {
       return NextResponse.json({ error: 'employee_id is required' }, { status: 400 });
     }
 
-    // Fetch employee
+    // Fetch employee (server-side use only; nothing from this row is returned
+    // to the client except the entry snapshot built below)
     const { data: emp, error: empErr } = await serviceClient
       .from('employees')
-      .select('*')
+      .select('id, name, type, is_active, day_rate, monthly_salary, sha_amount')
       .eq('id', employee_id)
       .single();
 
@@ -138,7 +144,7 @@ export async function POST(request, props) {
         net_pay,
         payment_status:    'unpaid',
       })
-      .select()
+      .select(entryColumnsFor(role))
       .single();
 
     if (insertErr) {

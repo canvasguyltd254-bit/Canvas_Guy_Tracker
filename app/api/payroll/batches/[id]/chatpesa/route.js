@@ -29,7 +29,9 @@ export async function GET(request, props) {
   const params = await props.params;
   try {
     const { user, role } = await getAuthContext();
-    const authError = requireRole(user, role, ['admin', 'head_of_sales', 'production_manager']);
+    // Admin only (as this file's header always said): the export carries workers'
+    // M-Pesa numbers and creates the payment records.
+    const authError = requireRole(user, role, ['admin']);
     if (authError) return authError;
 
     const batchId = params.id;

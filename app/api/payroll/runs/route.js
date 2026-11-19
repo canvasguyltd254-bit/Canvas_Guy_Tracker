@@ -7,6 +7,7 @@
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { RUN_ATTENDANCE_ROLES, runColumnsFor, canSeePayrollMoney } from '@/shared/lib/payroll/payrollAccess';
 
 const TYPE_ABBREV = { casual: 'CA', permanent: 'PE', skilled_casual: 'SK', combined: 'CO' };
 
@@ -35,7 +36,8 @@ async function buildRunNum(run_type, period_start) {
   return count > 0 ? null : run_num;
 }
 
-const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
+// admin: all figures; production_manager: run headers + counts only (no money); head_of_sales: no access.
+const ALLOWED_ROLES = RUN_ATTENDANCE_ROLES;
 
 export async function GET(request) {
   try {
@@ -52,7 +54,7 @@ export async function GET(request) {
 
     let query = serviceClient
       .from('payroll_runs')
-      .select('*', { count: 'exact' })
+      .select(runColumnsFor(role), { count: 'exact' })
       .order('period_start', { ascending: false })
       .range(offset, offset + limit - 1);
 
@@ -69,22 +71,29 @@ export async function GET(request) {
     // Aggregate totals per run in one query
     const runIds = (runs || []).map(r => r.id);
     let totalsMap = {};
+    const showMoney = canSeePayrollMoney(role);
     if (runIds.length > 0) {
+      // Money columns are only fetched for admin; others get a head-count only.
       const { data: entries } = await serviceClient
         .from('payroll_entries')
-        .select('run_id, gross_pay, net_pay, amount_paid')
+        .select(showMoney ? 'run_id, gross_pay, net_pay, amount_paid' : 'run_id')
         .in('run_id', runIds);
 
       for (const e of (entries || [])) {
         if (!totalsMap[e.run_id]) totalsMap[e.run_id] = { employee_count: 0, total_gross: 0, total_net: 0, total_outstanding: 0 };
         totalsMap[e.run_id].employee_count    += 1;
-        totalsMap[e.run_id].total_gross       += Number(e.gross_pay   || 0);
-        totalsMap[e.run_id].total_net         += Number(e.net_pay     || 0);
-        totalsMap[e.run_id].total_outstanding += Math.max(0, Number(e.net_pay || 0) - Number(e.amount_paid || 0));
+        if (showMoney) {
+          totalsMap[e.run_id].total_gross       += Number(e.gross_pay   || 0);
+          totalsMap[e.run_id].total_net         += Number(e.net_pay     || 0);
+          totalsMap[e.run_id].total_outstanding += Math.max(0, Number(e.net_pay || 0) - Number(e.amount_paid || 0));
+        }
       }
     }
 
-    const enriched = (runs || []).map(r => ({ ...r, ...(totalsMap[r.id] || { employee_count: 0, total_gross: 0, total_net: 0, total_outstanding: 0 }) }));
+    const enriched = (runs || []).map(r => {
+      const t = totalsMap[r.id] || { employee_count: 0, total_gross: 0, total_net: 0, total_outstanding: 0 };
+      return showMoney ? { ...r, ...t } : { ...r, employee_count: t.employee_count };
+    });
 
     return NextResponse.json({ runs: enriched, total: count });
   } catch (err) {
@@ -130,7 +139,7 @@ export async function POST(request) {
         notes:        notes || null,
         created_by:   user.id,
       })
-      .select()
+      .select(runColumnsFor(role))
       .single();
 
     if (insertErr) {

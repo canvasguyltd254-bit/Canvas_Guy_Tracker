@@ -2,13 +2,21 @@
  * GET  /api/payroll/employees  — list employees (with filters)
  * POST /api/payroll/employees  — create employee
  *
- * Access: admin, head_of_sales, production_manager
- * All three roles can view and edit all employee fields including salaries.
+ * Access: admin, head_of_sales, production_manager — with different visibility
+ * (see shared/lib/payroll/employeeAccess.js):
+ *   admin               full profile, may write every field
+ *   production_manager  identity, status, day rate; may edit name/status/day_rate
+ *   head_of_sales       identity and status only; may edit name/status
+ * Creating an employee, changing an employee's type, and salary, statutory
+ * numbers, phone, banking and notes are admin-only.
  * Only admin can approve/reopen payroll runs (enforced in runs routes).
  */
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import {
+  EMPLOYEE_COLUMNS, employeeAccessLevel, partitionEmployeeWrite, employeeSearchFilter, canCreateEmployee,
+} from '@/shared/lib/payroll/employeeAccess';
 
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 
@@ -23,18 +31,18 @@ export async function GET(request) {
     const active      = searchParams.get('active');
     const search      = searchParams.get('search');
 
+    // Only the columns this role may see are fetched (never select('*')).
     let query = serviceClient
       .from('employees')
-      .select('*')
+      .select(EMPLOYEE_COLUMNS[employeeAccessLevel(role)])
       .order('name');
 
     if (type)   query = query.eq('type', type);
     if (active !== null && active !== '') {
       query = query.eq('is_active', active === 'true');
     }
-    if (search) {
-      query = query.or(`name.ilike.%${search}%,employee_num.ilike.%${search}%,phone.ilike.%${search}%`);
-    }
+    const searchFilter = employeeSearchFilter(role, search);
+    if (searchFilter) query = query.or(searchFilter);
 
     const { data, error } = await query;
     if (error) {
@@ -55,7 +63,27 @@ export async function POST(request) {
     const authError = requireRole(user, role, ALLOWED_ROLES);
     if (authError) return authError;
 
+    // A payroll employee needs pay basis, rate/salary and statutory data, all
+    // admin-only; letting other roles create one would produce incomplete
+    // payroll records. Creation is therefore admin-only.
+    if (!canCreateEmployee(role)) {
+      return NextResponse.json(
+        { error: 'Only an admin can add payroll employees', code: 'ADMIN_ONLY' },
+        { status: 403 }
+      );
+    }
+
     const body = await request.json();
+
+    // (Defence in depth: admin may write every field, so this never refuses admin.)
+    const { forbidden } = partitionEmployeeWrite(role, body);
+    if (forbidden.length > 0) {
+      return NextResponse.json(
+        { error: `Only an admin can set: ${forbidden.join(', ')}`, code: 'ADMIN_ONLY_FIELDS', fields: forbidden },
+        { status: 403 }
+      );
+    }
+
     const {
       name, type, day_rate, monthly_salary, piece_rate,
       sha_amount, nssf_number, id_number,
@@ -117,7 +145,7 @@ export async function POST(request) {
         notes:           notes           || null,
         created_by:      user.id,
       })
-      .select()
+      .select(EMPLOYEE_COLUMNS[employeeAccessLevel(role)])
       .single();
 
     if (insertErr) {
