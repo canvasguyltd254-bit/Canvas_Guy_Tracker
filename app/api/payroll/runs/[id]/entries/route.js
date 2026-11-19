@@ -9,6 +9,7 @@
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { resolveShaDeduction } from '@/shared/lib/resolveShaDeduction';
+import { runTypeMismatchMessage } from '@/shared/lib/payroll/runTypes';
 
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 const OVERTIME_RATE = 200; // KES per hour
@@ -81,6 +82,14 @@ export async function POST(request, props) {
       return NextResponse.json({ error: 'Cannot add inactive employee to payroll' }, { status: 400 });
     }
 
+    // The worker's pay-basis type must be eligible for this run. Checked here,
+    // when the worker is added, not only at approval. Combined runs accept the
+    // three standard types and nothing else (no unknown/future types).
+    const mismatch = runTypeMismatchMessage(run.run_type, emp.type);
+    if (mismatch) {
+      return NextResponse.json({ error: mismatch, code: 'RUN_TYPE_MISMATCH' }, { status: 422 });
+    }
+
     // Check if already in run
     const { data: existing } = await serviceClient
       .from('payroll_entries')
@@ -134,6 +143,10 @@ export async function POST(request, props) {
 
     if (insertErr) {
       console.error('POST entries insert error:', insertErr.message);
+      // The database trigger is the backstop for the check above.
+      if (/RUN_TYPE_MISMATCH/.test(insertErr.message || '')) {
+        return NextResponse.json({ error: 'Employee type does not match this run', code: 'RUN_TYPE_MISMATCH' }, { status: 422 });
+      }
       return NextResponse.json({ error: 'Failed to add employee to run' }, { status: 500 });
     }
 

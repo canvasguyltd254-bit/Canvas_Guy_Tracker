@@ -6,6 +6,7 @@
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { RUN_TYPES, entryTypesConflictingWithRun } from '@/shared/lib/payroll/runTypes';
 
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 
@@ -82,6 +83,29 @@ export async function PATCH(request, props) {
     const updates = {};
     for (const key of allowed) {
       if (key in body) updates[key] = body[key];
+    }
+
+    // Changing run_type must not smuggle ineligible workers into a run that
+    // already has entries (this would bypass the add-time check).
+    if ('run_type' in updates) {
+      if (!RUN_TYPES.includes(updates.run_type)) {
+        return NextResponse.json({ error: 'Invalid run_type' }, { status: 400 });
+      }
+      const { data: existing, error: entErr } = await serviceClient
+        .from('payroll_entries')
+        .select('snapshot_type')
+        .eq('run_id', params.id);
+      if (entErr) {
+        return NextResponse.json({ error: 'Failed to validate run type' }, { status: 500 });
+      }
+      const conflicts = entryTypesConflictingWithRun(
+        updates.run_type, (existing || []).map(e => e.snapshot_type));
+      if (conflicts.length > 0) {
+        return NextResponse.json({
+          error: `Cannot change to a ${updates.run_type} run: it already contains ${conflicts.join(', ')} employees. Remove them first.`,
+          code: 'RUN_TYPE_MISMATCH',
+        }, { status: 409 });
+      }
     }
 
     const { data: updated, error } = await serviceClient

@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/shared/context/AuthContext';
 import { C, PageHeader, TabBar } from '@/shared/ui/ds';
 import { createClient } from '@/shared/supabase/client';
+import { isTypeAllowedInRun } from '@/shared/lib/payroll/runTypes';
 
 const supabase = createClient();
 
@@ -1398,7 +1399,7 @@ function RunDetail({ run: initialRun, userRole, onBack }) {
                       <option value="">— Select employee —</option>
                       {employees
                         .filter(e => !entries.find(en => en.employee_id === e.id))
-                        .filter(e => e.type === run.run_type)
+                        .filter(e => e.is_active && isTypeAllowedInRun(run.run_type, e.type))
                         .map(e => (
                           <option key={e.id} value={e.id}>{e.name} ({e.type})</option>
                         ))}
