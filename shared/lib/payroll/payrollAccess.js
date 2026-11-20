@@ -62,6 +62,15 @@ export const MONEY_ENTRY_FIELDS = Object.freeze([
   'net_pay', 'amount_paid', 'balance', 'payment_status',
 ]);
 
+// ── Run PDF (app/api/payroll/runs/[id]/pdf) ───────────────────────────────────
+// Only what scripts/build_report.js prints. No salary/rate/SHA snapshots, phone,
+// banking or overtime rate. Never select('*') for the PDF.
+export const PDF_RUN_COLUMNS = 'id, run_num, run_type, period_start, period_end, status';
+export const PDF_ENTRY_COLUMNS =
+  'id, snapshot_name, snapshot_type, days_worked, gross_pay, sha_deduction, advance_deduction, ' +
+  'damage_deduction, other_deductions, total_deductions, net_pay, amount_paid, payment_status';
+export const PDF_ADJUSTMENT_COLUMNS = 'entry_id, adj_type, description, is_deduction, amount';
+
 /** Payroll screens each role may open, in display order. */
 export function payrollTabsFor(role) {
   if (role === 'admin') return ['overview', 'employees', 'runs', 'payments', 'compliance', 'reports'];

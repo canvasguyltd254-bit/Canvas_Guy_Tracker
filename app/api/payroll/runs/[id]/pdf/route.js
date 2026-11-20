@@ -4,14 +4,15 @@
  * Generates a landscape A4 payroll run sheet showing all entries,
  * per-employee deduction breakdown, and run totals.
  *
- * Access: admin, production_manager
+ * Access: admin, production_manager, head_of_sales (RUN_ROLES). Explicit PDF column
+ * allow-lists only; never select('*').
  */
 
 export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
-import { RUN_ROLES } from '@/shared/lib/payroll/payrollAccess';
+import { RUN_ROLES, PDF_RUN_COLUMNS, PDF_ENTRY_COLUMNS, PDF_ADJUSTMENT_COLUMNS } from '@/shared/lib/payroll/payrollAccess';
 import { spawn } from 'child_process';
 import { join } from 'path';
 
@@ -48,7 +49,7 @@ export async function GET(request, props) {
     // ── Fetch run ─────────────────────────────────────────────────────────────
     const { data: run, error: runErr } = await serviceClient
       .from('payroll_runs')
-      .select('*')
+      .select(PDF_RUN_COLUMNS)
       .eq('id', params.id)
       .single();
 
@@ -59,7 +60,7 @@ export async function GET(request, props) {
     // ── Fetch entries ─────────────────────────────────────────────────────────
     const { data: entries, error: entErr } = await serviceClient
       .from('payroll_entries')
-      .select('*, employees(name, employee_num, type)')   // no phone: not rendered, admin-only data
+      .select(PDF_ENTRY_COLUMNS)
       .eq('run_id', params.id)
       .order('snapshot_name');
 
@@ -74,7 +75,7 @@ export async function GET(request, props) {
     if (entryIds.length > 0) {
       const { data: adjs, error: adjErr } = await serviceClient
         .from('payroll_adjustments')
-        .select('*')
+        .select(PDF_ADJUSTMENT_COLUMNS)
         .in('entry_id', entryIds)
         .order('created_at');
       if (adjErr) {
