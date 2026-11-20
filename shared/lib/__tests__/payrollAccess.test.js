@@ -51,8 +51,8 @@ test('nothing is select-star and the join never carries phone or monthly salary'
 });
 
 test('screens per role: admin all; production manager and head of sales Employees + Payroll Runs', () => {
-  assert.deepEqual(payrollTabsFor('admin'), ['overview', 'employees', 'runs', 'payments', 'compliance', 'reports']);
-  assert.deepEqual(payrollTabsFor('production_manager'), ['employees', 'runs']);
-  assert.deepEqual(payrollTabsFor('head_of_sales'), ['employees', 'runs']);
+  assert.deepEqual(payrollTabsFor('admin'), ['overview', 'employees', 'runs', 'temporary', 'payments', 'compliance', 'reports']);
+  assert.deepEqual(payrollTabsFor('production_manager'), ['employees', 'runs', 'temporary']);
+  assert.deepEqual(payrollTabsFor('head_of_sales'), ['employees', 'runs', 'temporary']);
   for (const r of ['production_staff', 'sales', null, undefined]) assert.deepEqual(payrollTabsFor(r), []);
 });

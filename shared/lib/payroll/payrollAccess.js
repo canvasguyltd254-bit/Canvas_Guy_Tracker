@@ -73,7 +73,7 @@ export const PDF_ADJUSTMENT_COLUMNS = 'entry_id, adj_type, description, is_deduc
 
 /** Payroll screens each role may open, in display order. */
 export function payrollTabsFor(role) {
-  if (role === 'admin') return ['overview', 'employees', 'runs', 'payments', 'compliance', 'reports'];
-  if (role === 'production_manager' || role === 'head_of_sales') return ['employees', 'runs'];
+  if (role === 'admin') return ['overview', 'employees', 'runs', 'temporary', 'payments', 'compliance', 'reports'];
+  if (role === 'production_manager' || role === 'head_of_sales') return ['employees', 'runs', 'temporary'];
   return [];
 }

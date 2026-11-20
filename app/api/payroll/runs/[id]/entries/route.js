@@ -11,6 +11,7 @@ import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-aut
 import { resolveShaDeduction } from '@/shared/lib/resolveShaDeduction';
 import { runTypeMismatchMessage } from '@/shared/lib/payroll/runTypes';
 import { RUN_ROLES, entryColumnsFor, entryJoinFor } from '@/shared/lib/payroll/payrollAccess';
+import { isTempOverlapError } from '@/shared/lib/payroll/temporaryAccess';
 
 // Run roles (admin, production_manager, head_of_sales) see and edit run entries. See payrollAccess.js.
 const ALLOWED_ROLES = RUN_ROLES;
@@ -150,6 +151,12 @@ export async function POST(request, props) {
       // The database trigger is the backstop for the check above.
       if (/RUN_TYPE_MISMATCH/.test(insertErr.message || '')) {
         return NextResponse.json({ error: 'Employee type does not match this run', code: 'RUN_TYPE_MISMATCH' }, { status: 422 });
+      }
+      if (isTempOverlapError(insertErr.message)) {
+        return NextResponse.json({
+          error: 'This worker has a temporary engagement that overlaps this payroll period, so they cannot be added to a payroll run.',
+          code: 'TEMP_ENGAGEMENT_OVERLAP',
+        }, { status: 422 });
       }
       return NextResponse.json({ error: 'Failed to add employee to run' }, { status: 500 });
     }

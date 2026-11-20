@@ -7,6 +7,7 @@ import { createClient } from '@/shared/supabase/client';
 import { isTypeAllowedInRun } from '@/shared/lib/payroll/runTypes';
 import { payrollTabsFor, canSeePayrollMoney } from '@/shared/lib/payroll/payrollAccess';
 import { canCreateEmployee } from '@/shared/lib/payroll/employeeAccess';
+import TemporaryWorkersTab from './TemporaryWorkersTab';
 
 const supabase = createClient();
 
@@ -2656,6 +2657,7 @@ export default function PayrollModule({ refreshKey = 0 } = {}) {
     overview:   'Overview',
     employees:  'Employees',
     runs:       'Payroll Runs',
+    temporary:  'Temporary Workers',
     payments:   'Payments',
     compliance: 'Compliance',
     reports:    'Reports',
@@ -2678,6 +2680,7 @@ export default function PayrollModule({ refreshKey = 0 } = {}) {
       {currentTab === 'overview'   && <OverviewTab    key={refreshKey} userRole={userRole} />}
       {currentTab === 'employees'  && <EmployeesTab   key={refreshKey} userRole={userRole} />}
       {currentTab === 'runs'       && <PayrollRunsTab key={refreshKey} userRole={userRole} />}
+      {currentTab === 'temporary'  && <TemporaryWorkersTab key={refreshKey} />}
       {currentTab === 'payments'   && <PaymentsTab    key={refreshKey} userRole={userRole} />}
       {currentTab === 'compliance' && <ComplianceTab  key={refreshKey} userRole={userRole} />}
       {currentTab === 'reports'    && <ReportsTab     key={refreshKey} userRole={userRole} />}
