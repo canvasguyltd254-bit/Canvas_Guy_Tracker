@@ -2,53 +2,57 @@
  * Who may touch payroll RUNS (as opposed to the employee directory, which is
  * governed by employeeAccess.js).
  *
- *   admin               everything, including every money figure
- *   production_manager  attendance work only: run header, who is in the run,
- *                       days worked, saving attendance. NO pay figures, no
- *                       adjustments, PDFs, payments, batches, allocations,
- *                       statutory rules or reports.
- *   head_of_sales       no payroll-run access at all (employee directory only)
+ *   admin               everything, including approving / reopening / deleting runs
+ *   production_manager  see runs and their sums; create runs, add workers, edit
+ *   head_of_sales       attendance, adjustments and order links; cannot approve,
+ *                       reopen or delete, and cannot see or move payments
  *
- * Column lists are explicit allow-lists passed straight to .select(): nothing
- * private is fetched for a role that must not see it, and a column added to the
- * tables later stays hidden from non-admins until it is added here.
+ * NOT run access, still admin-only: approving, reopening and deleting runs;
+ * payment batches, payments and exports; statutory/compliance rules; the
+ * employee payroll PDF; and the private employee profile (see employeeAccess.js).
+ *
+ * Column lists are explicit allow-lists passed straight to .select(). Roles
+ * with no run access (and any unknown role) fall back to the header-only
+ * "minimal" shape, so a new role can never receive pay figures by accident.
  *
  * Pure and client-safe (no imports).
  */
 
 export const ADMIN_ONLY = Object.freeze(['admin']);
-/** Roles allowed on the run/attendance routes (payroll money still admin-only). */
-export const RUN_ATTENDANCE_ROLES = Object.freeze(['admin', 'production_manager']);
+/** Roles allowed on the run, entry, attendance, adjustment and run-PDF routes. */
+export const RUN_ROLES = Object.freeze(['admin', 'production_manager', 'head_of_sales']);
 
-export const canSeePayrollMoney = (role) => role === 'admin';
-export const canAccessPayrollRuns = (role) => RUN_ATTENDANCE_ROLES.includes(role);
+/** Run roles see run figures; approval and payments remain admin-only. */
+export const canSeePayrollMoney = (role) => RUN_ROLES.includes(role);
+export const canAccessPayrollRuns = (role) => RUN_ROLES.includes(role);
 
 // ── payroll_runs ──────────────────────────────────────────────────────────────
 const RUN_BASE = 'id, run_num, period_type, period_start, period_end, run_type, status, notes, created_at, created_by';
 export const RUN_COLUMNS = Object.freeze({
-  admin:
+  full:
     `${RUN_BASE}, reopen_reason, approved_by, approved_at, approved_by_name, ` +
     'total_gross, total_deductions, total_net, employee_count',
-  attendance: RUN_BASE,                       // no totals, no approval snapshot
+  minimal: RUN_BASE,                          // no totals, no approval snapshot
 });
 
 // ── payroll_entries ───────────────────────────────────────────────────────────
 export const ENTRY_COLUMNS = Object.freeze({
-  admin:
+  full:
     'id, run_id, employee_id, snapshot_name, snapshot_type, snapshot_day_rate, snapshot_salary, snapshot_sha, ' +
     'days_worked, overtime_hours, overtime_rate, overtime_amount, gross_pay, sha_deduction, advance_deduction, ' +
     'damage_deduction, other_deductions, total_deductions, net_pay, amount_paid, balance, payment_status, notes, created_at',
-  // Attendance view: who, what type, how many days. No rates, pay, deductions or payment state.
-  attendance: 'id, run_id, employee_id, snapshot_name, snapshot_type, days_worked, created_at',
+  // Fallback for roles without run access: who, what type, how many days. No rates, pay,
+  // deductions or payment state.
+  minimal: 'id, run_id, employee_id, snapshot_name, snapshot_type, days_worked, created_at',
 });
 
-/** Employee join on entries: identity only (day rate is admin-only here). */
-export const ENTRY_EMPLOYEE_JOIN_ATTENDANCE = 'employees(name, employee_num, type)';
-export const ENTRY_EMPLOYEE_JOIN_ADMIN = 'employees(name, employee_num, type, day_rate)';
+/** Employee join on entries. */
+export const ENTRY_EMPLOYEE_JOIN_MINIMAL = 'employees(name, employee_num, type)';
+export const ENTRY_EMPLOYEE_JOIN_FULL = 'employees(name, employee_num, type, day_rate)';
 
-export const runColumnsFor   = (role) => (canSeePayrollMoney(role) ? RUN_COLUMNS.admin   : RUN_COLUMNS.attendance);
-export const entryColumnsFor = (role) => (canSeePayrollMoney(role) ? ENTRY_COLUMNS.admin : ENTRY_COLUMNS.attendance);
-export const entryJoinFor    = (role) => (canSeePayrollMoney(role) ? ENTRY_EMPLOYEE_JOIN_ADMIN : ENTRY_EMPLOYEE_JOIN_ATTENDANCE);
+export const runColumnsFor   = (role) => (canSeePayrollMoney(role) ? RUN_COLUMNS.full   : RUN_COLUMNS.minimal);
+export const entryColumnsFor = (role) => (canSeePayrollMoney(role) ? ENTRY_COLUMNS.full : ENTRY_COLUMNS.minimal);
+export const entryJoinFor    = (role) => (canSeePayrollMoney(role) ? ENTRY_EMPLOYEE_JOIN_FULL : ENTRY_EMPLOYEE_JOIN_MINIMAL);
 
 /** Every column that carries money, for tests and defensive scrubbing. */
 export const MONEY_RUN_FIELDS = Object.freeze(['total_gross', 'total_deductions', 'total_net', 'total_outstanding', 'approved_by', 'approved_at', 'approved_by_name', 'reopen_reason']);
@@ -61,7 +65,6 @@ export const MONEY_ENTRY_FIELDS = Object.freeze([
 /** Payroll screens each role may open, in display order. */
 export function payrollTabsFor(role) {
   if (role === 'admin') return ['overview', 'employees', 'runs', 'payments', 'compliance', 'reports'];
-  if (role === 'production_manager') return ['employees', 'runs'];
-  if (role === 'head_of_sales') return ['employees'];
+  if (role === 'production_manager' || role === 'head_of_sales') return ['employees', 'runs'];
   return [];
 }

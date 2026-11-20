@@ -617,7 +617,7 @@ function PayrollRunsTab({ userRole }) {
 
   const canCreate  = PAYROLL_ROLES.includes(userRole);
   const canApprove = ADMIN_ONLY.includes(userRole);
-  const showMoney  = canSeePayrollMoney(userRole);   // totals + PDF are admin-only
+  const showMoney  = canSeePayrollMoney(userRole);   // run roles see totals + PDF; approve/reopen/delete stay admin-only
 
   async function exportRunPdf(run) {
     setExportingPdf(run.id);
@@ -1253,8 +1253,8 @@ function RunDetail({ run: initialRun, userRole, onBack }) {
   const [adjForm, setAdjForm] = useState({ employee_id: '', adj_type: 'advance', amount: '', is_deduction: true, description: '' });
   const [savingAdj, setSavingAdj] = useState(false);
 
-  // Only admin sees pay figures, adjustments and payments. A production manager gets the
-  // attendance view: who is in the run, days worked, and the attendance grid.
+  // Run roles (admin, production manager, head of sales) see and edit run figures and
+  // adjustments; approving, reopening and payments are admin-only (canApprove below).
   const showMoney = canSeePayrollMoney(userRole);
 
   const loadEntries = useCallback(async () => {
@@ -1580,7 +1580,7 @@ function RunDetail({ run: initialRun, userRole, onBack }) {
                         const totalOT   = Object.values(empGrid).filter(c => c.present).reduce((s, c) => s + Number(c.overtime_hours || 0), 0);
                         const liveGross = daysOn * Number(entry.snapshot_day_rate || 0) + totalOT;
                         const liveNet   = Math.max(0, liveGross - Number(entry.snapshot_sha || 0));
-                        const isExpanded = showMoney && expandedEmp === entry.id;   // adjustments panel is admin-only
+                        const isExpanded = showMoney && expandedEmp === entry.id;
 
                         return (
                           <React.Fragment key={entry.id}>
@@ -2650,8 +2650,8 @@ export default function PayrollModule({ refreshKey = 0 } = {}) {
     );
   }
 
-  // Screens by role: admin sees all; production_manager only Employees + Payroll Runs
-  // (attendance view, no money); head_of_sales only the Employees directory.
+  // Screens by role: admin sees all; production_manager and head_of_sales see Employees +
+  // Payroll Runs (view and edit runs; approval, payments and compliance stay admin-only).
   const ALL_TABS = {
     overview:   'Overview',
     employees:  'Employees',

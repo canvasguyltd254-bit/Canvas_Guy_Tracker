@@ -10,11 +10,10 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { resolveShaDeduction } from '@/shared/lib/resolveShaDeduction';
 import { runTypeMismatchMessage } from '@/shared/lib/payroll/runTypes';
-import { RUN_ATTENDANCE_ROLES, entryColumnsFor, entryJoinFor } from '@/shared/lib/payroll/payrollAccess';
+import { RUN_ROLES, entryColumnsFor, entryJoinFor } from '@/shared/lib/payroll/payrollAccess';
 
-// Admin sees every figure; production_manager gets the attendance view (no pay, rates or
-// deductions); head_of_sales has no payroll-run access. See payrollAccess.js.
-const ALLOWED_ROLES = RUN_ATTENDANCE_ROLES;
+// Run roles (admin, production_manager, head_of_sales) see and edit run entries. See payrollAccess.js.
+const ALLOWED_ROLES = RUN_ROLES;
 const OVERTIME_RATE = 200; // KES per hour
 
 export async function GET(request, props) {
@@ -26,8 +25,7 @@ export async function GET(request, props) {
 
     const { data: entries, error } = await serviceClient
       .from('payroll_entries')
-      // Explicit, role-scoped columns: never payroll_entries.* (that carries salary
-      // snapshots, gross/net pay and deductions).
+      // Explicit columns, never payroll_entries.*; roles without run access get the minimal shape.
       .select(`${entryColumnsFor(role)}, ${entryJoinFor(role)}`)
       .eq('run_id', params.id)
       .order('snapshot_name');

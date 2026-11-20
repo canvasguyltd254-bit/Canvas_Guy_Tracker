@@ -31,6 +31,7 @@ const routes = {
   empReport: 'app/api/payroll/employees/[id]/report/pdf/route.js',
   runsList:  'app/api/payroll/runs/route.js',
   runDetail: 'app/api/payroll/runs/[id]/route.js',
+  approve:   'app/api/payroll/runs/[id]/approve/route.js',
   entries:   'app/api/payroll/runs/[id]/entries/route.js',
   attend:    'app/api/payroll/runs/[id]/attendance/route.js',
   adjust:    'app/api/payroll/runs/[id]/adjustments/route.js',
@@ -86,6 +87,7 @@ function makeDb(tables) {
       insert(v) { op = 'insert'; patch = v; return api; },
       upsert() { op = 'upsert'; return api; },
       update(v) { op = 'update'; patch = v; return api; },
+      delete() { op = 'delete'; return api; },
       eq(k, v) { filters.push(r => r[k] === v); return api; },
       in(k, vs) { filters.push(r => vs.includes(r[k])); return api; },
       is() { return api; }, order() { return api; }, limit() { return api; }, range() { return api; },
@@ -97,6 +99,7 @@ function makeDb(tables) {
       const rows = tables[t] || [];
       const match = rows.filter(r => filters.every(f => f(r)));
       if (op === 'upsert') return { data: null, error: null };
+      if (op === 'delete') { match.forEach(m => rows.splice(rows.indexOf(m), 1)); return { data: null, error: null }; }
       if (op === 'insert') {
         const made = { id: `${t}-${rows.length + 1}`, ...patch }; rows.push(made);
         return { data: single ? project(made, sel) : [project(made, sel)], error: null };
@@ -142,7 +145,7 @@ const mkRun = () => ({
 });
 function setup(role) {
   const tables = {
-    employees: [mkEmp(), { ...mkEmp(), id: 'e2', employee_num: 'EMP-002', name: 'Joe' }],
+    employees: [mkEmp(), { ...mkEmp(), id: 'e2', employee_num: 'EMP-002', name: 'Joe' }, { ...mkEmp(), id: 'e3', employee_num: 'EMP-003', name: 'Pam', type: 'permanent' }],
     employee_documents: [{ id: 'd1', employee_id: 'e1', file_name: 'id-copy.pdf', file_path: 'private/x', uploaded_at: '2024-01-02' }],
     payroll_payments: [{ id: 'p1', entry_id: 'en1', employee_id: 'e1', amount: 500, phone: '0712345678', reference: 'ABC', status: 'confirmed', created_at: '2025-01-01' }],
     payroll_entries: [mkEntry()],
@@ -163,6 +166,7 @@ const P = (id) => ({ params: Promise.resolve({ id }) });
 const hasAny = (obj, keys) => keys.filter(k => k in obj);
 
 let pass = 0, fail = 0;
+let res;
 const ok = (name, cond, extra = '') => { cond ? pass++ : fail++; console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '  ' + extra}`); };
 const call = async (fn) => { const res = await fn(); let body = null; try { body = await res.clone().json(); } catch {} return { status: res.status, body }; };
 
@@ -189,11 +193,11 @@ for (const role of ['production_manager', 'head_of_sales', 'admin']) {
 for (const role of ['production_manager', 'head_of_sales']) {
   const t = setup(role);
   const r = await call(() => R.empList.POST(req('POST', { name: 'New', type: 'casual', day_rate: 900 })));
-  ok(`EMP CREATE ${role} → 403 and nothing inserted`, r.status === 403 && r.body.code === 'ADMIN_ONLY' && t.employees.length === 2, JSON.stringify(r));
+  ok(`EMP CREATE ${role} → 403 and nothing inserted`, r.status === 403 && r.body.code === 'ADMIN_ONLY' && t.employees.length === 3, JSON.stringify(r));
 }
 let t = setup('admin');
 let r = await call(() => R.empList.POST(req('POST', { name: 'New', type: 'casual', day_rate: 900, phone: '0700000000', bank_account: '1' })));
-ok('EMP CREATE admin may create with private fields and sees them', r.status === 201 && r.body.employee.phone === '0700000000' && t.employees[2].bank_account === '1');
+ok('EMP CREATE admin may create with private fields and sees them', r.status === 201 && r.body.employee.phone === '0700000000' && t.employees[3].bank_account === '1');
 
 // detail + documents
 for (const role of ['production_manager', 'head_of_sales']) {
@@ -230,22 +234,23 @@ r = await call(() => R.empDetail.DELETE(req('DELETE'), P('e1')));
 ok('EMP DELETE (deactivate) unchanged for PM', r.status === 200 && t.employees[0].is_active === false);
 
 // ════════ PAYROLL RUN DATA ════════
-// Head of sales: no payroll-run access of any kind.
+// Policy: admin, production_manager and head_of_sales may SEE runs and their sums and EDIT them
+// (create, add workers, attendance, adjustments, run PDF, order links). Only admin may approve,
+// reopen or delete a run, and only admin sees payments, batches, statutory rules and exports.
 const runCalls = {
   'runs list GET':       () => R.runsList.GET(req('GET', null, 'http://x/api/payroll/runs')),
   'runs POST':           () => R.runsList.POST(req('POST', { period_type: 'weekly', period_start: '2026-10-12', period_end: '2026-10-18', run_type: 'casual' })),
   'run detail GET':      () => R.runDetail.GET(req('GET'), P('r1')),
-  'run PATCH':           () => R.runDetail.PATCH(req('PATCH', { notes: 'x' }), P('r1')),
+  'run PATCH':           () => R.runDetail.PATCH(req('PATCH', { notes: 'edited' }), P('r1')),
+  'run DELETE':          () => R.runDetail.DELETE(req('DELETE'), P('r1')),
+  'run approve POST':    () => R.approve.POST(req('POST', {}), P('r1')),
   'entries GET':         () => R.entries.GET(req('GET'), P('r1')),
   'entries POST':        () => R.entries.POST(req('POST', { employee_id: 'e2' }), P('r1')),
   'attendance GET':      () => R.attend.GET(req('GET'), P('r1')),
-  'attendance POST':     () => R.attend.POST(req('POST', { rows: [] }), P('r1')),
   'adjustments GET':     () => R.adjust.GET(req('GET'), P('r1')),
-  'adjustments POST':    () => R.adjust.POST(req('POST', {}), P('r1')),
-  'adjustments DELETE':  () => R.adjust.DELETE(req('DELETE', null, 'http://x/api?adj_id=adj1'), P('r1')),
   'run PDF':             () => R.runPdf.GET(req('GET'), P('r1')),
-  'payments GET':        () => R.payments.GET(req('GET'), P('en1')),
   'allocations GET':     () => R.alloc.GET(req('GET'), P('en1')),
+  'payments GET':        () => R.payments.GET(req('GET'), P('en1')),
   'batches GET':         () => R.batches.GET(req('GET', null, 'http://x/api/payroll/batches')),
   'batches POST':        () => R.batches.POST(req('POST', {})),
   'batch detail GET':    () => R.batchOne.GET(req('GET'), P('b1')),
@@ -254,72 +259,82 @@ const runCalls = {
   'statutory GET':       () => R.statutory.GET(req('GET', null, 'http://x/api/payroll/statutory')),
   'employee report PDF': () => R.empReport.GET(req('GET', null, 'http://x/?from=2025-01-01&to=2025-12-31'), P('e1')),
 };
-for (const [name, fn] of Object.entries(runCalls)) {
-  setup('head_of_sales');
-  const res = await call(fn);
-  ok(`HoS: ${name} → 403, no data read`, res.status === 403 && log.tablesRead.length === 0, JSON.stringify(res));
-}
-// Production manager: admin-only money routes are closed.
-const pmClosed = ['adjustments GET', 'adjustments POST', 'adjustments DELETE', 'run PDF', 'payments GET', 'allocations GET',
-  'batches GET', 'batches POST', 'batch detail GET', 'batch preview GET', 'chatpesa export', 'statutory GET', 'employee report PDF'];
-for (const name of pmClosed) {
-  setup('production_manager');
-  const res = await call(runCalls[name]);
-  ok(`PM: ${name} → 403, no data read`, res.status === 403 && log.tablesRead.length === 0, JSON.stringify(res));
+// Closed to production_manager AND head_of_sales: nothing is even read.
+const closedToBoth = ['run DELETE', 'run approve POST', 'payments GET', 'batches GET', 'batches POST', 'batch detail GET',
+  'batch preview GET', 'chatpesa export', 'statutory GET', 'employee report PDF'];
+for (const role of ['production_manager', 'head_of_sales']) {
+  for (const name of closedToBoth) {
+    setup(role);
+    const res = await call(runCalls[name]);
+    ok(`${role}: ${name} → 403, no data read`, res.status === 403 && log.tablesRead.length === 0, JSON.stringify(res));
+  }
 }
 
-// Production manager: attendance routes work, and carry NO money on the wire.
-setup('production_manager');
-r = await call(runCalls['runs list GET']);
-ok('PM runs list: 200, no totals or approval fields', r.status === 200 && r.body.runs.length === 1 && hasAny(r.body.runs[0], [...RUN_MONEY, 'total_outstanding']).length === 0, JSON.stringify(hasAny(r.body.runs[0] || {}, [...RUN_MONEY, 'total_outstanding'])));
-ok('PM runs list: still gets run header + head-count', r.body.runs[0].run_num === 'PR-2026-CA-001' && r.body.runs[0].employee_count === 1);
-ok('PM runs list: money columns never fetched from entries', !log.selects.some(([tb, s]) => tb === 'payroll_entries' && /gross_pay|net_pay|amount_paid/.test(s)));
+// Both run roles: see runs WITH sums, no select(*).
+for (const role of ['production_manager', 'head_of_sales']) {
+  setup(role);
+  r = await call(runCalls['runs list GET']);
+  ok(`${role} runs list: sees run totals`, r.status === 200 && r.body.runs[0].total_net === 4925 && r.body.runs[0].total_gross === 5400, JSON.stringify(r.body?.runs?.[0]));
+  setup(role);
+  r = await call(runCalls['run detail GET']);
+  ok(`${role} run detail: sees run totals`, r.status === 200 && RUN_MONEY.filter(k => k.startsWith('total_')).every(k => k in r.body.run), JSON.stringify(r.body));
+  ok(`${role} run detail: sees entry pay figures (gross, net, deductions)`, r.body.entries[0].gross_pay === 5400 && r.body.entries[0].net_pay === 4925 && r.body.entries[0].total_deductions === 475);
+  ok(`${role} run detail: explicit columns, no select(*)`, !log.selects.some(([tb, sel]) => ['payroll_runs', 'payroll_entries'].includes(tb) && /(^|,)\s*\*/.test(sel)), JSON.stringify(log.selects));
+  ok(`${role} run detail: employee join carries no phone / monthly salary`, !log.selects.some(([tb, sel]) => tb === 'payroll_entries' && /phone|monthly_salary|bank|id_number/.test(sel)));
+  setup(role);
+  r = await call(runCalls['entries GET']);
+  ok(`${role} entries GET: sees pay figures`, r.status === 200 && ENTRY_MONEY.every(k => k in r.body.entries[0]));
+}
 
-setup('production_manager');
-r = await call(runCalls['run detail GET']);
-ok('PM run detail: 200, run has no money', r.status === 200 && hasAny(r.body.run, RUN_MONEY).length === 0, JSON.stringify(hasAny(r.body.run || {}, RUN_MONEY)));
-ok('PM run detail: entries have NO snapshot_salary / gross / net / deductions', r.body.entries.length === 1 && hasAny(r.body.entries[0], ENTRY_MONEY).length === 0, JSON.stringify(hasAny(r.body.entries[0] || {}, ENTRY_MONEY)));
-ok('PM run detail: entries still show name, type, days', r.body.entries[0].snapshot_name === 'Jane' && r.body.entries[0].snapshot_type === 'casual' && r.body.entries[0].days_worked === 5);
-ok('PM run detail: no select(*) on runs or entries', !log.selects.some(([tb, s]) => ['payroll_runs', 'payroll_entries'].includes(tb) && /(^|,)\s*\*/.test(s)), JSON.stringify(log.selects));
+// Both run roles: EDIT runs.
+for (const role of ['production_manager', 'head_of_sales']) {
+  t = setup(role);
+  r = await call(runCalls['runs POST']);
+  ok(`${role} can create a run`, r.status === 201 && t.payroll_runs.length === 2, JSON.stringify(r));
+  t = setup(role);
+  r = await call(runCalls['run PATCH']);
+  ok(`${role} can edit a run`, r.status === 200 && t.payroll_runs[0].notes === 'edited', JSON.stringify(r));
+  t = setup(role);
+  r = await call(runCalls['entries POST']);
+  ok(`${role} can add a worker to a run`, r.status === 201 && t.payroll_entries.length === 2, JSON.stringify(r));
+  setup(role);
+  r = await call(runCalls['attendance GET']);
+  ok(`${role} can read/save attendance (GET works)`, r.status === 200 && r.body.attendance[0].present === true);
+  setup(role);
+  r = await call(runCalls['adjustments GET']);
+  ok(`${role} can see adjustments`, r.status === 200 && r.body.adjustments.length === 1);
+  setup(role);
+  r = await call(() => R.adjust.DELETE(req('DELETE', null, 'http://x/api?adj_id=adj1'), P('r1')));
+  ok(`${role} adjustments DELETE reaches the handler (not 403)`, r.status !== 403, JSON.stringify(r));
+  setup(role);
+  r = await call(runCalls['allocations GET']);
+  ok(`${role} order links (allocations GET) not 403`, r.status !== 403, JSON.stringify(r));
+  setup(role);
+  res = await R.runPdf.GET(req('GET'), P('r1'));
+  ok(`${role} run PDF not 403`, res.status !== 403);
+}
 
-setup('production_manager');
-r = await call(runCalls['entries GET']);
-ok('PM entries GET: NO money fields on the wire', r.status === 200 && hasAny(r.body.entries[0], ENTRY_MONEY).length === 0, JSON.stringify(hasAny(r.body.entries[0] || {}, ENTRY_MONEY)));
-ok('PM entries GET: join carries no day_rate/phone/salary', !log.selects.some(([tb, s]) => tb === 'payroll_entries' && /day_rate|phone|salary/.test(s)), JSON.stringify(log.selects));
+// Unchanged: type rule applies to everyone.
+t = setup('head_of_sales');
+r = await call(() => R.entries.POST(req('POST', { employee_id: 'e3' }), P('r1')));
+ok('head_of_sales cannot add a permanent worker to a casual run (422)', r.status === 422 && r.body.code === 'RUN_TYPE_MISMATCH', JSON.stringify(r));
 
-t = setup('production_manager');
-r = await call(runCalls['entries POST']);
-ok('PM entries POST: add worker works (201) and response has NO money', r.status === 201 && hasAny(r.body.entry, ENTRY_MONEY).length === 0 && t.payroll_entries.length === 2, JSON.stringify(r));
-
-setup('production_manager');
-r = await call(runCalls['attendance GET']);
-ok('PM attendance GET: 200 with attendance rows, no audit fields', r.status === 200 && r.body.attendance[0].present === true && !('updated_by' in r.body.attendance[0]));
-
-t = setup('production_manager');
-r = await call(() => R.runDetail.PATCH(req('PATCH', { notes: 'edited' }), P('r1')));
-ok('PM run PATCH: works and response has no run money', r.status === 200 && t.payroll_runs[0].notes === 'edited' && hasAny(r.body.run, RUN_MONEY).length === 0, JSON.stringify(r));
-
-t = setup('production_manager');
-r = await call(runCalls['runs POST']);
-ok('PM runs POST: works and response has no run money', r.status === 201 && hasAny(r.body.run, RUN_MONEY).length === 0, JSON.stringify(r));
-
-// Admin keeps every figure.
+// Admin keeps everything, including approve reaching the handler.
 setup('admin');
 r = await call(runCalls['runs list GET']);
-ok('ADMIN runs list: totals present', r.status === 200 && RUN_MONEY.filter(k => k.startsWith('total_')).every(k => k in r.body.runs[0]) && r.body.runs[0].total_net === 4925, JSON.stringify(r.body.runs[0]));
+ok('ADMIN runs list: totals present', r.status === 200 && r.body.runs[0].total_net === 4925);
 setup('admin');
 r = await call(runCalls['run detail GET']);
-ok('ADMIN run detail: every entry money field present', ENTRY_MONEY.every(k => k in r.body.entries[0]) && r.body.entries[0].net_pay === 4925, JSON.stringify(ENTRY_MONEY.filter(k => !(k in r.body.entries[0]))));
-ok('ADMIN run detail: every run field present', RUN_MONEY.every(k => k in r.body.run), JSON.stringify(RUN_MONEY.filter(k => !(k in r.body.run))));
-setup('admin');
-r = await call(runCalls['entries GET']);
-ok('ADMIN entries GET: full money row', ENTRY_MONEY.every(k => k in r.body.entries[0]));
-setup('admin');
-r = await call(runCalls['adjustments GET']);
-ok('ADMIN adjustments GET: allowed', r.status === 200 && r.body.adjustments.length === 1);
+ok('ADMIN run detail: every entry and run money field present', ENTRY_MONEY.every(k => k in r.body.entries[0]) && RUN_MONEY.every(k => k in r.body.run), JSON.stringify(ENTRY_MONEY.filter(k => !(k in r.body.entries[0]))));
 setup('admin');
 r = await call(runCalls['payments GET']);
 ok('ADMIN payments GET: sees phone snapshot', r.status === 200 && r.body.payments[0].phone === '0712345678');
+setup('admin');
+r = await call(runCalls['batches GET']);
+ok('ADMIN batches GET: allowed', r.status !== 403);
+setup('admin');
+res = await R.approve.POST(req('POST', {}), P('r1'));
+ok('ADMIN approve reaches the handler (not 403)', res.status !== 403);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

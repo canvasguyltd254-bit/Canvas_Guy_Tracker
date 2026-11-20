@@ -7,10 +7,10 @@
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import { RUN_TYPES, entryTypesConflictingWithRun } from '@/shared/lib/payroll/runTypes';
-import { RUN_ATTENDANCE_ROLES, runColumnsFor, entryColumnsFor, entryJoinFor } from '@/shared/lib/payroll/payrollAccess';
+import { RUN_ROLES, runColumnsFor, entryColumnsFor, entryJoinFor } from '@/shared/lib/payroll/payrollAccess';
 
-// admin: all figures; production_manager: attendance view only (no money); head_of_sales: no access.
-const ALLOWED_ROLES = RUN_ATTENDANCE_ROLES;
+// admin, production_manager and head_of_sales may see and edit runs (approval/delete stay admin-only).
+const ALLOWED_ROLES = RUN_ROLES;
 
 export async function GET(request, props) {
   const params = await props.params;

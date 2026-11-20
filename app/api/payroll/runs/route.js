@@ -7,7 +7,7 @@
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
-import { RUN_ATTENDANCE_ROLES, runColumnsFor, canSeePayrollMoney } from '@/shared/lib/payroll/payrollAccess';
+import { RUN_ROLES, runColumnsFor, canSeePayrollMoney } from '@/shared/lib/payroll/payrollAccess';
 
 const TYPE_ABBREV = { casual: 'CA', permanent: 'PE', skilled_casual: 'SK', combined: 'CO' };
 
@@ -36,8 +36,8 @@ async function buildRunNum(run_type, period_start) {
   return count > 0 ? null : run_num;
 }
 
-// admin: all figures; production_manager: run headers + counts only (no money); head_of_sales: no access.
-const ALLOWED_ROLES = RUN_ATTENDANCE_ROLES;
+// admin, production_manager and head_of_sales may see and edit runs (approval stays admin-only).
+const ALLOWED_ROLES = RUN_ROLES;
 
 export async function GET(request) {
   try {

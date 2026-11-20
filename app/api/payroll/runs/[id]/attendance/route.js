@@ -8,10 +8,10 @@
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { RUN_ROLES } from '@/shared/lib/payroll/payrollAccess';
 import { resolveShaDeduction } from '@/shared/lib/resolveShaDeduction';
 
-// admin and production_manager only; head_of_sales has no payroll-run access.
-const ALLOWED_ROLES = ['admin', 'production_manager'];
+const ALLOWED_ROLES = RUN_ROLES;
 const OVERTIME_RATE = 200;
 
 export async function GET(request, props) {

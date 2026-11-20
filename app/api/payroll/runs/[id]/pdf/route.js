@@ -11,11 +11,12 @@ export const runtime = 'nodejs';
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
+import { RUN_ROLES } from '@/shared/lib/payroll/payrollAccess';
 import { spawn } from 'child_process';
 import { join } from 'path';
 
-// Admin only: this route carries pay figures. production_manager and head_of_sales have no access.
-const ALLOWED_ROLES = ['admin'];
+// Run roles: admin, production_manager and head_of_sales (approval stays admin-only).
+const ALLOWED_ROLES = RUN_ROLES;
 
 function spawnPdf(data) {
   return new Promise((resolve, reject) => {
