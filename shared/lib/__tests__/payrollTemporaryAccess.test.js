@@ -97,3 +97,12 @@ test('deduction admin rule: single over limit or total over share of gross', () 
   assert.equal(deductionNeedsAdmin(st, { amount: 700 }, 750, 3000), false);     // 750 is exactly 25%
   assert.equal(deductionNeedsAdmin(null, { amount: 1 }, 1, 1000), true);
 });
+
+test('a missing table or function is reported as an incomplete setup, not a generic failure', () => {
+  for (const code of ['42P01', '42883', 'PGRST205', 'PGRST202', 'PGRST200']) {
+    const m = mapTemporaryDbError({ code, message: 'relation "public.temporary_worker_engagements" does not exist' });
+    assert.equal(m.status, 503); assert.equal(m.body.code, 'SETUP_INCOMPLETE');
+    assert.match(m.body.error, /temporary_workers_stage1/);
+    assert.ok(!/relation|public\./.test(m.body.error));
+  }
+});

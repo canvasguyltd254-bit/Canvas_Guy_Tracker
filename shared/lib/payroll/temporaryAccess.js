@@ -86,6 +86,10 @@ export function mapTemporaryDbError(error) {
     if (/^TEMP_ENGAGEMENT_OVERLAP:/.test(message)) return { status: 422, body: { error: message.replace(/^TEMP_ENGAGEMENT_OVERLAP:\s*/, ''), code: 'TEMP_ENGAGEMENT_OVERLAP' } };
     return { status: 422, body: { error: message, code: 'RULE' } };
   }
+  // The migration has not been applied (or Supabase has not reloaded its schema cache since): say so plainly.
+  if (['42P01', '42883', '42703', 'PGRST200', 'PGRST202', 'PGRST205'].includes(code)) {
+    return { status: 503, body: { error: 'Temporary workers is not set up on this database yet. An administrator must run the temporary_workers_stage1 migration, then reload the Supabase schema cache.', code: 'SETUP_INCOMPLETE' } };
+  }
   if (code === '23505') return { status: 409, body: { error: 'That already exists or was changed by someone else. Refresh and try again.', code: 'CONFLICT' } };
   if (code.startsWith('23')) return { status: 409, body: { error: 'That change is not allowed in the current state.', code: 'NOT_ALLOWED' } };
   if (code === '40P01' || code === '40001') return { status: 409, body: { error: 'Someone else was changing this at the same time. Try again.', code: 'RETRY' } };
