@@ -272,7 +272,7 @@ export function SheetsPanel({ role, userId, settings, refreshKey, onChanged }) {
     <div>
       <Banner message={error} onDismiss={() => setError('')} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 12, color: C.muted, maxWidth: 560 }}>Cash is paid from a payout sheet: create it, print it, have each worker sign, upload the signed copy, then mark each worker paid.</span>
+        <span style={{ fontSize: 12, color: C.muted, maxWidth: 560 }}>Cash is paid from a payout sheet: create it for one settlement, print it, have the worker sign, upload the signed copy, then mark the settlement paid.</span>
         <Btn onClick={() => setShowNew(true)}>+ New payout sheet</Btn>
       </div>
       {loading ? <Spinner /> : rows.length === 0 ? <Empty>No payout sheets yet.</Empty> : (
@@ -294,30 +294,30 @@ export function SheetsPanel({ role, userId, settings, refreshKey, onChanged }) {
 
 function NewSheetModal({ onClose, onCreated }) {
   const [rows, setRows] = useState(null);
-  const [picked, setPicked] = useState({});
+  const [picked, setPicked] = useState(null);      // one settlement per sheet
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   useEffect(() => { (async () => {
     const r = await api('GET', '/api/payroll/temporary/settlements?status=approved');
     if (r.ok) setRows(r.data.settlements.filter(s => !s.payout_sheet_id)); else setError(r.error);
   })(); }, []);
-  const ids = Object.keys(picked).filter(k => picked[k]);
-  const total = (rows || []).filter(s => picked[s.id]).reduce((a, s) => a + Number(s.net_amount), 0);
+  const chosen = (rows || []).find(s => s.id === picked);
   return (
     <Modal title="New payout sheet" onClose={onClose} width={640}>
       <Banner message={error} />
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>One sheet covers one worker’s settlement, so the signed copy matches exactly one payment. Create a separate sheet for each worker.</div>
       {!rows ? <Spinner /> : rows.length === 0 ? <Empty>No approved settlements are waiting for a sheet.</Empty> : (
         <>
           <Table>
             <thead><tr><th style={th} /><th style={th}>Settlement</th><th style={th}>Worker</th><th style={{ ...th, ...num }}>Net cash</th></tr></thead>
             <tbody>{rows.map(s => (
-              <tr key={s.id}><td style={td}><input type="checkbox" aria-label={`Select ${s.settlement_num}`} checked={!!picked[s.id]} onChange={(e) => setPicked({ ...picked, [s.id]: e.target.checked })} /></td>
+              <tr key={s.id}><td style={td}><input type="radio" name="sheet-settlement" aria-label={`Select ${s.settlement_num}`} checked={picked === s.id} onChange={() => setPicked(s.id)} /></td>
                 <td style={td}>{s.settlement_num}</td><td style={td}>{s.employees?.name}</td><td style={{ ...td, ...num }}>{fmt(s.net_amount)}</td></tr>))}</tbody>
           </Table>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 }}>
-            <strong>{ids.length} selected · KES {fmt(total)}</strong>
-            <Btn loading={saving} disabled={!ids.length} onClick={async () => {
-              setSaving(true); const r = await api('POST', '/api/payroll/temporary/payout-sheets', { settlement_ids: ids }); setSaving(false);
+            <strong>{chosen ? `${chosen.employees?.name} · KES ${fmt(chosen.net_amount)}` : 'Choose a settlement'}</strong>
+            <Btn loading={saving} disabled={!chosen} onClick={async () => {
+              setSaving(true); const r = await api('POST', '/api/payroll/temporary/payout-sheets', { settlement_ids: [picked] }); setSaving(false);
               if (!r.ok) setError(r.error); else onCreated(r.data.data);
             }}>Create sheet</Btn>
           </div>

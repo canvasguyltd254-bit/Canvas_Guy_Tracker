@@ -3,7 +3,7 @@
  * PATCH /api/payroll/temporary/engagements/:id   { action: activate | complete | cancel | revise_rate | link_assignment, ... }
  */
 import { NextResponse } from 'next/server';
-import { guard, rpc, bad, readJson, serviceClient } from '@/shared/lib/payroll/temporaryServer';
+import { guard, rpc, bad, readJson, serviceClient, dbError } from '@/shared/lib/payroll/temporaryServer';
 import { ENGAGEMENT_COLUMNS, ENGAGEMENT_JOINS, isUuid, positiveNumber } from '@/shared/lib/payroll/temporaryAccess';
 
 export async function GET(request, props) {
@@ -11,9 +11,11 @@ export async function GET(request, props) {
   const g = await guard(); if (g.error) return g.error;
   if (!isUuid(id)) return bad('Invalid id');
   const { data, error } = await serviceClient.from('temporary_worker_engagements')
-    .select(`${ENGAGEMENT_COLUMNS}, ${ENGAGEMENT_JOINS}`).eq('id', id).single();
-  if (error || !data) return NextResponse.json({ error: 'Engagement not found' }, { status: 404 });
-  const { data: due } = await serviceClient.rpc('temporary_engagement_due', { p_engagement: id, p_cutoff: null });
+    .select(`${ENGAGEMENT_COLUMNS}, ${ENGAGEMENT_JOINS}`).eq('id', id).maybeSingle();
+  if (error) return dbError(error);
+  if (!data) return NextResponse.json({ error: 'Engagement not found' }, { status: 404 });
+  const { data: due, error: dueErr } = await serviceClient.rpc('temporary_engagement_due', { p_engagement: id, p_cutoff: null });
+  if (dueErr) return dbError(dueErr);                     // never show a screen that silently lacks the unsettled-work figures
   return NextResponse.json({ engagement: data, due: due || null });
 }
 

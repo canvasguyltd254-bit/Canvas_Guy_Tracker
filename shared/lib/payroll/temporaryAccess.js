@@ -1,6 +1,6 @@
 /**
  * Temporary workers: roles, column allow-lists, input rules and DB-error mapping.
- * Pure and client-safe (no imports). The database functions are the authority; these
+ * Pure and client-safe (its only import is another pure helper). The database functions are the authority; these
  * rules exist so the UI can guide users and the API can give clear errors early.
  * Spec: docs/specs/temporary-workers.md
  *
@@ -9,6 +9,8 @@
  *   head_of_sales       prepare/approve/pay within limits (no linking of Production assignments)
  *   anyone else         no access to rates, amounts, deductions or settlements
  */
+
+import { isIsoDate } from '../customerReport.js';
 
 export const TEMP_ROLES = Object.freeze(['admin', 'production_manager', 'head_of_sales']);
 export const canUseTemporaryWorkers = (role) => TEMP_ROLES.includes(role);
@@ -53,7 +55,8 @@ export const SETTINGS_COLUMNS =
 
 // ── Input rules (mirrors the database; the database stays the authority) ──────
 export const isUuid = (v) => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
-export const isIsoDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v));
+// The one strict calendar-date check used app-wide (UTC round trip: rejects 2026-02-30). Re-exported, not re-implemented.
+export { isIsoDate };
 export const isFullName = (v) => typeof v === 'string' && /^\S+(\s+\S+)+$/.test(v.trim());
 export const positiveNumber = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null; };
 

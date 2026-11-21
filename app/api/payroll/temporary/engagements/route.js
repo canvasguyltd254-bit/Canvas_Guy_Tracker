@@ -17,11 +17,15 @@ export async function GET(request) {
     if (status) { if (!STATUSES.includes(status)) return bad('Unknown status'); q = q.eq('status', status); }
     const { data, error } = await q;
     if (error) return dbError(error);
-    const rows = await Promise.all((data || []).map(async (e) => {
-      if (e.status === 'planned' || e.status === 'cancelled') return { ...e, due: null };
-      const { data: due } = await serviceClient.rpc('temporary_engagement_due', { p_engagement: e.id, p_cutoff: null });
-      return { ...e, due: due || null };
-    }));
+    // ONE call for every engagement that can have unsettled work (not N calls).
+    const ids = (data || []).filter(e => e.status === 'active' || e.status === 'completed').map(e => e.id);
+    let dueById = {};
+    if (ids.length) {
+      const { data: due, error: dueErr } = await serviceClient.rpc('temporary_engagements_due', { p_ids: ids });
+      if (dueErr) return dbError(dueErr);
+      dueById = due || {};
+    }
+    const rows = (data || []).map(e => ({ ...e, due: dueById[e.id] || null }));
     return NextResponse.json({ engagements: rows });
   } catch (err) { console.error('GET temporary engagements:', err); return NextResponse.json({ error: 'Internal server error' }, { status: 500 }); }
 }

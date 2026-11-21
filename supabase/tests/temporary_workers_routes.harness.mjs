@@ -65,7 +65,9 @@ function chain(table) {
     if (k === 'select') return (c) => { calls.selects.push({ table, cols: c }); return api; };
     if (k === 'insert' || k === 'update' || k === 'upsert' || k === 'delete') return () => { calls.mutations++; return api; };
     if (k === 'then') return (res, rej) => Promise.resolve(tableResult[table] ?? { data: [], error: null }).then(res, rej);
-    if (k === 'single' || k === 'maybeSingle') return () => ({ then: (res, rej) => Promise.resolve(tableResult[`${table}:one`] ?? { data: null, error: { message: 'none' } }).then(res, rej) });
+    // supabase-js: single() errors on zero rows (PGRST116); maybeSingle() returns { data: null, error: null }.
+    if (k === 'single') return () => ({ then: (res, rej) => Promise.resolve(tableResult[`${table}:one`] ?? { data: null, error: { code: 'PGRST116', message: 'no rows' } }).then(res, rej) });
+    if (k === 'maybeSingle') return () => ({ then: (res, rej) => Promise.resolve(tableResult[`${table}:one`] ?? { data: null, error: null }).then(res, rej) });
     return () => api;
   } });
   return api;
@@ -159,9 +161,12 @@ await invalid('deduction: "other" under 20 characters', () => R.sdeductions.POST
 await invalid('deduction: advance without a voucher', () => R.sdeductions.POST(req('POST', { deduction_type: 'cash_advance', amount: 10, reason: 'Advance' }), P()), /Advance voucher/);
 await invalid('deduction: zero amount', () => R.sdeductions.POST(req('POST', { deduction_type: 'cash_advance', amount: 0, reason: 'Advance', evidence_ref: 'A' }), P()), /above 0/);
 await invalid('deduction unknown action', () => R.deduction.PATCH(req('PATCH', { action: 'edit' }), P()), /action/);
-await invalid('sheet with no settlements', () => R.sheets.POST(req('POST', { settlement_ids: [] })), /settlements/);
-await invalid('sheet with a non-uuid', () => R.sheets.POST(req('POST', { settlement_ids: ['x'] })), /settlements/);
-await invalid('sheet with 51 settlements', () => R.sheets.POST(req('POST', { settlement_ids: Array(51).fill(ID) })), /settlements/);
+await invalid('sheet with no settlements', () => R.sheets.POST(req('POST', { settlement_ids: [] })), /one settlement/);
+await invalid('sheet with a non-uuid', () => R.sheets.POST(req('POST', { settlement_ids: ['x'] })), /one settlement/);
+await invalid('sheet with two settlements (one settlement per sheet)', () => R.sheets.POST(req('POST', { settlement_ids: [ID, ID2] })), /one settlement/);
+await invalid('engagement start 2026-02-30 (impossible calendar date)', () => R.engagements.POST(req('POST', { ...VALID_ENG, start_date: '2026-02-30' })), /start date/i);
+await invalid('engagement end 2026-04-31', () => R.engagements.POST(req('POST', { ...VALID_ENG, expected_end_date: '2026-04-31' })), /end date/i);
+await invalid('settlement cutoff 2026-02-30', () => R.settlements.POST(req('POST', { engagement_id: ID, cutoff_date: '2026-02-30', kind: 'threshold' })), /cutoff/i);
 await invalid('sheet unknown action', () => R.sheet.PATCH(req('PATCH', { action: 'sign' }), P()), /action/);
 await invalid('malformed JSON body is treated as empty', () => R.settlement.PATCH(new Request('http://x', { method: 'PATCH', body: '{nope' }), P()), /action/);
 
@@ -183,7 +188,7 @@ await invalid('malformed JSON body is treated as empty', () => R.settlement.PATC
   ok('add deduction: amount is numeric, attachment path is never taken from the client', calls.rpc[0].name === 'add_settlement_deduction' && calls.rpc[0].args.p_amount === 250 && calls.rpc[0].args.p_path === null);
   reset(); await run(() => R.deduction.PATCH(req('PATCH', { action: 'void', reason: 'entered twice' }), P()));
   ok('void deduction', calls.rpc[0].name === 'void_settlement_deduction' && calls.rpc[0].args.p_reason === 'entered twice');
-  reset(); await run(() => R.sheets.POST(req('POST', { settlement_ids: [ID, ID2] }))); ok('create sheet', calls.rpc[0].name === 'create_payout_sheet' && calls.rpc[0].args.p_settlement_ids.length === 2);
+  reset(); await run(() => R.sheets.POST(req('POST', { settlement_ids: [ID] }))); ok('create sheet (exactly one settlement)', calls.rpc[0].name === 'create_payout_sheet' && calls.rpc[0].args.p_settlement_ids.length === 1);
   for (const [action, fn] of [['approve', 'approve_payout_sheet'], ['print', 'mark_sheet_printed'], ['cancel', 'cancel_payout_sheet']]) {
     reset('admin'); await run(() => R.sheet.PATCH(req('PATCH', { action, reason: 'wrong names' }), P()));
     ok(`sheet ${action} -> ${fn}`, calls.rpc[0]?.name === fn);
@@ -218,6 +223,46 @@ await invalid('malformed JSON body is treated as empty', () => R.settlement.PATC
   r = await run(CALLS['PATCH settlement approve']); ok('unexpected error: 500, generic, no internals', r.status === 500 && !/password|10\.1/.test(JSON.stringify(r.body)), JSON.stringify(r));
   reset(); rpcResult = { data: null, error: { code: 'P0001', message: 'A paid settlement is final and cannot be voided' } };
   r = await run(() => R.settlement.PATCH(req('PATCH', { action: 'void', reason: 'oops' }), P())); ok('voiding a paid settlement surfaces the database refusal (422)', r.status === 422 && /final/.test(r.body.error));
+}
+
+// ── 6b. a database failure is never disguised as "not found"; genuine no-row is 404 ──
+{
+  const detail = [
+    ['engagement', 'temporary_worker_engagements', () => R.engagement.GET(req('GET'), P())],
+    ['settlement', 'temporary_worker_settlements', () => R.settlement.GET(req('GET'), P())],
+    ['sheet',      'temporary_worker_payout_sheets', () => R.sheet.GET(req('GET'), P())],
+    ['assignments (engagement lookup)', 'temporary_worker_engagements', () => R.assignments.GET(req('GET'), P())],
+  ];
+  for (const [label, table, fn] of detail) {
+    reset('admin'); tableResult = { [`${table}:one`]: { data: null, error: { code: 'XX000', message: 'connection terminated' } } };
+    let r = await run(fn); ok(`${label}: database error is 500, not 404`, r.status === 500 && !/connection/.test(JSON.stringify(r.body)), JSON.stringify(r));
+    reset('admin'); tableResult = { [`${table}:one`]: { data: null, error: { code: '42P01', message: 'relation does not exist' } } };
+    r = await run(fn); ok(`${label}: missing migration is 503 SETUP_INCOMPLETE, not 404`, r.status === 503 && r.body.code === 'SETUP_INCOMPLETE', JSON.stringify(r));
+    reset('admin'); tableResult = { [`${table}:one`]: { data: null, error: null } };
+    r = await run(fn); ok(`${label}: a genuine no-row result is 404`, r.status === 404, JSON.stringify(r));
+  }
+  // the engagement detail's due summary must not fail silently
+  reset('admin'); tableResult = { 'temporary_worker_engagements:one': { data: { id: ID, status: 'active' }, error: null } };
+  rpcResult = { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.temporary_engagement_due' } };
+  let r = await run(() => R.engagement.GET(req('GET'), P()));
+  ok('engagement detail: a failing due-summary is surfaced (503), not shown as empty', r.status === 503 && r.body.code === 'SETUP_INCOMPLETE', JSON.stringify(r));
+
+  // list: ONE bulk call, only for engagements that can have unsettled work
+  reset('admin');
+  tableResult = { temporary_worker_engagements: { data: [{ id: ID, status: 'active' }, { id: ID2, status: 'planned' }, { id: UID, status: 'completed' }, { id: '44444444-4444-4444-8444-444444444444', status: 'cancelled' }], error: null } };
+  rpcResult = { data: { [ID]: { due: true, eligible_units: 3 }, [UID]: { due: false, eligible_units: 0 } }, error: null };
+  r = await run(() => R.engagements.GET(req('GET')));
+  ok('list: exactly one RPC (temporary_engagements_due) for the whole list', calls.rpc.length === 1 && calls.rpc[0].name === 'temporary_engagements_due', JSON.stringify(calls.rpc));
+  ok('list: the bulk call carries only active + completed ids', JSON.stringify(calls.rpc[0].args.p_ids.slice().sort()) === JSON.stringify([ID, UID].sort()));
+  const byId = Object.fromEntries(r.body.engagements.map(e => [e.id, e.due]));
+  ok('list: due is attached per engagement; planned/cancelled get null', byId[ID]?.due === true && byId[UID]?.due === false && byId[ID2] === null);
+  reset('admin'); tableResult = { temporary_worker_engagements: { data: [{ id: ID, status: 'active' }], error: null } };
+  rpcResult = { data: null, error: { code: 'XX000', message: 'boom' } };
+  r = await run(() => R.engagements.GET(req('GET')));
+  ok('list: a failing bulk summary fails the request (500) rather than showing no figures', r.status === 500, JSON.stringify(r));
+  reset('admin'); tableResult = { temporary_worker_engagements: { data: [{ id: ID2, status: 'planned' }], error: null } };
+  await run(() => R.engagements.GET(req('GET')));
+  ok('list: no RPC at all when nothing can have unsettled work', calls.rpc.length === 0);
 }
 
 // ── 7. explicit column allow-lists on every read ──

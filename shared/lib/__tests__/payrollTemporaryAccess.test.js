@@ -61,7 +61,8 @@ test('uuid and date validators', () => {
   assert.equal(isUuid('9a43ae83-237c-45a4-8678-f868ec880b8b'), true);
   for (const v of ['x', '', null, 5, '9a43ae83-237c-45a4-8678']) assert.equal(isUuid(v), false);
   assert.equal(isIsoDate('2026-11-02'), true);
-  for (const v of ['2026-13-40', '02/11/2026', '', null]) assert.equal(isIsoDate(v), false);
+  for (const v of ['2026-13-40', '02/11/2026', '', null, '2026-02-30', '2026-04-31', '2025-02-29']) assert.equal(isIsoDate(v), false);
+  assert.equal(isIsoDate('2028-02-29'), true);   // leap day
 });
 
 test('database errors map to safe responses', () => {

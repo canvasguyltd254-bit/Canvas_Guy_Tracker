@@ -11,7 +11,8 @@ export async function GET(request, props) {
   const { id } = await props.params;
   const g = await guard(); if (g.error) return g.error;
   if (!isUuid(id)) return bad('Invalid id');
-  const { data: eng } = await serviceClient.from('temporary_worker_engagements').select('id, employee_id, order_id').eq('id', id).single();
+  const { data: eng, error: eErr } = await serviceClient.from('temporary_worker_engagements').select('id, employee_id, order_id').eq('id', id).maybeSingle();
+  if (eErr) return dbError(eErr);
   if (!eng) return NextResponse.json({ error: 'Engagement not found' }, { status: 404 });
   const { data: jobs, error: jErr } = await serviceClient.from('production_jobs').select('id, job_num, description').eq('order_id', eng.order_id);
   if (jErr) return dbError(jErr);

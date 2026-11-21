@@ -15,8 +15,9 @@ export async function GET(request, props) {
   const g = await guard(); if (g.error) return g.error;
   if (!isUuid(id)) return bad('Invalid id');
   const { data: settlement, error } = await serviceClient.from('temporary_worker_settlements')
-    .select(`${SETTLEMENT_COLUMNS}, ${SETTLEMENT_JOINS}`).eq('id', id).single();
-  if (error || !settlement) return NextResponse.json({ error: 'Settlement not found' }, { status: 404 });
+    .select(`${SETTLEMENT_COLUMNS}, ${SETTLEMENT_JOINS}`).eq('id', id).maybeSingle();
+  if (error) return dbError(error);
+  if (!settlement) return NextResponse.json({ error: 'Settlement not found' }, { status: 404 });
   const [{ data: lines, error: lErr }, { data: deductions, error: dErr }] = await Promise.all([
     serviceClient.from('temporary_worker_settlement_lines').select(LINE_COLUMNS).eq('settlement_id', id).order('work_date'),
     serviceClient.from('temporary_worker_settlement_deductions').select(DEDUCTION_COLUMNS).eq('settlement_id', id).order('recorded_at'),

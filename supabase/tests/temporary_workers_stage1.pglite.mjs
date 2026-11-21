@@ -49,8 +49,15 @@ await db.exec(`ALTER TABLE production_job_assignments ADD CONSTRAINT fk_emp FORE
 await db.exec(mig('production_v3a_labour_costing.sql'));
 await db.exec(mig('production_v3b_time_entry_day_lock.sql'));
 await db.exec(mig('temporary_workers_stage1.sql'));
+// Stage 1 is already applied in production with the DEFAULT damage setting of true; capture that state before 1b.
+const damageBefore1b = await val(`SELECT damage_deductions_enabled FROM temporary_worker_settings WHERE id`);
+await db.exec(mig('temporary_workers_stage1b.sql'));
 ok('migration applies on top of the real payroll and production v3a/v3b migrations', true);
-ok('migration is idempotent (second run)', await db.exec(mig('temporary_workers_stage1.sql')).then(() => true, e => { console.log(e.message); return false; }));
+ok('stage 1 shipped with damage deductions ON (the state 1b corrects)', damageBefore1b === true);
+ok('stage 1b flips the untouched settings row to OFF (no damage deduction was ever recorded)', (await val(`SELECT damage_deductions_enabled FROM temporary_worker_settings WHERE id`)) === false);
+ok('stage 1b: the column default is now false', (await val(`SELECT column_default FROM information_schema.columns WHERE table_name='temporary_worker_settings' AND column_name='damage_deductions_enabled'`)) === 'false');
+ok('migrations are idempotent (second run of both)', await db.exec(mig('temporary_workers_stage1.sql')).then(() => db.exec(mig('temporary_workers_stage1b.sql'))).then(() => true, e => { console.log(e.message); return false; }));
+ok('re-running stage 1 does not re-enable damage deductions', (await val(`SELECT damage_deductions_enabled FROM temporary_worker_settings WHERE id`)) === false);
 
 // ── actors and fixtures ─────────────────────────────────────────────────────
 const user = async () => (await one(`INSERT INTO auth.users DEFAULT VALUES RETURNING id`)).id;
@@ -395,9 +402,13 @@ const addD = (id, type, amount, reason, ref = null, path = null, actor = hos1, r
 {
   const s1 = await approved(); const s2 = await approved();
   await throws('pay refused without a payout sheet', () => pay(s1.id), /payout sheet first/);
-  const sh = await sheetFor([s1.id, s2.id]);
-  ok('sheet totals computed (3000 + 3000)', Number(await val(`SELECT total_net FROM temporary_worker_payout_sheets WHERE id=$1`, [sh])) === 6000);
+  await throws('a sheet for two settlements is refused (one settlement per sheet)', () => sheetFor([s1.id, s2.id]), /exactly one settlement/);
+  await throws('a sheet for no settlement is refused', () => sheetFor([]), /Choose a settlement/);
+  const sh = await sheetFor([s1.id]);
+  ok('sheet totals computed (one settlement, 3000)', Number(await val(`SELECT total_net FROM temporary_worker_payout_sheets WHERE id=$1`, [sh])) === 3000);
   await throws('a settlement cannot be on two sheets', () => sheetFor([s1.id]), /not already on a payout sheet/);
+  await throws('DATABASE enforces one settlement per sheet even if the function is bypassed (unique index)',
+    () => q(`UPDATE temporary_worker_settlements SET payout_sheet_id=$2 WHERE id=$1`, [s2.id, sh]), /uq_tws_one_per_sheet|duplicate key/);
   await throws('pay refused while the sheet is open (not printed/signed)', () => pay(s1.id), /signed and attached/);
   await call('mark_sheet_printed', sh, hos1, 'head_of_sales');
   await throws('pay refused while the sheet is only printed', () => pay(s1.id), /signed and attached/);
@@ -419,6 +430,7 @@ const addD = (id, type, amount, reason, ref = null, path = null, actor = hos1, r
   await throws('a paid settlement cannot be moved onto another sheet', () => q(`UPDATE temporary_worker_settlements SET payout_sheet_id=NULL WHERE id=$1`, [s1.id]), /final/);
   await throws('a sheet with a paid settlement cannot be cancelled', () => call('cancel_payout_sheet', sh, 'wrong sheet', admin, 'admin'), /paid settlement cannot be cancelled/);
   // the approver may pay
+  await signedSheet([s2.id]);
   const approverPays = await pay(s2.id, hos2, 'head_of_sales', 'John Kamau Mwangi');
   ok('the approver may be the payer', approverPays.status === 'paid');
 }
@@ -436,10 +448,11 @@ const addD = (id, type, amount, reason, ref = null, path = null, actor = hos1, r
   await pay(p.id, pmPay, 'production_manager', 'Peter Otieno Odhiambo', 'Counted twice in front of the foreman');
   ok('payment above the limit works with a note', (await st(p.id)) === 'paid');
 }
-{ // sheet total above the limit although each settlement is under it
-  const a1 = await approved(3, 2000), a2 = await approved(3, 2000);          // 6,000 each
-  const sh = await sheetFor([a1.id, a2.id]);                                  // 12,000 total
-  await throws('sheet total above the limit needs admin even when each settlement is under it', () => call('mark_sheet_printed', sh, hos1, 'head_of_sales'), /admin must approve/);
+{ // a settlement under the limit prints without admin approval; a batch can no longer be used to dodge the limit (one per sheet)
+  const a1 = await approved(3, 2000);                                          // 6,000
+  const sh = await sheetFor([a1.id]);
+  await call('mark_sheet_printed', sh, hos1, 'head_of_sales');
+  ok('a 6,000 sheet (under the limit) prints without admin approval', (await val(`SELECT status FROM temporary_worker_payout_sheets WHERE id=$1`, [sh])) === 'printed');
 }
 { // net basis: gross over limit, net under
   const emp = await worker(4000); const eng = await engage(emp); const a = await assign(emp, eng);
@@ -549,12 +562,19 @@ const addD = (id, type, amount, reason, ref = null, path = null, actor = hos1, r
   await call('void_temporary_settlement', d.id, 'Prepared by mistake', hos1, 'head_of_sales');
   ok('a draft can be voided by head of sales', (await st(d.id)) === 'voided');
   const a1 = await approved(), a2 = await approved();
-  const sh = await sheetFor([a1.id, a2.id]);
+  const sh1 = await sheetFor([a1.id]);
   await call('void_temporary_settlement', a1.id, 'Worker left the site', admin, 'admin');
   ok('voiding an approved settlement removes it from an open sheet and recomputes totals',
-    Number(await val(`SELECT total_net FROM temporary_worker_payout_sheets WHERE id=$1`, [sh])) === 3000);
+    Number(await val(`SELECT total_net FROM temporary_worker_payout_sheets WHERE id=$1`, [sh1])) === 0
+    && (await val(`SELECT payout_sheet_id FROM temporary_worker_settlements WHERE id=$1`, [a1.id])) === null);
+  await call('cancel_payout_sheet', sh1, 'Settlement voided', hos1, 'head_of_sales');
+  ok('the now-empty open sheet can be cancelled', (await val(`SELECT status FROM temporary_worker_payout_sheets WHERE id=$1`, [sh1])) === 'cancelled');
+  const sh = await sheetFor([a2.id]);
   await call('mark_sheet_printed', sh, hos1, 'head_of_sales'); await call('attach_signed_receipt', sh, 'r.jpg', hos1, 'head_of_sales');
   await throws('a settlement on a SIGNED sheet cannot be voided until the sheet is cancelled', () => call('void_temporary_settlement', a2.id, 'x', admin, 'admin'), /cancel the sheet first/);
+  await call('cancel_payout_sheet', sh, 'Wrong names on the sheet', admin, 'admin');
+  await call('void_temporary_settlement', a2.id, 'Worker left the site', admin, 'admin');
+  ok('after the admin cancels the signed sheet the settlement can be voided (1:1: nothing is stranded)', (await st(a2.id)) === 'voided');
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -625,6 +645,164 @@ const addD = (id, type, amount, reason, ref = null, path = null, actor = hos1, r
   const r2 = await call('set_temporary_worker_settings', JSON.stringify({ admin_approval_limit_kes: null }), admin, 'admin');
   ok('admin can set the limit to NULL (fail-closed)', r2.admin_approval_limit_kes === null);
   await resetSettings();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// STAGE 1b — attendance guard, overlap rules, planned cost, bulk due, damage default
+// ════════════════════════════════════════════════════════════════════════════
+const mkRun = async (num, start, end = null) => (await one(
+  `INSERT INTO payroll_runs (run_num, period_type, period_start, period_end, run_type) VALUES ($1,'weekly',$2::date,COALESCE($3::date,$2::date + 6),'casual') RETURNING id`, [num, start, end])).id;
+const addEntry = (run, emp) => q(`INSERT INTO payroll_entries (run_id, employee_id, snapshot_name, snapshot_type, snapshot_sha, gross_pay, net_pay) VALUES ($1,$2,'x','casual',0,1000,1000)`, [run, emp]);
+const newAssignment = async (emp, job = JOB, stage = STAGE) =>
+  (await one(`INSERT INTO production_job_assignments (job_id, stage_id, operation_id, employee_id) VALUES ($1,$2,$3,$4) RETURNING id`, [job, stage, OP, emp])).id;
+
+{ // attendance trigger
+  const emp = await worker(1000); const eng = await engage(emp, { start: '2026-11-02', end: '2026-11-06' });
+  const a = await assign(emp, eng);
+  const late = await book(a, ['2026-11-09']);
+  ok('expected end date is a guide only: attendance AFTER it (9 Nov vs 6 Nov) is accepted while the engagement is active',
+    (await val(`SELECT status FROM production_time_entries WHERE id=$1`, [late[0]])) === 'approved');
+  await throws('attendance BEFORE the engagement start date is refused', () => book(a, ['2026-10-30']), /before temporary engagement .* started/);
+  const sub = await book(a, ['2026-11-10'], { keepSubmitted: true });          // submitted, not yet approved
+  await call('set_engagement_status', eng, 'completed', 'Job finished', hos1, 'head_of_sales');
+  await throws('a COMPLETED engagement refuses new attendance on its assignment', () => book(a, ['2026-11-11']), /is completed, so no new attendance/);
+  await call('transition_time_entry', sub[0], 'approve', pmApp, 'production_manager', null);
+  ok('an entry recorded before closure can still be approved after closure', (await val(`SELECT status FROM production_time_entries WHERE id=$1`, [sub[0]])) === 'approved');
+  const d = await prep(eng, '2026-11-30', 'close_out');
+  ok('...and is then settled by a close-out settlement (2 days)', Number(d.units) === 2);
+
+  const emp2 = await worker(1000); const eng2 = await engage(emp2); const a2 = await assign(emp2, eng2);
+  await call('set_engagement_status', eng2, 'cancelled', 'Client cancelled', hos1, 'head_of_sales');
+  await throws('a CANCELLED engagement refuses new attendance', () => book(a2, ['2026-11-03']), /is cancelled, so no new attendance/);
+
+  // revision: the old assignment must not keep accepting days at the old rate
+  const emp3 = await worker(1000); const eng3 = await engage(emp3, { rate: 1000 }); const a3 = await assign(emp3, eng3);
+  await book(a3, ['2026-11-02']);
+  const v2 = await call('revise_engagement_rate', eng3, 1500, 'Raise agreed', hos1, 'head_of_sales');
+  await throws('after a rate revision the OLD assignment refuses new days (link a new assignment)', () => book(a3, ['2026-11-03']), /link a new assignment to the current engagement/);
+  const a3b = await newAssignment(emp3); await call('link_assignment_to_engagement', a3b, v2, pmRec, 'production_manager');
+  const v2start = await val(`SELECT start_date::text FROM temporary_worker_engagements WHERE id=$1`, [v2]);
+  const [newDay] = await book(a3b, [v2start]);                                     // the revision starts today
+  ok('the new version accepts attendance on a newly linked assignment, costed at the new rate',
+    Number(await val(`SELECT daily_rate_snapshot FROM production_time_entries WHERE id=$1`, [newDay])) === 1500);
+
+  // a plain (non-temporary) assignment is untouched by the trigger
+  const regular = await worker(); const ra = await newAssignment(regular);
+  const [plain] = await book(ra, ['2026-11-02']);
+  ok('assignments NOT linked to a temporary engagement are unaffected by the attendance trigger',
+    (await val(`SELECT status FROM production_time_entries WHERE id=$1`, [plain])) === 'approved');
+
+  // payroll period: the same day cannot be both attendance and payroll. Build the conflict by bypassing the functions
+  // (the way a race or legacy data could): the worker is in a run, and an engagement overlapping it exists.
+  const emp4 = await worker(1000);
+  const run = await mkRun('PR-ATT', '2026-11-02'); await addEntry(run, emp4);     // 2–8 Nov payroll
+  const eng4 = (await one(`INSERT INTO temporary_worker_engagements (employee_id, order_id, agreed_daily_rate, start_date, status) VALUES ($1,$2,1000,'2026-11-01','active') RETURNING id`, [emp4, ORDER])).id;
+  const a4 = await newAssignment(emp4); await call('link_assignment_to_engagement', a4, eng4, pmRec, 'production_manager');
+  await throws('attendance on a day inside the worker\'s own payroll run is refused', () => book(a4, ['2026-11-03']), /falls inside payroll run PR-ATT/);
+  const [okDay] = await book(a4, ['2026-11-10']);
+  ok('...while a day outside that run is accepted', (await val(`SELECT status FROM production_time_entries WHERE id=$1`, [okDay])) === 'approved');
+}
+
+{ // overlap rule for completed engagements: protect days with attendance, not "forever"
+  const emp = await worker(1000); const eng = await engage(emp, { start: '2026-11-02' });   // open-ended
+  const a = await assign(emp, eng);
+  await book(a, ['2026-11-04', '2026-11-05']);
+  const lateRun = await mkRun('PR-X1b', '2027-03-01');
+  await throws('active open-ended engagement blocks a payroll run months later', () => addEntry(lateRun, emp), /TEMP_ENGAGEMENT_OVERLAP/);
+  await call('set_engagement_status', eng, 'completed', 'Done', hos1, 'head_of_sales');
+  await addEntry(lateRun, emp);
+  ok('once COMPLETED, the engagement no longer blocks payroll on days nothing was worked', true);
+  const worked = await mkRun('PR-X2', '2026-11-02');
+  await throws('...but days with temporary attendance stay protected', () => addEntry(worked, emp), /TEMP_ENGAGEMENT_OVERLAP/);
+  const gap = await mkRun('PR-X3', '2026-11-09');
+  await addEntry(gap, emp);
+  ok('...and a run covering only days with no attendance is allowed', true);
+  // voiding the attendance releases its protection
+  const emp2 = await worker(1000); const eng2 = await engage(emp2, { start: '2026-11-02' }); const a2 = await assign(emp2, eng2);
+  const ids = await book(a2, ['2026-11-18'], { keepSubmitted: true });
+  await call('set_engagement_status', eng2, 'completed', 'Done', hos1, 'head_of_sales');
+  const r18 = await mkRun('PR-X4', '2026-11-16');
+  await throws('submitted attendance protects its day', () => addEntry(r18, emp2), /TEMP_ENGAGEMENT_OVERLAP/);
+  await call('transition_time_entry', ids[0], 'reject', pmApp, 'production_manager', 'Wrong day');
+  await addEntry(r18, emp2);
+  ok('a REJECTED entry releases its day', true);
+}
+
+{ // payroll-run date edit and approval revalidation
+  const emp = await worker(1000); const eng = await engage(emp, { start: '2026-12-14', end: '2026-12-18' });
+  const run = await mkRun('PR-D1', '2026-12-07'); await addEntry(run, emp);          // 7–13 Dec: outside the engagement
+  await throws('editing a run\'s dates INTO an engagement\'s span is refused', () => q(`UPDATE payroll_runs SET period_end='2026-12-15' WHERE id=$1`, [run]), /TEMP_ENGAGEMENT_OVERLAP/);
+  await q(`UPDATE payroll_runs SET period_end='2026-12-13', notes='n' WHERE id=$1`, [run]);
+  ok('editing dates that stay clear of the engagement is allowed', true);
+  await q(`UPDATE payroll_runs SET period_start='2026-12-08' WHERE id=$1`, [run]);
+  ok('moving the start date within the clear window is allowed', true);
+  // approval revalidation: smuggle in an overlapping engagement by bypassing the function, then approve
+  const emp2 = await worker(1000); const run2 = await mkRun('PR-D2', '2026-12-21'); await addEntry(run2, emp2);
+  await q(`INSERT INTO temporary_worker_engagements (employee_id, order_id, agreed_daily_rate, start_date, status) VALUES ($1,$2,1000,'2026-12-22','active')`, [emp2, ORDER]);
+  await throws('approving a run re-validates against temporary engagements', () => q(`UPDATE payroll_runs SET status='approved' WHERE id=$1`, [run2]), /TEMP_ENGAGEMENT_OVERLAP/);
+}
+
+{ // planned labour cost follows the engagement rate when an assignment is linked
+  const emp = await worker(1000);                                                   // employee day rate 1,000
+  const eng = await engage(emp, { rate: 1800 });                                    // engagement rate 1,800 (deliberately different)
+  const a = await newAssignment(emp);
+  await q(`UPDATE production_job_assignments SET planned_attendance_units=5, planned_overtime_days=2, planned_sunday_units=0, daily_rate_snapshot=1000, planned_labour_cost=5000 WHERE id=$1`, [a]);
+  await call('link_assignment_to_engagement', a, eng, pmRec, 'production_manager');
+  const r = await one(`SELECT daily_rate_snapshot d, overtime_rate_snapshot o, planned_labour_cost c FROM production_job_assignments WHERE id=$1`, [a]);
+  ok('link recomputes planned_labour_cost from the ENGAGEMENT rate (5 × 1,800 + 2 × overtime allowance)', Number(r.d) === 1800 && Number(r.c) === 5 * 1800 + 2 * Number(r.o), JSON.stringify(r));
+  ok('...and it is not the stale employee-rate figure (5,000)', Number(r.c) !== 5000);
+  const emp2 = await worker(1000); const eng2 = await engage(emp2, { rate: 1800 }); const b = await newAssignment(emp2);   // no planned days at all
+  await call('link_assignment_to_engagement', b, eng2, pmRec, 'production_manager');
+  ok('an assignment with no plan stays without a planned cost (no invented figure)', (await val(`SELECT planned_labour_cost FROM production_job_assignments WHERE id=$1`, [b])) === null);
+}
+
+{ // revision when the expected end has passed (jobs run late)
+  const emp = await worker(1000); const eng = await engage(emp, { start: '2026-01-05', end: '2026-01-30' });
+  const v2 = await call('revise_engagement_rate', eng, 1300, 'Late job, new rate', hos1, 'head_of_sales');
+  ok('revising after the expected end date works; the new version is open-ended instead of violating the dates check',
+    (await val(`SELECT expected_end_date FROM temporary_worker_engagements WHERE id=$1`, [v2])) === null);
+  const emp2 = await worker(1000); const eng2 = await engage(emp2, { start: '2026-01-05', end: '2026-01-30' });
+  const lateRun = await mkRun('PR-REV', '2027-06-07'); await addEntry(lateRun, emp2);
+  await throws('revision is refused if the open-ended new version would overlap a payroll run the worker is already in',
+    () => call('revise_engagement_rate', eng2, 1300, 'Late job, new rate', hos1, 'head_of_sales'), /TEMP_ENGAGEMENT_OVERLAP/);
+}
+
+{ // bulk due summary equals the single-engagement function
+  const s = await approved(3);                                                       // fully settled: 0 eligible
+  const e1 = await worker(1000); const g1 = await engage(e1); const x1 = await assign(e1, g1); await book(x1, W.slice(0, 4));   // 4 eligible
+  const e2 = await worker(1000); const g2 = await engage(e2); const x2 = await assign(e2, g2); await book(x2, W.slice(0, 1));   // 1 eligible
+  const e3 = await worker(1000); const g3 = await engage(e3); const x3 = await assign(e3, g3); await book(x3, W.slice(0, 2));
+  await call('set_engagement_status', g3, 'completed', 'Done', hos1, 'head_of_sales');                                          // close-out due
+  const ids = [s.eng, g1, g2, g3];
+  const bulk = await call('temporary_engagements_due', arr(ids));
+  let same = true;
+  for (const id of ids) { const one1 = await call('temporary_engagement_due', id); if (JSON.stringify(Object.entries(one1).sort()) !== JSON.stringify(Object.entries(bulk[id]).sort())) same = false; }
+  ok('bulk due summary matches temporary_engagement_due for every engagement', same, JSON.stringify(bulk));
+  ok('bulk: 4 days is due, 1 day is not, closed with units is close_out_due, settled is zero',
+    bulk[g1].due === true && Number(bulk[g1].eligible_units) === 4 && bulk[g2].due === false && bulk[g3].close_out_due === true && Number(bulk[s.eng].eligible_units) === 0);
+  ok('bulk: empty list gives an empty object; unknown ids are absent', JSON.stringify(await call('temporary_engagements_due', arr([]))) === '{}'
+    && Object.keys(await call('temporary_engagements_due', arr(['00000000-0000-0000-0000-000000000000']))).length === 0);
+}
+
+{ // damage default
+  const before = await one(`SELECT * FROM temporary_worker_settings WHERE id`);
+  await q(`DELETE FROM temporary_worker_settings`); await q(`INSERT INTO temporary_worker_settings (id) VALUES (true)`);
+  ok('a freshly created settings row has damage deductions OFF', (await val(`SELECT damage_deductions_enabled FROM temporary_worker_settings WHERE id`)) === false);
+  // an admin turned it on and a damage deduction exists: re-running stage 1b must NOT flip it back
+  await q(`UPDATE temporary_worker_settings SET damage_deductions_enabled = true`);
+  const hasDamage = Number(await val(`SELECT count(*) FROM temporary_worker_settlement_deductions WHERE deduction_type='damage'`));
+  await db.exec(mig('temporary_workers_stage1b.sql'));
+  ok('stage 1b leaves the setting alone when a damage deduction has ever been recorded', hasDamage > 0 && (await val(`SELECT damage_deductions_enabled FROM temporary_worker_settings WHERE id`)) === true);
+  void before; await resetSettings();
+}
+
+{ // new functions are service_role only
+  const fns = (await q(`SELECT p.oid::regprocedure::text AS sig FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public'
+     AND p.proname IN ('tw_lock_employee','tw_lock_run','tw_engagement_overlap','tw_payroll_run_overlap_guard','tw_time_entry_insert_guard','temporary_engagements_due','link_assignment_to_engagement','create_temporary_engagement')`)).rows;
+  let open = [];
+  for (const f of fns) for (const r of ['anon', 'authenticated', 'public'])
+    if (await val(`SELECT has_function_privilege('${r}', '${f.sig}', 'EXECUTE')`)) open.push(`${r}:${f.sig}`);
+  ok(`stage 1b functions are not executable by anon / authenticated / public (${fns.length} checked)`, fns.length === 8 && open.length === 0, open.join(','));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

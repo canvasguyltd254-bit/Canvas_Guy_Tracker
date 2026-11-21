@@ -210,6 +210,23 @@ await mount('admin', { sheets: [sheet({ status: 'cancelled', cancelled_at: '2026
 await tab('Payout sheets'); await click(byText('button', 'Open'));
 ok('a cancelled sheet is read-only and says it is never reused', /never reused/.test(dialog().textContent) && !byText('button', 'Print sheet', dialog()) && !q('button', dialog()).some(b => /Upload|Mark paid|Cancel sheet/.test(b.textContent))); await unmount();
 
+// ── new payout sheet: ONE settlement per sheet ──
+{
+  const two = [approvedS({ id: 's1', settlement_num: 'TW-1', payout_sheet_id: null, employees: emp('Jane Worker') }), approvedS({ id: 's2', settlement_num: 'TW-2', payout_sheet_id: null, employees: emp('Peter Mine') })];
+  await mount('head_of_sales', { settlements: two, sheets: [sheet({ status: 'open', total_net: 3000 })], sheetSettlements: [approvedS({ id: 's2' })] });   // the sheet the server "creates" and the UI then opens
+  await tab('Payout sheets'); await click(byText('button', '+ New payout sheet'));
+  const boxes = q('input[name="sheet-settlement"]', dialog());
+  ok('new sheet form lists each approved settlement as a single-choice radio (not checkboxes)', boxes.length === 2 && boxes.every(b => b.type === 'radio') && q('input[type=checkbox]', dialog()).length === 0);
+  ok('new sheet form says one sheet covers one worker', /exactly one|one worker/i.test(dialog().textContent));
+  ok('Create sheet is disabled until a settlement is chosen', byText('button', 'Create sheet', dialog()).disabled);
+  await click(boxes[0]); await click(boxes[1]);
+  ok('choosing a second settlement replaces the first (never two)', q('input[name="sheet-settlement"]:checked', dialog()).length === 1 && boxes[1].checked);
+  await click(byText('button', 'Create sheet', dialog()));
+  const post = calls.find(c => c.method === 'POST' && /payout-sheets$/.test(c.url));
+  ok('the request carries exactly one settlement id', post && post.body.settlement_ids.length === 1 && post.body.settlement_ids[0] === 's2', JSON.stringify(post));
+  await unmount();
+}
+
 // ── engagement: linking by role ──
 await mount('head_of_sales'); await click(byText('button', 'Open'));
 ok('head of sales cannot link a Production assignment (told to ask the production manager)', /Ask the production manager to link this/.test(dialog().textContent) && !byText('button', 'Link', dialog())); await unmount();

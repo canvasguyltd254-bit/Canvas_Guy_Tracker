@@ -58,7 +58,7 @@ await admin.query(`
 `);
 await admin.query(mig('payroll_module.sql'));
 await admin.query(`ALTER TABLE production_job_assignments ADD CONSTRAINT fk_emp FOREIGN KEY (employee_id) REFERENCES employees(id)`);
-for (const f of ['production_v3a_labour_costing.sql', 'production_v3b_time_entry_day_lock.sql', 'temporary_workers_stage1.sql']) await admin.query(mig(f));
+for (const f of ['production_v3a_labour_costing.sql', 'production_v3b_time_entry_day_lock.sql', 'temporary_workers_stage1.sql', 'temporary_workers_stage1b.sql']) await admin.query(mig(f));
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 const user = async () => (await one(admin, `INSERT INTO auth.users DEFAULT VALUES RETURNING id`)).id;
@@ -215,6 +215,150 @@ const st = id => val(admin, `SELECT status FROM temporary_worker_settlements WHE
   ok('S8: void refused once payment commits (paid is final)', r.b && /paid settlement is final|signed payout sheet/.test(r.b.message), r.b?.message);
   ok('S8: settlement is paid and its lines are still active', (await st(s.id)) === 'paid'
     && Number(await val(admin, `SELECT count(*) FROM temporary_worker_settlement_lines WHERE settlement_id=$1 AND active`, [s.id])) === 3);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// STAGE 1b — overlap races (engagement vs payroll) and attendance races
+// ════════════════════════════════════════════════════════════════════════════
+let rn = 0;
+const mkWorker = async () => (await one(admin, `INSERT INTO employees (employee_num, name, type, day_rate) VALUES ($1,$2,'casual',1000) RETURNING id`, [`R-${++n}`, `Race ${n}`])).id;
+const mkRun = async (start, end) => (await one(admin, `INSERT INTO payroll_runs (run_num, period_type, period_start, period_end, run_type) VALUES ($1,'weekly',$2::date,$3::date,'casual') RETURNING id`, [`PR-R${++rn}`, start, end])).id;
+const addEntry = (c, run, emp) => c.query(`INSERT INTO payroll_entries (run_id, employee_id, snapshot_name, snapshot_type, snapshot_sha, gross_pay, net_pay) VALUES ($1,$2,'x','casual',0,1000,1000)`, [run, emp]);
+const mkEng = (c, emp, start = '2026-11-02', end = null, activate = true) => call(c, 'create_temporary_engagement', emp, ORDER, 1000, start, end, null, null, activate, hos1, 'head_of_sales');
+const overlapCount = emp => val(admin, `SELECT count(*) FROM payroll_entries pe JOIN payroll_runs r ON r.id=pe.run_id JOIN temporary_worker_engagements e ON e.employee_id=pe.employee_id
+   WHERE pe.employee_id=$1 AND e.status IN ('planned','active') AND e.start_date <= r.period_end AND COALESCE(e.expected_end_date,'infinity') >= r.period_start`, [emp]).then(Number);
+
+// R1: engagement creation (first) vs payroll insertion (second)
+{
+  const emp = await mkWorker(); const run = await mkRun('2026-11-02', '2026-11-08');
+  const r = await race('R1 create engagement first, payroll entry second',
+    c => mkEng(c, emp, '2026-11-02', '2026-11-30'), c => addEntry(c, run, emp));
+  ok('R1: the payroll insert is refused once the engagement commits', r.b && /TEMP_ENGAGEMENT_OVERLAP/.test(r.b.message), r.b?.message);
+  ok('R1: no worker ends up in both (engagement kept, payroll entry absent)', await overlapCount(emp) === 0
+    && Number(await val(admin, `SELECT count(*) FROM temporary_worker_engagements WHERE employee_id=$1`, [emp])) === 1);
+}
+// R2: payroll insertion (first) vs engagement creation (second)
+{
+  const emp = await mkWorker(); const run = await mkRun('2026-11-02', '2026-11-08');
+  const r = await race('R2 payroll entry first, create engagement second',
+    c => addEntry(c, run, emp), c => mkEng(c, emp, '2026-11-02', '2026-11-30'));
+  ok('R2: the engagement is refused once the payroll entry commits', r.b && /TEMP_ENGAGEMENT_OVERLAP/.test(r.b.message), r.b?.message);
+  ok('R2: payroll entry kept, no engagement created', Number(await val(admin, `SELECT count(*) FROM payroll_entries WHERE employee_id=$1`, [emp])) === 1
+    && Number(await val(admin, `SELECT count(*) FROM temporary_worker_engagements WHERE employee_id=$1`, [emp])) === 0);
+}
+// R3: activation vs payroll insertion (a planned engagement is activated while a payroll entry is inserted)
+{
+  const emp = await mkWorker(); const run = await mkRun('2026-11-02', '2026-11-08');
+  const eng = await mkEng(admin, emp, '2026-11-02', '2026-11-30', false);
+  const r = await race('R3 activate first, payroll entry second',
+    c => call(c, 'set_engagement_status', eng, 'active', null, hos1, 'head_of_sales'), c => addEntry(c, run, emp));
+  ok('R3: payroll insert refused; engagement is active', r.b && /TEMP_ENGAGEMENT_OVERLAP/.test(r.b.message)
+    && (await val(admin, `SELECT status FROM temporary_worker_engagements WHERE id=$1`, [eng])) === 'active', r.b?.message);
+  const emp2 = await mkWorker(); const run2 = await mkRun('2026-11-02', '2026-11-08');
+  const eng2 = await mkEng(admin, emp2, '2026-11-02', '2026-11-30', false);
+  await admin.query(`UPDATE temporary_worker_engagements SET status='cancelled', closed_by=$2, closed_at=now(), close_reason='x' WHERE id=$1`, [eng2, hos1]);
+  const eng3 = await mkEng(admin, emp2, '2026-12-01', '2026-12-31', false);          // clear of run2
+  const r2 = await race('R3b payroll entry first, activate second',
+    c => addEntry(c, run2, emp2), c => call(c, 'set_engagement_status', eng3, 'active', null, hos1, 'head_of_sales'));
+  ok('R3b: activation proceeds (no overlap) and the payroll entry stands', !r2.b && await overlapCount(emp2) === 0);
+}
+// R4: rate revision vs payroll insertion
+{
+  const emp = await mkWorker(); const eng = await mkEng(admin, emp, '2026-01-05', null);
+  const today = (await val(admin, `SELECT current_date::text`));
+  const run = await mkRun(today, (await val(admin, `SELECT (current_date + 6)::text`)));
+  const r = await race('R4 revise first, payroll entry second',
+    c => call(c, 'revise_engagement_rate', eng, 1500, 'Raise', hos1, 'head_of_sales'), c => addEntry(c, run, emp));
+  ok('R4: payroll insert refused (new active version covers today onward)', r.b && /TEMP_ENGAGEMENT_OVERLAP/.test(r.b.message), r.b?.message);
+  ok('R4: exactly one active version, zero overlapping payroll entries', Number(await val(admin, `SELECT count(*) FROM temporary_worker_engagements WHERE employee_id=$1 AND status='active'`, [emp])) === 1 && await overlapCount(emp) === 0);
+  const emp2 = await mkWorker(); const eng2 = await mkEng(admin, emp2, '2026-01-05', null);
+  const run2 = await mkRun('2025-12-01', '2025-12-07');                                // before the engagement: allowed
+  const r2 = await race('R4b payroll entry (clear period) first, revise second',
+    c => addEntry(c, run2, emp2), c => call(c, 'revise_engagement_rate', eng2, 1500, 'Raise', hos1, 'head_of_sales'));
+  ok('R4b: revision proceeds when the payroll run is clear of the engagement', !r2.b, r2.b?.message);
+}
+// R5: payroll run date edit vs engagement creation, both directions
+{
+  const emp = await mkWorker(); const run = await mkRun('2026-11-02', '2026-11-08'); await addEntry(admin, run, emp);
+  const r = await race('R5 run date edit first, create engagement second',
+    c => c.query(`UPDATE payroll_runs SET period_end='2026-11-20' WHERE id=$1`, [run]), c => mkEng(c, emp, '2026-11-15', '2026-11-30'));
+  ok('R5: the engagement is refused (sees the committed new dates)', r.b && /TEMP_ENGAGEMENT_OVERLAP/.test(r.b.message), r.b?.message);
+  const emp2 = await mkWorker(); const run2 = await mkRun('2026-11-02', '2026-11-08'); await addEntry(admin, run2, emp2);
+  const r2 = await race('R5b create engagement first, run date edit second',
+    c => mkEng(c, emp2, '2026-11-15', '2026-11-30'), c => c.query(`UPDATE payroll_runs SET period_end='2026-11-20' WHERE id=$1`, [run2]));
+  ok('R5b: the date edit is refused (sees the committed engagement)', r2.b && /TEMP_ENGAGEMENT_OVERLAP/.test(r2.b.message), r2.b?.message);
+  ok('R5b: run dates unchanged', (await val(admin, `SELECT period_end::text FROM payroll_runs WHERE id=$1`, [run2])) === '2026-11-08');
+}
+// R6: payroll-run APPROVAL vs engagement creation
+{
+  const emp = await mkWorker(); const run = await mkRun('2026-11-02', '2026-11-08'); await addEntry(admin, run, emp);
+  const r = await race('R6 approve run first, create engagement second',
+    c => c.query(`UPDATE payroll_runs SET status='approved' WHERE id=$1`, [run]), c => mkEng(c, emp, '2026-11-02', '2026-11-30'));
+  ok('R6: the engagement is refused after the run is approved', r.b && /TEMP_ENGAGEMENT_OVERLAP/.test(r.b.message), r.b?.message);
+}
+// R7: attendance vs payroll insertion (completed engagement: protected days are the days worked)
+{
+  const emp = await mkWorker(); const eng = await mkEng(admin, emp, '2026-11-02', null);
+  const asg = (await one(admin, `INSERT INTO production_job_assignments (job_id, stage_id, operation_id, employee_id) VALUES ($1,$2,$3,$4) RETURNING id`, [JOB, STAGE, OP, emp])).id;
+  await call(admin, 'link_assignment_to_engagement', asg, eng, pmRec, 'production_manager');
+  await call(admin, 'set_engagement_status', eng, 'completed', 'Done', hos1, 'head_of_sales');
+  const eng2 = await mkEng(admin, emp, '2026-11-02', null);                 // second engagement for the same worker
+  const asg2 = (await one(admin, `INSERT INTO production_job_assignments (job_id, stage_id, operation_id, employee_id) VALUES ($1,$2,$3,$4) RETURNING id`, [JOB, STAGE, OP, emp])).id;
+  await call(admin, 'link_assignment_to_engagement', asg2, eng2, pmRec, 'production_manager');
+  await call(admin, 'set_engagement_status', eng2, 'completed', 'Done', hos1, 'head_of_sales');
+  const run = await mkRun('2026-11-09', '2026-11-15');
+  // The worker has no attendance and no open engagement: a payroll entry is allowed, so test the race with ATTENDANCE on a live engagement instead.
+  const emp3 = await mkWorker(); const eng3 = await mkEng(admin, emp3, '2026-11-02', '2026-11-06');
+  const asg3 = (await one(admin, `INSERT INTO production_job_assignments (job_id, stage_id, operation_id, employee_id) VALUES ($1,$2,$3,$4) RETURNING id`, [JOB, STAGE, OP, emp3])).id;
+  await call(admin, 'link_assignment_to_engagement', asg3, eng3, pmRec, 'production_manager');
+  const runLate = await mkRun('2026-11-09', '2026-11-15');                   // after the expected end: payroll insert would be allowed
+  const r = await race('R7 attendance (after expected end) first, payroll entry second',
+    c => call(c, 'record_time_entry', asg3, '2026-11-10', 1, false, null, null, true, pmRec, '2026-12-31'), c => addEntry(c, runLate, emp3));
+  ok('R7: payroll insert refused: that day now has temporary attendance', r.b && /TEMP_ENGAGEMENT_OVERLAP/.test(r.b.message), r.b?.message);
+  void run;
+}
+// R8: attendance vs engagement completion
+{
+  const emp = await mkWorker(); const eng = await mkEng(admin, emp, '2026-11-02', null);
+  const asg = (await one(admin, `INSERT INTO production_job_assignments (job_id, stage_id, operation_id, employee_id) VALUES ($1,$2,$3,$4) RETURNING id`, [JOB, STAGE, OP, emp])).id;
+  await call(admin, 'link_assignment_to_engagement', asg, eng, pmRec, 'production_manager');
+  const r = await race('R8 complete engagement first, attendance second',
+    c => call(c, 'set_engagement_status', eng, 'completed', 'Done', hos1, 'head_of_sales'),
+    c => call(c, 'record_time_entry', asg, '2026-11-03', 1, false, null, null, true, pmRec, '2026-12-31'));
+  ok('R8: attendance refused once the engagement is completed', r.b && /is completed, so no new attendance/.test(r.b.message), r.b?.message);
+  ok('R8: no entry was created', Number(await val(admin, `SELECT count(*) FROM production_time_entries WHERE assignment_id=$1`, [asg])) === 0);
+}
+// R9a: DETERMINISTIC proof of sorted lock order. A holds the advisory lock of the HIGHER employee id. B edits a run that
+// contains both employees; B must already hold the lower id's lock (granted) while it waits for the higher one.
+{
+  const [x, y] = [await mkWorker(), await mkWorker()];
+  const [lo, hi] = x < y ? [x, y] : [y, x];
+  const run = await mkRun('2027-03-01', '2027-03-07');
+  await addEntry(admin, run, hi); await addEntry(admin, run, lo);                 // inserted high-first on purpose
+  await A.query('BEGIN'); await A.query(`SELECT pg_advisory_xact_lock(hashtextextended('tw_employee:' || $1::text, 0))`, [hi]);
+  let done = false, err = null;
+  const bP = B.query(`UPDATE payroll_runs SET period_end='2027-03-08' WHERE id=$1`, [run]).catch(e => { err = e; }).finally(() => { done = true; });
+  let waiting = false;
+  for (let i = 0; i < 40 && !done; i++) { await sleep(100); if ((await val(admin, `SELECT wait_event_type FROM pg_stat_activity WHERE pid=$1`, [B.pid])) === 'Lock') { waiting = true; break; } }
+  const held = Number(await val(admin, `SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND pid=$1 AND granted`, [B.pid]));
+  ok('R9a: B is blocked on the HIGHER employee id', waiting && !done);
+  ok('R9a: while blocked, B already holds the run lock and the LOWER employee lock (sorted order)', held === 2, `granted advisory locks held by B = ${held}`);
+  await A.query('COMMIT'); await bP;
+  ok('R9a: B completes after A releases', !err && (await val(admin, `SELECT period_end::text FROM payroll_runs WHERE id=$1`, [run])) === '2027-03-08', err?.message);
+}
+// R9b: two run-date edits over the same two workers (opposite entry order), repeated: no deadlock
+{
+  const [w1, w2] = [await mkWorker(), await mkWorker()];
+  let deadlocks = 0, trials = 0;
+  for (let i = 0; i < 15; i++) {
+    const ra = await mkRun('2027-01-04', '2027-01-10'), rb = await mkRun('2027-02-01', '2027-02-07');
+    await addEntry(admin, ra, w1); await addEntry(admin, ra, w2);
+    await addEntry(admin, rb, w2); await addEntry(admin, rb, w1);                 // opposite insertion order
+    const edit = async (c, run, to) => { try { await c.query('BEGIN'); await c.query(`UPDATE payroll_runs SET period_end=$2 WHERE id=$1`, [run, to]); await sleep(20); await c.query('COMMIT'); }
+      catch (e) { if (e.code === '40P01') deadlocks++; await c.query('ROLLBACK').catch(() => {}); } };
+    await Promise.all([edit(A, ra, '2027-01-11'), edit(B, rb, '2027-02-08')]); trials++;
+  }
+  ok(`R9: ${trials} concurrent edit pairs over the same workers: no deadlock`, deadlocks === 0, `${deadlocks} deadlocks`);
 }
 
 // ── S9: nothing ever double-paid, across the whole run ──────────────────────

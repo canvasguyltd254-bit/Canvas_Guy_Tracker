@@ -222,7 +222,7 @@ If total units are 3.50, all 3.50 are included and paid together. An entry is ne
 
 ### 5.5 Payout sheets and payment
 
-- `create_payout_sheet(settlement_ids, actor)` adds approved, unpaid settlements that are not already on a sheet. It computes totals. If `total_net` exceeds the limit (or the limit is missing), the sheet needs `approve_payout_sheet(id, admin)`. This applies the limit to the whole sheet, so a batch cannot bypass review.
+- `create_payout_sheet(settlement_ids, actor)` creates a sheet for **exactly one** approved, unpaid settlement (Stage 1b; a partial unique index on `payout_sheet_id` also enforces it). If `total_net` exceeds the limit (or the limit is missing), the sheet needs `approve_payout_sheet(id, admin)`. *(Batch sheets were removed: see §15.)*
 - `mark_sheet_printed(id)`; `attach_signed_receipt(id, path, actor)` sets the sheet `signed` and stamps `worker_acknowledged_at` on every deduction of its settlements.
 - `pay_temporary_settlement(id, actor, received_by_full_name, payment_note)` requires:
   - settlement `approved`, on a sheet that is `signed` (and admin-approved if required);
@@ -356,7 +356,7 @@ Real Postgres, **two simultaneous connections** (cannot be proven in pglite): co
 
 - **Files:** `supabase/migrations/temporary_workers_stage1.sql`; tests `supabase/tests/temporary_workers_stage1.pglite.mjs` (pglite, runs the real payroll and Production v3a/v3b migrations) and `supabase/tests/temporary_workers_concurrency.mjs` (real Postgres, two connections, scratch database only).
 - **Cancelled sheets and the receipt path:** the `cancelled` CHECK forbids a stored receipt path, so cancelling a *signed* sheet clears `signed_receipt_path` on the row and writes the old path to the audit log (`cancelled_receipt_retained`). The storage object is not deleted. Stage 4 must not delete it either.
-- **Damage deductions** default to enabled (`damage_deductions_enabled = true`) per the decisions; switch off in settings until an adviser confirms (§11 item 1).
+- **Damage deductions** originally defaulted to enabled. **Superseded by §15: the default is now off** until an adviser confirms (§11 item 1).
 - **Engagement creation** takes an `activate` flag (planned or active). `revise_engagement_rate` closes the old version as `completed` with reason "Rate revised: …" and opens version n+1.
 - **Rate on the settlement comes from the engagement.** `link_assignment_to_engagement` writes the agreed rate into the assignment snapshot, and the ledger costs from that snapshot. The employee's own `day_rate` is not used for temporary labour.
 - **Component derivation:** overtime = `actual_labour_cost − round(units × daily_rate_snapshot, 2)` and must equal `units × overtime_rate_snapshot` within KES 0.01; Sunday amount = `actual_labour_cost` and must equal `units × sunday_rate_snapshot` within KES 0.01. Anything else stops preparation.
@@ -372,3 +372,25 @@ Real Postgres, **two simultaneous connections** (cannot be proven in pglite): co
 - **Printing (replaces the Stage 4 PDF):** the payout sheet prints from an HTML view in the browser (one row per worker: gross, each deduction with its reason and reference, cash received, signature). No PDF generator is involved. The signed copy is uploaded straight to the private `temporary-worker-receipts` bucket via a signed URL, created on first use.
 - **Not built (by decision):** attaching a *file* to a deduction (the database supports `evidence_path`; the screen collects the reference only), witness name on the sheet, reports and cashflow obligations (Stage 5), and GL posting.
 - **Tests:** `supabase/tests/temporary_workers_routes.harness.mjs` (71 checks) and `supabase/tests/temporary_workers_ui.harness.mjs` (41 checks, React 19 in jsdom, mutation-tested), plus unit tests in `shared/lib/__tests__/payrollTemporaryAccess.test.js`.
+
+## 15. Stage 1b — corrective changes after external review
+
+Migration `supabase/migrations/temporary_workers_stage1b.sql`, run after Stage 1. Stage 1 was already applied (no engagements existed), so it is corrected, not rewritten.
+
+**Overlap race (P0).** One per-employee advisory lock (`tw_lock_employee`) is taken by: engagement creation, activation, rate revision, payroll-entry insert/move, payroll-run date change, and payroll-run approval. Payroll runs also take a run lock (shared for entry inserts, exclusive for date/approval changes). **Lock order everywhere: assignment row → run lock → employee locks (ascending employee id) → engagement row.** A run-date edit or approval locks every employee in the run in sorted order, so two such edits cannot deadlock. Overlap rule (`tw_engagement_overlap`): planned/active engagements protect their agreed span (open-ended while active); any engagement, including completed, cancelled or revised ones, protects the days with non-voided (draft/submitted/approved) attendance. A completed engagement therefore stops blocking payroll on days nothing was worked.
+
+**Attendance.** A trigger on `production_time_entries` (INSERT only) refuses new attendance on an assignment linked to an engagement that is not active, or dated before its start. It also refuses a day that falls inside a payroll run the worker is already in. `expected_end_date` is a guide only. Existing entries can still be submitted, approved or rejected after closure and are settled by a close-out settlement. After a rate revision the old assignment refuses new days: link a new assignment to the new version.
+
+**Revision.** The new version's expected end is carried over only if still in the future (otherwise open-ended), and the payroll overlap is re-checked under the lock.
+
+**Planned cost.** Linking an assignment recomputes `planned_labour_cost` through Production's own `production_apply_labour_plan` from the new rate snapshot.
+
+**One settlement per sheet.** The unique index plus a function check; the UI picks one settlement. This removes the half-paid batch sheet that could neither be cancelled nor voided. Batch sheets may return later only as all-or-nothing payment.
+
+**API.** Detail routes use `maybeSingle()`; a database error goes through `dbError` (500/503), and only a genuine empty result is 404. A failing due-summary fails the request. The list uses one `temporary_engagements_due(ids[])` call. Dates use the app-wide strict `isIsoDate` (rejects 2026-02-30).
+
+**Damage deductions** default to off. The existing settings row is switched off only if no damage deduction has ever been recorded.
+
+**Tests.** pglite 225 checks; real-Postgres script 63 checks, including both directions of: create vs payroll insert, activate vs payroll insert, revise vs payroll insert, run-date edit vs create, run approval vs create, attendance vs payroll insert, attendance vs completion, and a deterministic proof of sorted lock order. Removing the employee lock from create, or from the run-date trigger, or reversing the lock order, each fails the tests.
+
+**Known limits.** Two transactions that insert payroll entries for several employees in different orders in one statement could still deadlock; Postgres aborts one and the retry succeeds. Planned engagements already block overlapping payroll, so the activation race is defence in depth.

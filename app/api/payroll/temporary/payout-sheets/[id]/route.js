@@ -17,8 +17,9 @@ export async function GET(request, props) {
   const { id } = await props.params;
   const g = await guard(); if (g.error) return g.error;
   if (!isUuid(id)) return bad('Invalid id');
-  const { data: sheet, error } = await serviceClient.from('temporary_worker_payout_sheets').select(SHEET_COLUMNS).eq('id', id).single();
-  if (error || !sheet) return NextResponse.json({ error: 'Payout sheet not found' }, { status: 404 });
+  const { data: sheet, error } = await serviceClient.from('temporary_worker_payout_sheets').select(SHEET_COLUMNS).eq('id', id).maybeSingle();
+  if (error) return dbError(error);                       // a database failure is never reported as "not found"
+  if (!sheet) return NextResponse.json({ error: 'Payout sheet not found' }, { status: 404 });
   const { data: settlements, error: sErr } = await serviceClient.from('temporary_worker_settlements')
     .select(`${SETTLEMENT_COLUMNS}, employees(name, employee_num), temporary_worker_engagements(engagement_num)`)
     .eq('payout_sheet_id', id).order('settlement_num');
@@ -51,7 +52,8 @@ export async function PATCH(request, props) {
       const name = String(b.file_name || ''); const size = Number(b.file_size);
       if (!name || !RECEIPT_EXTENSIONS.some(e => name.toLowerCase().endsWith(e))) return bad('Upload a PDF, PNG, JPG or HEIC photo of the signed sheet.');
       if (!Number.isFinite(size) || size <= 0 || size > RECEIPT_MAX_BYTES) return bad('The file must be under 15 MB.');
-      const { data: sheet } = await serviceClient.from('temporary_worker_payout_sheets').select('status').eq('id', id).single();
+      const { data: sheet, error: shErr } = await serviceClient.from('temporary_worker_payout_sheets').select('status').eq('id', id).maybeSingle();
+      if (shErr) return dbError(shErr);
       if (!sheet) return NextResponse.json({ error: 'Payout sheet not found' }, { status: 404 });
       if (sheet.status !== 'printed') return bad('Print the payout sheet before attaching the signed copy.', 'RULE');
       // Private bucket; creating it is idempotent (an "already exists" error after the first time is expected).
@@ -75,7 +77,8 @@ export async function PATCH(request, props) {
       return rpc('attach_signed_receipt', { p_id: id, p_path: path, ...who });
     }
     case 'receipt_url': {
-      const { data: sheet } = await serviceClient.from('temporary_worker_payout_sheets').select('signed_receipt_path').eq('id', id).single();
+      const { data: sheet, error: shErr } = await serviceClient.from('temporary_worker_payout_sheets').select('signed_receipt_path').eq('id', id).maybeSingle();
+      if (shErr) return dbError(shErr);
       if (!sheet?.signed_receipt_path) return NextResponse.json({ error: 'No signed receipt on this sheet' }, { status: 404 });
       const { data, error } = await serviceClient.storage.from(RECEIPT_BUCKET).createSignedUrl(sheet.signed_receipt_path, 600);
       if (error || !data) return NextResponse.json({ error: 'Could not open the receipt' }, { status: 500 });
