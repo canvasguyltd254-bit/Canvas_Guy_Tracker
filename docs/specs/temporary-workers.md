@@ -403,3 +403,19 @@ Migration `temporary_workers_stage1c.sql` (after stage1 and stage1b).
 - **Maximum days** is a warning only. The due summaries return `total_units` (non-voided attendance: draft, submitted and approved; rejected and voided excluded; summed across the worker's rate versions on that project), `max_days` and `max_days_reached` (`total_units >= max_days`). It is the total, not the unsettled amount, so the warning stays after payment. The UI shows a "max days" badge and a banner in the engagement modal; nothing is blocked.
 - The setup-incomplete message names stage1, stage1b and stage1c in order. The payout-sheet wording is singular.
 - Tests: pglite 237, routes 93, UI 55, unit 500, real-Postgres 63.
+
+### 15.2 Final UI audit (first-time users)
+
+Findings fixed, all in `TemporaryWorkersTab.js`, `TemporarySettlements.js` and `payrollUi.js`:
+
+- **No overview.** A "How temporary workers are paid (6 steps)" guide (a `<details>`, keyboard accessible) sits above the tabs, and each tab shows a one-sentence explanation of what it is.
+- **Disabled buttons gave no reason.** "Create engagement" lists exactly what is still needed (worker, project, rate, start date), in the page and in the button tooltip.
+- **Silent trap.** An active engagement with no linked Production assignment now warns that days will not appear or be paid until one is linked.
+- **Browser pop-up.** Removing a deduction used `window.prompt`; it is now an inline reason form.
+- **Dead ends.** Each settlement shows a plain "Next:" line for its status and role (check and approve, above the limit so an admin, you prepared it so someone else, create a payout sheet, and so on). An approved settlement has a "Create payout sheet" button that opens the new sheet, instead of a hunt through another tab.
+- **Jargon and empty states.** "Units" became "Days". Empty lists now say what to do first.
+- **Accessibility.** `Field` links each label to its control (`htmlFor`/`id`), marks required fields with `aria-required`, and attaches hints as descriptions; the worker and project search boxes have accessible names.
+
+Not changed: small-button height (32 px) is below the 44 px touch guideline; this is a desktop admin screen, and the shared `Btn` is used elsewhere. Colour contrast was not measured. Layout was verified in a simulated DOM only, not in a real browser: please look at it once on Monday morning before the new users do.
+
+Tests: UI harness 79 checks (was 55). Each guidance feature was removed in turn (pop-up, label wiring, guide) and the tests failed.

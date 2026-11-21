@@ -45,7 +45,7 @@ window.IS_REACT_ACT_ENVIRONMENT = true;
 window.MessageChannel = MessageChannel;
 window.setTimeout = setTimeout; window.clearTimeout = clearTimeout;
 window.HTMLElement.prototype.scrollIntoView = () => {};
-window.prompt = () => 'prompted reason';
+window.__prompts = 0; window.prompt = () => { window.__prompts++; return 'prompted reason'; };
 window.open = () => ({ document: { write() {}, close() {} } });
 window.eval(`${await (await import('node:fs/promises')).readFile('/tmp/rt/out/ui.js', 'utf8')}; window.__App = App;`);
 const { React, act, createRoot, TemporaryWorkersTab } = window.__App;
@@ -210,6 +210,77 @@ ok('a printed sheet offers the signed-copy upload and no pay button yet', /Uploa
 await mount('admin', { sheets: [sheet({ status: 'cancelled', cancelled_at: '2026-11-08T08:00:00Z', cancel_reason: 'Wrong names' })], sheetSettlements: [] });
 await tab('Payout sheets'); await click(byText('button', 'Open'));
 ok('a cancelled sheet is read-only and says it is never reused', /never reused/.test(dialog().textContent) && !byText('button', 'Print sheet', dialog()) && !q('button', dialog()).some(b => /Upload|Mark paid|Cancel sheet/.test(b.textContent))); await unmount();
+
+
+// ── first-time-user guidance (audit) ──
+{
+  await mount('head_of_sales');
+  const how = document.querySelector('details');
+  ok('a "How temporary workers are paid" guide is on the page with six numbered steps', how && /6 steps/.test(how.textContent) && how.querySelectorAll('li').length === 6);
+  ok('the guide names the key rules: cash only, a different person approves, paid is final', /cash only/.test(how.textContent) && /different person approves/i.test(how.textContent) && /Paid is final/.test(how.textContent));
+  ok('each tab has a one-sentence explanation (Engagements)', /An engagement is the deal with one worker on one project/.test(document.querySelector('[data-testid=tab-help]').textContent));
+  await tab('Due for payment'); ok('...and it changes with the tab (Due for payment)', /ready to be paid/.test(document.querySelector('[data-testid=tab-help]').textContent));
+  await tab('Settlements'); ok('...(Settlements)', /amount owed to one worker/.test(document.querySelector('[data-testid=tab-help]').textContent));
+  await tab('Payout sheets'); ok('...(Payout sheets)', /One sheet covers one settlement/.test(document.querySelector('[data-testid=tab-help]').textContent));
+  ok('an empty payout-sheet list says what to do first', /Approve a settlement first/.test(text()));
+  await unmount();
+
+  // new-engagement form: says what is missing, and every label is wired to its control
+  await mount('head_of_sales'); await click(byText('button', '+ New engagement'));
+  const create = exactBtn('Create engagement');
+  ok('Create engagement is disabled and says exactly what is still needed', create.disabled && /Still needed: a worker, a project, the agreed daily rate/.test(dialog().textContent) && /Still needed/.test(create.title));
+  const labels = q('label[for]', dialog());
+  const unwired = labels.filter(l => { const el = document.getElementById(l.getAttribute('for')); return !el || !/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName); });
+  ok(`every form label points at a real control (${labels.length} labels checked), so clicking a label focuses the field`, labels.length >= 6 && unwired.length === 0, unwired.map(l => l.textContent).join(','));
+  ok('the worker and project search boxes have accessible names', !!dialog().querySelector('input[aria-label="Search workers"]') && !!dialog().querySelector('input[aria-label="Search projects"]'));
+  ok('required fields are announced as required', q('[aria-required="true"]', dialog()).length >= 3);
+  await unmount();
+
+  // an active engagement with nothing linked warns that days will not count
+  await mount('production_manager'); await click(byText('button', 'Open'));
+  ok('an active engagement with no linked assignment warns that Production days will not appear', /No assignment is linked yet/.test(dialog().textContent)); await unmount();
+
+  // removing a deduction: inline reason, never a browser pop-up
+  const ded = { id: 'd1', settlement_id: 's1', deduction_type: 'cash_advance', amount: 500, reason: 'Advance', evidence_ref: 'ADV-1', active: true, recorded_by: OTHER, approved_by: null, approved_at: null, approved_by_role: null, worker_acknowledged_at: null, void_reason: null };
+  await mount('head_of_sales', { settlements: [settlement({})], deductions: { s1: [ded] } });
+  await tab('Settlements'); await click(byText('button', 'Open'));
+  window.__prompts = 0;
+  await click(exactBtn('Remove…', dialog()));
+  ok('Remove… opens an inline reason form (no browser pop-up)', window.__prompts === 0 && /Why is this deduction being removed/.test(dialog().textContent));
+  ok('"Remove deduction" stays disabled until a reason is typed', exactBtn('Remove deduction', dialog()).disabled);
+  await type(q('input', dialog()).find(i => i.closest('div')?.previousElementSibling === null || true && /removed/i.test(i.closest('div').parentElement.textContent) && !i.value), 'Entered twice');
+  await settle();
+  const removeBtn = exactBtn('Remove deduction', dialog());
+  ok('typing a reason enables it', !removeBtn.disabled);
+  await click(removeBtn);
+  const patch = calls.find(c => c.method === 'PATCH' && /deductions\/d1$/.test(c.url));
+  ok('...and it voids the deduction with that reason, with no pop-up', patch && patch.body.action === 'void' && patch.body.reason === 'Entered twice' && window.__prompts === 0, JSON.stringify(patch));
+  await unmount();
+
+  // settlement: plain "Next:" guidance per status, and a one-click path to the payout sheet
+  await mount('head_of_sales', { settlements: [settlement({ prepared_by: USER, gross_amount: 3000, base_amount: 3000, net_amount: 3000 })] });
+  await tab('Settlements'); await click(byText('button', 'Open'));
+  ok('draft you prepared: Next says someone else must approve', /Next: You prepared this, so someone else must approve it/.test(dialog().textContent)); await unmount();
+  await mount('head_of_sales', { settlements: [settlement({})] });
+  await tab('Settlements'); await click(byText('button', 'Open'));
+  ok('draft above the approval limit (12,000): Next says an admin must approve', /Next: This is above the approval limit, so an admin must approve it/.test(dialog().textContent));
+  await unmount();
+  await mount('head_of_sales', { settlements: [settlement({ gross_amount: 3000, base_amount: 3000, net_amount: 3000 })] });
+  await tab('Settlements'); await click(byText('button', 'Open'));
+  ok('draft under the limit prepared by someone else: Next says check and approve', /Next: Check the days and deductions, then approve it/.test(dialog().textContent));
+  ok('the settlement tables say "Days" (not the jargon "Units")', /Days/.test(dialog().textContent) && !/\bUnits\b/.test(dialog().textContent)); await unmount();
+  await mount('head_of_sales', { settlements: [approvedS({ payout_sheet_id: null })], sheets: [sheet({ status: 'open', total_net: 3000 })], sheetSettlements: [approvedS({})] });
+  await tab('Settlements'); await click(byText('button', 'Open'));
+  ok('approved without a sheet: Next says to create a payout sheet, with the button right there', /Next: Create a payout sheet/.test(dialog().textContent) && !!exactBtn('Create payout sheet', dialog()));
+  await click(exactBtn('Create payout sheet', dialog()));
+  const mk = calls.find(c => c.method === 'POST' && /payout-sheets$/.test(c.url));
+  ok('Create payout sheet posts exactly this settlement', mk && mk.body.settlement_ids.length === 1 && mk.body.settlement_ids[0] === 's1', JSON.stringify(mk));
+  ok('...then jumps to the Payout sheets tab with the new sheet open (no hunting for it)', /Payout sheet PS-/.test(dialog()?.getAttribute('aria-label') || '') && /Print sheet/.test(dialog().textContent));
+  await unmount();
+  await mount('head_of_sales', { settlements: [approvedS({ payout_sheet_id: 'sh1' })] });
+  await tab('Settlements'); await click(byText('button', 'Open'));
+  ok('approved and already on a sheet: no duplicate Create button, Next points to Payout sheets', !exactBtn('Create payout sheet', dialog()) && /Continue in “Payout sheets”/.test(dialog().textContent)); await unmount();
+}
 
 // ── cancelled engagement with approved attendance: visible as close-out due, and settleable ──
 {

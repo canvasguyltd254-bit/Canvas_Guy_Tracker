@@ -26,6 +26,7 @@ export default function TemporaryWorkersTab() {
   const [settings, setSettings] = useState(undefined);      // undefined = loading, null = row missing (fail-closed)
   const [tick, setTick] = useState(0);
   const [focusSettlement, setFocusSettlement] = useState(null);
+  const [focusSheet, setFocusSheet] = useState(null);
   const bump = useCallback(() => setTick(t => t + 1), []);
 
   useEffect(() => { (async () => {
@@ -48,16 +49,48 @@ export default function TemporaryWorkersTab() {
       {settings === null && (
         <Banner tone="warn" message="The approval limit is not set, so only an admin can approve settlements and payout sheets until an admin sets it under “Limits”." />
       )}
-      <Banner tone="info" message="Temporary workers are paid in cash after approved attendance. Record and approve their days in Production → Time; this screen settles and pays them. No statutory deductions apply." />
-      <TabBar tabs={tabs} active={sub} onSelect={setSub} style={{ marginBottom: 18 }} />
+      <HowItWorks />
+      <TabBar tabs={tabs} active={sub} onSelect={setSub} style={{ marginBottom: 10 }} />
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 16 }} data-testid="tab-help">{TAB_HELP[sub]}</div>
       {sub === 'engagements' && <EngagementsPanel role={userRole} settings={settings} refreshKey={tick} onChanged={bump}
         onPrepared={(id) => { setFocusSettlement(id); setSub('settlements'); }} />}
       {sub === 'due' && <DuePanel role={userRole} refreshKey={tick} onChanged={bump} onPrepared={(id) => { setFocusSettlement(id); setSub('settlements'); }} />}
       {sub === 'settlements' && <SettlementsPanel role={userRole} userId={user?.id} settings={settings} refreshKey={tick} onChanged={bump}
-        focusId={focusSettlement} onFocusDone={() => setFocusSettlement(null)} />}
-      {sub === 'sheets' && <SheetsPanel role={userRole} userId={user?.id} settings={settings} refreshKey={tick} onChanged={bump} />}
+        focusId={focusSettlement} onFocusDone={() => setFocusSettlement(null)}
+        onOpenSheet={(id) => { setFocusSheet(id); setSub('sheets'); }} />}
+      {sub === 'sheets' && <SheetsPanel role={userRole} userId={user?.id} settings={settings} refreshKey={tick} onChanged={bump}
+        focusId={focusSheet} onFocusDone={() => setFocusSheet(null)} />}
       {sub === 'settings' && <LimitsPanel settings={settings} onSaved={bump} />}
     </div>
+  );
+}
+
+// One plain sentence per tab, so a first-time user always knows what they are looking at and what comes next.
+const TAB_HELP = {
+  engagements: 'An engagement is the deal with one worker on one project: the agreed daily rate and the dates. Create one first; nothing can be paid without it.',
+  due: 'Workers whose approved days are ready to be paid. Choose “Prepare settlement” on a row to start paying them.',
+  settlements: 'A settlement is the amount owed to one worker for their approved days. Check it, add any deductions, then have a second person approve it.',
+  sheets: 'A payout sheet is the paper the worker signs when they receive their cash. One sheet covers one settlement.',
+  settings: 'Admin only: the amounts above which an admin must approve, and the deduction rules.',
+};
+
+// Always visible, collapsed to one line once understood. <details> keeps it keyboard accessible with no state to manage.
+function HowItWorks() {
+  const steps = [
+    ['Record days', 'In Production → Time, record each day the worker attended and get it approved.'],
+    ['Create the engagement', 'Here, under Engagements: the worker, the project and the agreed daily rate. Then link their Production assignment to it so their days count.'],
+    ['Prepare the settlement', 'When days are due (3 approved days, or the job ends), prepare a settlement. Add any deductions.'],
+    ['Approve it', 'A different person approves. Above the approval limit, an admin does.'],
+    ['Create a payout sheet', 'Print it, the worker signs next to their cash, upload a photo of the signed copy.'],
+    ['Mark it paid', 'Enter the receiver’s full name. A different person from the one who prepared it pays. Paid is final.'],
+  ];
+  return (
+    <details style={{ background: C.blueBg, border: `1px solid ${C.blueBd}`, borderRadius: 9, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: C.blue }}>
+      <summary style={{ cursor: 'pointer', fontWeight: 700 }}>How temporary workers are paid (6 steps) — cash only, no statutory deductions</summary>
+      <ol style={{ margin: '10px 0 2px', paddingLeft: 20, lineHeight: 1.55 }}>
+        {steps.map(([t, d]) => <li key={t}><strong>{t}.</strong> {d}</li>)}
+      </ol>
+    </details>
   );
 }
 
@@ -91,7 +124,7 @@ function EngagementsPanel({ role, refreshKey, onChanged, onPrepared }) {
         </select>
         <Btn onClick={() => setShowNew(true)}>+ New engagement</Btn>
       </div>
-      {loading ? <Spinner /> : rows.length === 0 ? <Empty>No engagements yet. Create one for each temporary worker on a project.</Empty> : (
+      {loading ? <Spinner /> : rows.length === 0 ? <Empty>No engagements yet. Start with “+ New engagement” above: pick the worker, the project and the agreed daily rate.</Empty> : (
         <Table>
           <thead><tr><th style={th}>Engagement</th><th style={th}>Worker</th><th style={th}>Project</th><th style={{ ...th, ...num }}>Daily rate</th><th style={{ ...th, ...num }}>Unsettled days</th><th style={{ ...th, ...num }}>Unsettled KES</th><th style={th}>Status</th><th style={th} /></tr></thead>
           <tbody>{rows.map(e => (
@@ -134,13 +167,14 @@ function NewEngagementModal({ onClose, onCreated, role }) {
     setOrders((data || []).filter(o => !['Cancelled', 'Delivered', 'Completed'].includes(o.status)));
   })(); }, []);
   const shownOrders = orders.filter(o => !oq || `${o.order_num} ${o.client}`.toLowerCase().includes(oq.toLowerCase())).slice(0, 80);
-  const ready = f.employee_id && f.order_id && Number(f.agreed_daily_rate) > 0 && f.start_date;
+  const missing = [!f.employee_id && 'a worker', !f.order_id && 'a project', !(Number(f.agreed_daily_rate) > 0) && 'the agreed daily rate', !f.start_date && 'a start date'].filter(Boolean);
+  const ready = missing.length === 0;
 
   return (
     <Modal title="New temporary engagement" onClose={onClose} width={560}>
       <Banner message={error} onDismiss={() => setError('')} />
       <Field label="Worker" required hint={role === 'admin' ? 'Not listed? Register the worker under Payroll → Employees first.' : undefined}>
-        <input style={{ ...inputStyle, marginBottom: 6 }} placeholder="Search by name or number" value={wq} onChange={(e) => setWq(e.target.value)} />
+        <input aria-label="Search workers" style={{ ...inputStyle, marginBottom: 6 }} placeholder="Search by name or number" value={wq} onChange={(e) => setWq(e.target.value)} />
         <select style={inputStyle} value={f.employee_id} onChange={(e) => setF({ ...f, employee_id: e.target.value })}>
           <option value="">Select a worker…</option>
           {workers.map(w => <option key={w.id} value={w.id}>{w.name} · {w.employee_num}</option>)}
@@ -148,7 +182,7 @@ function NewEngagementModal({ onClose, onCreated, role }) {
         {role !== 'admin' && <div style={{ fontSize: 12, color: C.amber, marginTop: 6, fontWeight: 600 }}>Can’t find the worker? Ask an administrator to register this worker.</div>}
       </Field>
       <Field label="Project" required>
-        <input style={{ ...inputStyle, marginBottom: 6 }} placeholder="Search order number or client" value={oq} onChange={(e) => setOq(e.target.value)} />
+        <input aria-label="Search projects" style={{ ...inputStyle, marginBottom: 6 }} placeholder="Search order number or client" value={oq} onChange={(e) => setOq(e.target.value)} />
         <select style={inputStyle} value={f.order_id} onChange={(e) => setF({ ...f, order_id: e.target.value })}>
           <option value="">Select a project…</option>
           {shownOrders.map(o => <option key={o.id} value={o.id}>{o.order_num} — {o.client}</option>)}
@@ -164,8 +198,9 @@ function NewEngagementModal({ onClose, onCreated, role }) {
       <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, marginBottom: 14 }}>
         <input type="checkbox" checked={f.activate} onChange={(e) => setF({ ...f, activate: e.target.checked })} /> Activate now (a worker cannot be in an overlapping payroll run while engaged)
       </label>
+      {!ready && <div style={{ fontSize: 12, color: C.amber, fontWeight: 600, marginBottom: 8 }} aria-live="polite">Still needed: {missing.join(', ')}.</div>}
       <div style={{ display: 'flex', gap: 8 }}>
-        <Btn loading={saving} disabled={!ready} onClick={async () => {
+        <Btn loading={saving} disabled={!ready} title={ready ? '' : `Still needed: ${missing.join(', ')}`} onClick={async () => {
           setSaving(true); const r = await api('POST', '/api/payroll/temporary/engagements', f); setSaving(false);
           if (!r.ok) setError(r.error); else onCreated();
         }}>Create engagement</Btn>
@@ -219,6 +254,8 @@ function EngagementModal({ e, role, onClose, onChanged, onSettle }) {
       {e.status === 'active' && (
         <>
           <h4 style={{ margin: '8px 0 6px', fontSize: 13 }}>Production assignments</h4>
+          {asg && asg.length > 0 && !asg.some(a => a.linked) && (
+            <Banner tone="warn" message="No assignment is linked yet. Days recorded in Production will not appear or be paid here until you link this worker’s assignment below." />)}
           <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>Attendance only counts once the worker’s Production assignment is linked to this engagement. Linking sets the assignment’s rate to the agreed rate and is refused once time has been recorded on it.</div>
           {!asg ? <Spinner /> : asg.length === 0 ? <Empty>No active Production assignments for this worker on this project. Assign the worker to a stage in Production first.</Empty> : (
             <Table><tbody>{asg.map(a => (
@@ -304,7 +341,7 @@ function DuePanel({ refreshKey, onChanged, onPrepared }) {
   return (
     <div>
       <Banner message={error} onDismiss={() => setError('')} />
-      {!rows ? <Spinner /> : rows.length === 0 ? <Empty>Nothing is due. A worker becomes due at 3.00 approved days, or when an engagement is closed with days left.</Empty> : (
+      {!rows ? <Spinner /> : rows.length === 0 ? <Empty>Nothing is due yet. A worker appears here once they have 3 approved days, or when their engagement ends with days still unpaid. Days are approved in Production → Time.</Empty> : (
         <Table>
           <thead><tr><th style={th}>Worker</th><th style={th}>Project</th><th style={{ ...th, ...num }}>Approved days</th><th style={{ ...th, ...num }}>Amount (KES)</th><th style={th}>Why</th><th style={th} /></tr></thead>
           <tbody>{rows.map(e => (

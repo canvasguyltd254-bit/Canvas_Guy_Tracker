@@ -21,7 +21,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 // ════════════════════════════════════════════════════════════════
 // Settlements list
 // ════════════════════════════════════════════════════════════════
-export function SettlementsPanel({ role, userId, settings, refreshKey, onChanged, focusId, onFocusDone }) {
+export function SettlementsPanel({ role, userId, settings, refreshKey, onChanged, focusId, onFocusDone, onOpenSheet }) {
   const [rows, setRows] = useState([]);
   const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(true);
@@ -47,9 +47,9 @@ export function SettlementsPanel({ role, userId, settings, refreshKey, onChanged
         </select>
         <span style={{ fontSize: 12, color: C.muted }}>A settlement pays every approved, unsettled day up to its cutoff. Paid settlements are final.</span>
       </div>
-      {loading ? <Spinner /> : rows.length === 0 ? <Empty>No settlements yet. Prepare one from “Due for payment”.</Empty> : (
+      {loading ? <Spinner /> : rows.length === 0 ? <Empty>No settlements yet. When a worker is due, open “Due for payment” and choose “Prepare settlement”.</Empty> : (
         <Table>
-          <thead><tr><th style={th}>Settlement</th><th style={th}>Worker</th><th style={th}>Period</th><th style={{ ...th, ...num }}>Units</th><th style={{ ...th, ...num }}>Gross</th><th style={{ ...th, ...num }}>Deductions</th><th style={{ ...th, ...num }}>Net cash</th><th style={th}>Status</th><th style={th} /></tr></thead>
+          <thead><tr><th style={th}>Settlement</th><th style={th}>Worker</th><th style={th}>Period</th><th style={{ ...th, ...num }}>Days</th><th style={{ ...th, ...num }}>Gross</th><th style={{ ...th, ...num }}>Deductions</th><th style={{ ...th, ...num }}>Net cash</th><th style={th}>Status</th><th style={th} /></tr></thead>
           <tbody>
             {rows.map(s => (
               <tr key={s.id}>
@@ -67,7 +67,7 @@ export function SettlementsPanel({ role, userId, settings, refreshKey, onChanged
           </tbody>
         </Table>
       )}
-      {openId && <SettlementModal id={openId} role={role} userId={userId} settings={settings} onClose={() => setOpenId(null)} onChanged={() => { load(); onChanged?.(); }} />}
+      {openId && <SettlementModal id={openId} role={role} userId={userId} settings={settings} onOpenSheet={onOpenSheet ? (sid) => { setOpenId(null); onOpenSheet(sid); } : undefined} onClose={() => setOpenId(null)} onChanged={() => { load(); onChanged?.(); }} />}
     </div>
   );
 }
@@ -75,13 +75,29 @@ export function SettlementsPanel({ role, userId, settings, refreshKey, onChanged
 // ════════════════════════════════════════════════════════════════
 // One settlement: lines, deductions, approve / void
 // ════════════════════════════════════════════════════════════════
-function SettlementModal({ id, role, userId, settings, onClose, onChanged }) {
+// One plain sentence saying what to do next, for whoever is looking at this settlement.
+function nextStep(s, { unapproved, canApprove, isAdmin, needsAdmin, iPrepared }) {
+  if (s.status === 'draft') {
+    if (unapproved > 0) return `${unapproved} deduction${unapproved > 1 ? 's' : ''} need approving by someone other than the person who recorded ${unapproved > 1 ? 'them' : 'it'}.`;
+    if (isAdmin) return iPrepared ? 'Check the days and deductions, then approve it. You prepared it, so an override reason is needed.' : 'Check the days and deductions, then approve it.';
+    if (needsAdmin) return 'This is above the approval limit, so an admin must approve it. Add any deductions first.';
+    if (iPrepared) return 'You prepared this, so someone else must approve it. Add any deductions first.';
+    return canApprove ? 'Check the days and deductions, then approve it.' : 'Add any deductions, then have it approved.';
+  }
+  if (s.status === 'approved') return s.payout_sheet_id ? 'Continue in “Payout sheets”: print, get the worker’s signature, upload it, then mark paid.' : 'Create a payout sheet for this settlement.';
+  if (s.status === 'paid') return 'Nothing. This settlement is paid and final.';
+  return 'Nothing. This settlement was voided and its days can be settled again.';
+}
+
+function SettlementModal({ id, role, userId, settings, onClose, onChanged, onOpenSheet }) {
   const [d, setD] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
   const [override, setOverride] = useState('');
   const [voidReason, setVoidReason] = useState('');
   const [showVoid, setShowVoid] = useState(false);
+  const [removing, setRemoving] = useState(null);      // deduction id being removed (inline reason form, no browser pop-up)
+  const [removeReason, setRemoveReason] = useState('');
 
   const load = useCallback(async () => {
     const r = await api('GET', `/api/payroll/temporary/settlements/${id}`);
@@ -120,17 +136,20 @@ function SettlementModal({ id, role, userId, settings, onClose, onChanged }) {
         {s.approval_override && <Badge label="admin override" tone={['#fff5d9', '#96620a']} />}
         <span style={{ fontSize: 12, color: C.muted }}>{fmtD(s.period_start)} – {fmtD(s.period_end)} · cutoff {fmtD(s.cutoff_date)} · prepared {fmtDT(s.prepared_at)}</span>
       </div>
+      <div data-testid="next-step" style={{ fontSize: 12, color: C.ink, background: C.bg, borderRadius: 8, padding: '8px 12px', marginBottom: 12 }}>
+        <strong>Next:</strong> {nextStep(s, { unapproved, canApprove, isAdmin, needsAdmin, iPrepared })}
+      </div>
       {s.reason && <Banner tone="info" message={`Reason: ${s.reason}`} />}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 14 }}>
-        {[['Units', fmt(s.units_included)], ['Gross', `KES ${fmt(s.gross_amount)}`], ['Deductions', `KES ${fmt(s.deductions_total)}`], ['Net cash', `KES ${fmt(s.net_amount)}`]].map(([k, v]) => (
+        {[['Days', fmt(s.units_included)], ['Gross', `KES ${fmt(s.gross_amount)}`], ['Deductions', `KES ${fmt(s.deductions_total)}`], ['Net cash', `KES ${fmt(s.net_amount)}`]].map(([k, v]) => (
           <div key={k} style={{ background: C.bg, borderRadius: 9, padding: '10px 12px' }}><div style={{ fontSize: 11, color: C.muted, textTransform: 'uppercase' }}>{k}</div><div style={{ fontSize: 16, fontWeight: 800 }}>{v}</div></div>
         ))}
       </div>
 
       <h4 style={{ margin: '4px 0 6px', fontSize: 13 }}>Days included ({d.lines.filter(l => l.active).length})</h4>
       <Table>
-        <thead><tr><th style={th}>Date</th><th style={{ ...th, ...num }}>Units</th><th style={{ ...th, ...num }}>Base</th><th style={{ ...th, ...num }}>Overtime</th><th style={{ ...th, ...num }}>Sunday</th><th style={{ ...th, ...num }}>Amount</th></tr></thead>
+        <thead><tr><th style={th}>Date</th><th style={{ ...th, ...num }}>Days</th><th style={{ ...th, ...num }}>Base</th><th style={{ ...th, ...num }}>Overtime</th><th style={{ ...th, ...num }}>Sunday</th><th style={{ ...th, ...num }}>Amount</th></tr></thead>
         <tbody>{d.lines.map(l => (
           <tr key={l.id} style={{ opacity: l.active ? 1 : 0.45 }}>
             <td style={td}>{fmtD(l.work_date)}</td><td style={{ ...td, ...num }}>{fmt(l.attendance_units)}</td><td style={{ ...td, ...num }}>{fmt(l.base_amount)}</td>
@@ -158,14 +177,21 @@ function SettlementModal({ id, role, userId, settings, onClose, onChanged }) {
                       <Btn small variant="success" loading={busy === `a${x.id}`} disabled={x.recorded_by === userId || (admin && !isAdmin)}
                         title={x.recorded_by === userId ? 'You recorded this — someone else must approve it' : admin && !isAdmin ? 'Needs an admin' : ''}
                         onClick={() => act(`a${x.id}`, () => api('PATCH', `/api/payroll/temporary/deductions/${x.id}`, { action: 'approve' }))}>Approve</Btn>)}
-                    <Btn small variant="danger" loading={busy === `v${x.id}`} onClick={() => {
-                      const reason = window.prompt('Why is this deduction being removed?'); if (reason?.trim()) act(`v${x.id}`, () => api('PATCH', `/api/payroll/temporary/deductions/${x.id}`, { action: 'void', reason }));
-                    }}>Remove</Btn>
+                    <Btn small variant="danger" onClick={() => { setRemoving(removing === x.id ? null : x.id); setRemoveReason(''); }}>Remove…</Btn>
                   </div>)}</td>
               </tr>);
           })}</tbody>
         </Table>
       )}
+      {removing && s.status === 'draft' && (
+        <div style={{ marginTop: 10, background: C.redBg, border: `1px solid ${C.redBd}`, borderRadius: 9, padding: 12 }}>
+          <Field label="Why is this deduction being removed?" required><input style={inputStyle} value={removeReason} onChange={(e) => setRemoveReason(e.target.value)} /></Field>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Btn variant="danger" disabled={!removeReason.trim()} loading={busy === `v${removing}`}
+              onClick={async () => { if (await act(`v${removing}`, () => api('PATCH', `/api/payroll/temporary/deductions/${removing}`, { action: 'void', reason: removeReason }))) { setRemoving(null); setRemoveReason(''); } }}>Remove deduction</Btn>
+            <Btn variant="secondary" onClick={() => { setRemoving(null); setRemoveReason(''); }}>Keep it</Btn>
+          </div>
+        </div>)}
       {s.status === 'draft' && <AddDeduction settlementId={id} settings={settings} onAdded={async () => { await load(); onChanged?.(); }} setError={setError} />}
 
       {s.status === 'draft' && (
@@ -187,6 +213,16 @@ function SettlementModal({ id, role, userId, settings, onClose, onChanged }) {
         <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
           <Banner tone="info" message={s.payout_sheet_id ? 'This settlement is on a payout sheet. Continue in “Payout sheets”.' : `Approved by ${s.approved_by_role?.replace(/_/g, ' ')} on ${fmtDT(s.approved_at)}. Add it to a payout sheet to pay it.`} />
           {s.approval_override && <Banner tone="warn" message={`Admin override: ${s.override_reason}`} />}
+          {!s.payout_sheet_id && (
+            <div style={{ marginBottom: 10 }}>
+              <Btn loading={busy === 'sheet'} onClick={async () => {
+                setBusy('sheet'); setError('');
+                const r = await api('POST', '/api/payroll/temporary/payout-sheets', { settlement_ids: [id] });
+                setBusy('');
+                if (!r.ok) { setError(r.error); return; }
+                onChanged?.(); if (onOpenSheet) onOpenSheet(r.data.data); else await load();
+              }}>Create payout sheet</Btn>
+            </div>)}
           {canVoidApprovedSettlement(role) ? <Btn variant="danger" onClick={() => setShowVoid(v => !v)}>Void…</Btn> : <div style={{ fontSize: 12, color: C.muted }}>Only an admin can void an approved settlement.</div>}
         </div>)}
 
@@ -253,7 +289,7 @@ function AddDeduction({ settlementId, settings, onAdded, setError }) {
 // ════════════════════════════════════════════════════════════════
 // Payout sheets
 // ════════════════════════════════════════════════════════════════
-export function SheetsPanel({ role, userId, settings, refreshKey, onChanged }) {
+export function SheetsPanel({ role, userId, settings, refreshKey, onChanged, focusId, onFocusDone }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -267,6 +303,7 @@ export function SheetsPanel({ role, userId, settings, refreshKey, onChanged }) {
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load, refreshKey]);
+  useEffect(() => { if (focusId) { setOpenId(focusId); onFocusDone?.(); } }, [focusId, onFocusDone]);
 
   return (
     <div>
@@ -275,7 +312,7 @@ export function SheetsPanel({ role, userId, settings, refreshKey, onChanged }) {
         <span style={{ fontSize: 12, color: C.muted, maxWidth: 560 }}>Cash is paid from a payout sheet: create it for one settlement, print it, have the worker sign, upload the signed copy, then mark the settlement paid.</span>
         <Btn onClick={() => setShowNew(true)}>+ New payout sheet</Btn>
       </div>
-      {loading ? <Spinner /> : rows.length === 0 ? <Empty>No payout sheets yet.</Empty> : (
+      {loading ? <Spinner /> : rows.length === 0 ? <Empty>No payout sheets yet. Approve a settlement first, then create its sheet from the settlement or with “+ New payout sheet”.</Empty> : (
         <Table>
           <thead><tr><th style={th}>Sheet</th><th style={th}>Created</th><th style={{ ...th, ...num }}>Gross</th><th style={{ ...th, ...num }}>Deductions</th><th style={{ ...th, ...num }}>Net cash</th><th style={th}>Status</th><th style={th} /></tr></thead>
           <tbody>{rows.map(sh => (

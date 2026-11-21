@@ -90,13 +90,22 @@ export function Modal({ title, onClose, children, width = 560 }) {
 }
 
 export function Field({ label, children, hint, required, error }) {
+  // The label is tied to the field's real control (the last input/select/textarea child) so clicking the label focuses it
+  // and screen readers announce it; the hint is attached as its description.
+  const id = React.useId();
+  const kids = React.Children.toArray(children);
+  let idx = -1;
+  kids.forEach((k, i) => { if (React.isValidElement(k) && ['input', 'select', 'textarea'].includes(k.type) && !k.props.id) idx = i; });
+  const content = kids.map((k, i) => i === idx
+    ? React.cloneElement(k, { id, 'aria-required': required || undefined, 'aria-describedby': hint && !error ? `${id}-hint` : undefined, 'aria-invalid': error ? true : undefined })
+    : k);
   return (
     <div style={{ marginBottom: 13 }}>
-      <label style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.04em' }}>
-        {label}{required && <span style={{ color: C.red }}> *</span>}
+      <label htmlFor={idx >= 0 ? id : undefined} style={{ display: 'block', fontSize: 11, fontWeight: 700, marginBottom: 5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+        {label}{required && <span style={{ color: C.red }} aria-hidden="true"> *</span>}
       </label>
-      {children}
-      {hint && !error && <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{hint}</div>}
+      {content}
+      {hint && !error && <div id={`${id}-hint`} style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{hint}</div>}
       {error && <div role="alert" style={{ fontSize: 12, color: C.red, marginTop: 4 }}>{error}</div>}
     </div>
   );
