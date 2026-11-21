@@ -97,6 +97,7 @@ const mount = async (role, over = {}) => {
 };
 const unmount = async () => { await act(async () => { root.unmount(); }); };
 const tab = async (label) => click(byText('button', label));
+const exactBtn = (t, within = document) => q('button', within).find(b => b.textContent.trim() === t);
 const dialog = () => document.querySelector('[role=dialog]');
 
 // ── access and tabs ──
@@ -209,6 +210,41 @@ ok('a printed sheet offers the signed-copy upload and no pay button yet', /Uploa
 await mount('admin', { sheets: [sheet({ status: 'cancelled', cancelled_at: '2026-11-08T08:00:00Z', cancel_reason: 'Wrong names' })], sheetSettlements: [] });
 await tab('Payout sheets'); await click(byText('button', 'Open'));
 ok('a cancelled sheet is read-only and says it is never reused', /never reused/.test(dialog().textContent) && !byText('button', 'Print sheet', dialog()) && !q('button', dialog()).some(b => /Upload|Mark paid|Cancel sheet/.test(b.textContent))); await unmount();
+
+// ── cancelled engagement with approved attendance: visible as close-out due, and settleable ──
+{
+  const cancelled = (o = {}) => ({ id: 'e9', engagement_num: 'TE-2026-0009', status: 'cancelled', version: 1, agreed_daily_rate: 1000, start_date: '2026-11-02', expected_end_date: null,
+    close_reason: 'Client cancelled the job', closed_at: '2026-11-10T08:00:00Z', employees: emp('Peter Cancelled'), orders: { order_num: 'ORD-9', client: 'Acme' },
+    due: { eligible_units: 2, eligible_gross: 2000, due: false, close_out_due: true, threshold_units: 3, total_units: 2, max_days: null, max_days_reached: false }, ...o });
+  await mount('head_of_sales', { engagements: [cancelled()] });
+  ok('engagement list: a cancelled engagement with unsettled days offers Settle', !!exactBtn('Settle'));
+  await click(exactBtn('Settle'));
+  ok('...and the settlement form defaults to a close-out', /Close-out/.test(dialog().textContent) && q('input[name=kind]', dialog())[0].checked);
+  await click(byText('button', 'Prepare settlement', dialog()));
+  const post = calls.find(c => c.method === 'POST' && /\/settlements$/.test(c.url));
+  ok('...and prepares a close_out settlement for the cancelled engagement', post && post.body.kind === 'close_out' && post.body.engagement_id === 'e9', JSON.stringify(post));
+  await unmount();
+
+  await mount('head_of_sales', { engagements: [cancelled()] }); await click(byText('button', 'Open'));
+  ok('engagement modal: a cancelled engagement offers "Prepare settlement"', !!byText('button', 'Prepare settlement', dialog())); await unmount();
+
+  await mount('head_of_sales', { engagements: [cancelled()] }); await tab('Due for payment');
+  ok('"Due for payment" lists the cancelled engagement as a close-out', /Peter Cancelled/.test(text()) && /close-out/.test(text())); await unmount();
+
+  await mount('head_of_sales', { engagements: [cancelled({ due: { eligible_units: 0, eligible_gross: 0, due: false, close_out_due: false, threshold_units: 3, total_units: 2, max_days: null, max_days_reached: false } })] });
+  ok('a cancelled engagement with nothing unsettled offers no Settle button', !exactBtn('Settle')); await unmount();
+}
+
+// ── maximum-days warning ──
+{
+  const base = { id: 'e8', engagement_num: 'TE-2026-0008', status: 'active', version: 1, agreed_daily_rate: 1000, start_date: '2026-11-02', expected_end_date: null, employees: emp('Max Worker'), orders: { order_num: 'ORD-9', client: 'Acme' } };
+  await mount('head_of_sales', { engagements: [{ ...base, due: { eligible_units: 0, eligible_gross: 0, due: false, close_out_due: false, threshold_units: 3, total_units: 5, max_days: 5, max_days_reached: true } }] });
+  ok('list shows a "max days" badge once the guide is reached, even with nothing unsettled (all paid)', !!byText('span', 'max days') || /max days/.test(text()));
+  await click(byText('button', 'Open'));
+  ok('engagement modal warns with recorded vs guide days', /Maximum days reached: 5 day\(s\) recorded against a guide of 5\./.test(dialog().textContent), dialog().textContent.slice(0, 300)); await unmount();
+  await mount('head_of_sales', { engagements: [{ ...base, due: { eligible_units: 1, eligible_gross: 1000, due: false, close_out_due: false, threshold_units: 3, total_units: 4, max_days: 5, max_days_reached: false } }] });
+  ok('no warning below the guide', !/max days/.test(text())); await unmount();
+}
 
 // ── new payout sheet: ONE settlement per sheet ──
 {

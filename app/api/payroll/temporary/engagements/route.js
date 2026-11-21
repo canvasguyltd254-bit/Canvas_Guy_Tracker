@@ -17,8 +17,9 @@ export async function GET(request) {
     if (status) { if (!STATUSES.includes(status)) return bad('Unknown status'); q = q.eq('status', status); }
     const { data, error } = await q;
     if (error) return dbError(error);
-    // ONE call for every engagement that can have unsettled work (not N calls).
-    const ids = (data || []).filter(e => e.status === 'active' || e.status === 'completed').map(e => e.id);
+    // ONE call for every engagement that can have unsettled work (not N calls). Cancelled ones too: approved days
+    // worked before a cancellation are still owed and are paid through a close-out settlement.
+    const ids = (data || []).filter(e => e.status !== 'planned').map(e => e.id);
     let dueById = {};
     if (ids.length) {
       const { data: due, error: dueErr } = await serviceClient.rpc('temporary_engagements_due', { p_ids: ids });

@@ -348,7 +348,7 @@ function printSheet(d) {
     <div class="sub">Temporary workers · cash payment · printed ${esc(new Date().toLocaleString('en-KE'))}</div>
     <table><thead><tr><th>Worker</th><th class="n">Days</th><th class="n">Gross (KES)</th><th>Deductions (KES)</th><th class="n">Cash received (KES)</th><th>Signature</th></tr></thead>
     <tbody>${rows}<tr class="tot"><td>Total</td><td></td><td class="n">${fmt(sheet.total_gross)}</td><td class="n">${fmt(sheet.total_deductions)}</td><td class="n">${fmt(sheet.total_net)}</td><td></td></tr></tbody></table>
-    <p class="note">By signing, each worker confirms the days worked, the deductions listed against their name, and receipt of the cash shown. Paid by: ____________________ Date: ____________</p>
+    <p class="note">By signing, the worker confirms the days worked, the deductions listed, and receipt of the cash shown. Paid by: ____________________ Date: ____________</p>
   </body></html>`);
   w.document.close();
   return true;
@@ -403,9 +403,9 @@ function SheetModal({ id, role, userId, settings, onClose, onChanged }) {
 
       <ol style={{ fontSize: 12, color: C.muted, paddingLeft: 18, margin: '0 0 14px' }}>
         <li style={{ fontWeight: sheet.status === 'open' ? 700 : 400, color: sheet.status === 'open' ? C.ink : undefined }}>Create the sheet {needsAdmin ? '(an admin approves it because it is above the limit)' : ''}</li>
-        <li style={{ fontWeight: sheet.status === 'printed' ? 700 : 400, color: sheet.status === 'printed' ? C.ink : undefined }}>Print it and have each worker sign next to their cash</li>
+        <li style={{ fontWeight: sheet.status === 'printed' ? 700 : 400, color: sheet.status === 'printed' ? C.ink : undefined }}>Print it and have the worker sign next to their cash</li>
         <li style={{ fontWeight: sheet.status === 'signed' ? 700 : 400, color: sheet.status === 'signed' ? C.ink : undefined }}>Upload a photo or scan of the signed sheet</li>
-        <li>Mark each worker paid (receiver’s full name; a different person from the preparer)</li>
+        <li>Mark the settlement paid (receiver’s full name; a different person from the preparer)</li>
       </ol>
 
       <Table>

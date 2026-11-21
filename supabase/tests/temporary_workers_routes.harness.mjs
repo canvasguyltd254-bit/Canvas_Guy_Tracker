@@ -250,12 +250,14 @@ await invalid('malformed JSON body is treated as empty', () => R.settlement.PATC
   // list: ONE bulk call, only for engagements that can have unsettled work
   reset('admin');
   tableResult = { temporary_worker_engagements: { data: [{ id: ID, status: 'active' }, { id: ID2, status: 'planned' }, { id: UID, status: 'completed' }, { id: '44444444-4444-4444-8444-444444444444', status: 'cancelled' }], error: null } };
-  rpcResult = { data: { [ID]: { due: true, eligible_units: 3 }, [UID]: { due: false, eligible_units: 0 } }, error: null };
+  rpcResult = { data: { [ID]: { due: true, eligible_units: 3 }, [UID]: { due: false, eligible_units: 0 }, '44444444-4444-4444-8444-444444444444': { due: false, close_out_due: true, eligible_units: 2 } }, error: null };
   r = await run(() => R.engagements.GET(req('GET')));
+  ok('list: a cancelled engagement carries its close-out summary to the client', r.body.engagements.find(e => e.status === 'cancelled')?.due?.close_out_due === true, JSON.stringify(r.body));
   ok('list: exactly one RPC (temporary_engagements_due) for the whole list', calls.rpc.length === 1 && calls.rpc[0].name === 'temporary_engagements_due', JSON.stringify(calls.rpc));
-  ok('list: the bulk call carries only active + completed ids', JSON.stringify(calls.rpc[0].args.p_ids.slice().sort()) === JSON.stringify([ID, UID].sort()));
+  const CANC = '44444444-4444-4444-8444-444444444444';
+  ok('list: the bulk call carries active, completed AND cancelled ids (cancelled work is still owed) but not planned', JSON.stringify(calls.rpc[0].args.p_ids.slice().sort()) === JSON.stringify([ID, UID, CANC].sort()), JSON.stringify(calls.rpc[0].args.p_ids));
   const byId = Object.fromEntries(r.body.engagements.map(e => [e.id, e.due]));
-  ok('list: due is attached per engagement; planned/cancelled get null', byId[ID]?.due === true && byId[UID]?.due === false && byId[ID2] === null);
+  ok('list: due is attached per engagement; a planned engagement gets null', byId[ID]?.due === true && byId[UID]?.due === false && byId[ID2] === null);
   reset('admin'); tableResult = { temporary_worker_engagements: { data: [{ id: ID, status: 'active' }], error: null } };
   rpcResult = { data: null, error: { code: 'XX000', message: 'boom' } };
   r = await run(() => R.engagements.GET(req('GET')));

@@ -100,12 +100,12 @@ function EngagementsPanel({ role, refreshKey, onChanged, onPrepared }) {
               <td style={td}>{e.employees?.name}<div style={{ fontSize: 11, color: C.muted }}>{e.employees?.employee_num}</div></td>
               <td style={td}>{e.orders?.order_num}<div style={{ fontSize: 11, color: C.muted }}>{e.orders?.client}</div></td>
               <td style={{ ...td, ...num }}>{fmt(e.agreed_daily_rate)}</td>
-              <td style={{ ...td, ...num }}>{e.due ? fmt(e.due.eligible_units) : '—'}{e.due?.due && <div><Badge label="due" tone={['#dcfce7', '#166534']} /></div>}</td>
+              <td style={{ ...td, ...num }}>{e.due ? fmt(e.due.eligible_units) : '—'}{e.due?.due && <div><Badge label="due" tone={['#dcfce7', '#166534']} /></div>}{e.due?.max_days_reached && <div title={maxDaysMessage(e.due)}><Badge label="max days" tone={['#fef9c3', '#854d0e']} /></div>}</td>
               <td style={{ ...td, ...num }}>{e.due ? fmt(e.due.eligible_gross) : '—'}</td>
               <td style={td}><Badge label={e.status} /></td>
               <td style={td}><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 <Btn small variant="secondary" onClick={() => setDetail(e)}>Open</Btn>
-                {['active', 'completed'].includes(e.status) && e.due && Number(e.due.eligible_units) > 0 && <Btn small onClick={() => setPrepare(e)}>Settle</Btn>}
+                {SETTLEABLE.includes(e.status) && e.due && Number(e.due.eligible_units) > 0 && <Btn small onClick={() => setPrepare(e)}>Settle</Btn>}
               </div></td>
             </tr>))}</tbody>
         </Table>)}
@@ -175,6 +175,11 @@ function NewEngagementModal({ onClose, onCreated, role }) {
   );
 }
 
+// Statuses that can hold approved, unsettled work. A cancelled engagement still owes the days already worked.
+const SETTLEABLE = ['active', 'completed', 'cancelled'];
+// Warning only (nothing is blocked). Counts ALL non-voided attendance, so it stays visible after payment.
+const maxDaysMessage = (d) => `Maximum days reached: ${fmt(d.total_units)} day(s) recorded against a guide of ${fmt(d.max_days)}. Check whether the agreed work has grown before more is booked.`;
+
 function EngagementModal({ e, role, onClose, onChanged, onSettle }) {
   const [asg, setAsg] = useState(null);
   const [error, setError] = useState('');
@@ -208,6 +213,7 @@ function EngagementModal({ e, role, onClose, onChanged, onSettle }) {
         <span style={{ fontSize: 13 }}>{e.orders?.order_num} — {e.orders?.client} · KES {fmt(e.agreed_daily_rate)}/day · from {fmtD(e.start_date)}{e.expected_end_date ? ` to ${fmtD(e.expected_end_date)}` : ''}</span>
       </div>
       {e.close_reason && <Banner tone="info" message={`Closed ${fmtD(e.closed_at)}: ${e.close_reason}`} />}
+      {e.due?.max_days_reached && <Banner tone="warn" message={maxDaysMessage(e.due)} />}
       {e.due && <div style={{ fontSize: 13, marginBottom: 12 }}>Approved, unsettled: <strong>{fmt(e.due.eligible_units)}</strong> day(s) · KES <strong>{fmt(e.due.eligible_gross)}</strong>{e.due.due ? ' — due for payment' : ''}</div>}
 
       {e.status === 'active' && (
@@ -225,7 +231,7 @@ function EngagementModal({ e, role, onClose, onChanged, onSettle }) {
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
         {e.status === 'planned' && <Btn variant="success" loading={busy === 'activate'} onClick={() => patch('activate', { action: 'activate' })}>Activate</Btn>}
-        {['active', 'completed'].includes(e.status) && e.due && Number(e.due.eligible_units) > 0 && <Btn onClick={() => onSettle(e)}>Prepare settlement</Btn>}
+        {SETTLEABLE.includes(e.status) && e.due && Number(e.due.eligible_units) > 0 && <Btn onClick={() => onSettle(e)}>Prepare settlement</Btn>}
         {e.status === 'active' && <Btn variant="secondary" onClick={() => setMode(mode === 'rate' ? '' : 'rate')}>Change rate…</Btn>}
         {e.status === 'active' && <Btn variant="secondary" onClick={() => setMode(mode === 'close' ? '' : 'close')}>Complete…</Btn>}
         {['planned', 'active'].includes(e.status) && <Btn variant="danger" onClick={() => setMode(mode === 'cancel' ? '' : 'cancel')}>Cancel…</Btn>}

@@ -52,11 +52,12 @@ await db.exec(mig('temporary_workers_stage1.sql'));
 // Stage 1 is already applied in production with the DEFAULT damage setting of true; capture that state before 1b.
 const damageBefore1b = await val(`SELECT damage_deductions_enabled FROM temporary_worker_settings WHERE id`);
 await db.exec(mig('temporary_workers_stage1b.sql'));
+await db.exec(mig('temporary_workers_stage1c.sql'));
 ok('migration applies on top of the real payroll and production v3a/v3b migrations', true);
 ok('stage 1 shipped with damage deductions ON (the state 1b corrects)', damageBefore1b === true);
 ok('stage 1b flips the untouched settings row to OFF (no damage deduction was ever recorded)', (await val(`SELECT damage_deductions_enabled FROM temporary_worker_settings WHERE id`)) === false);
 ok('stage 1b: the column default is now false', (await val(`SELECT column_default FROM information_schema.columns WHERE table_name='temporary_worker_settings' AND column_name='damage_deductions_enabled'`)) === 'false');
-ok('migrations are idempotent (second run of both)', await db.exec(mig('temporary_workers_stage1.sql')).then(() => db.exec(mig('temporary_workers_stage1b.sql'))).then(() => true, e => { console.log(e.message); return false; }));
+ok('migrations are idempotent (second run of all three)', await db.exec(mig('temporary_workers_stage1.sql')).then(() => db.exec(mig('temporary_workers_stage1b.sql'))).then(() => db.exec(mig('temporary_workers_stage1c.sql'))).then(() => true, e => { console.log(e.message); return false; }));
 ok('re-running stage 1 does not re-enable damage deductions', (await val(`SELECT damage_deductions_enabled FROM temporary_worker_settings WHERE id`)) === false);
 
 // ── actors and fixtures ─────────────────────────────────────────────────────
@@ -782,6 +783,51 @@ const newAssignment = async (emp, job = JOB, stage = STAGE) =>
     bulk[g1].due === true && Number(bulk[g1].eligible_units) === 4 && bulk[g2].due === false && bulk[g3].close_out_due === true && Number(bulk[s.eng].eligible_units) === 0);
   ok('bulk: empty list gives an empty object; unknown ids are absent', JSON.stringify(await call('temporary_engagements_due', arr([]))) === '{}'
     && Object.keys(await call('temporary_engagements_due', arr(['00000000-0000-0000-0000-000000000000']))).length === 0);
+}
+
+{ // CANCELLED engagement with approved attendance: reported as close-out due and settleable
+  const emp = await worker(1000); const eng = await engage(emp); const a = await assign(emp, eng);
+  await book(a, W.slice(0, 2));                                                    // 2 approved days (below the 3-day threshold)
+  await call('set_engagement_status', eng, 'cancelled', 'Client cancelled the job', hos1, 'head_of_sales');
+  const bulk = await call('temporary_engagements_due', arr([eng]));
+  ok('cancelled engagement with approved attendance is close_out_due in the bulk summary', bulk[eng].close_out_due === true && Number(bulk[eng].eligible_units) === 2, JSON.stringify(bulk));
+  ok('...and in the single-engagement summary', (await call('temporary_engagement_due', eng)).close_out_due === true);
+  await throws('a threshold settlement is still refused on 2 days', () => prep(eng, '2026-11-30', 'threshold'), /settlement threshold/);
+  const p = await prep(eng, '2026-11-30', 'close_out');
+  ok('a close-out settlement can be prepared for the cancelled engagement (2 days = 2,000)', Number(p.units) === 2 && Number(p.gross) === 2000);
+  ok('...after which nothing is due', (await call('temporary_engagements_due', arr([eng])))[eng].close_out_due === false);
+}
+
+{ // maximum-days warning: total NON-VOIDED attendance, not unsettled attendance
+  const emp = await worker(1000);
+  const eng = await call('create_temporary_engagement', emp, ORDER, 1000, '2026-11-02', null, 4, null, true, hos1, 'head_of_sales');   // max 4 days
+  const a = await assign(emp, eng);
+  const ids = await book(a, W.slice(0, 3));
+  let d = (await call('temporary_engagements_due', arr([eng])))[eng];
+  ok('3 of 4 days: total_units 3, max_days 4, no warning yet', Number(d.total_units) === 3 && Number(d.max_days) === 4 && d.max_days_reached === false, JSON.stringify(d));
+  const s = await prep(eng, '2026-11-30', 'threshold'); await approve(s.id);
+  await book(a, [W[3]]);
+  d = (await call('temporary_engagements_due', arr([eng])))[eng];
+  ok('4 of 4 days reached: warning is on although 3 of the days are already settled (unsettled = 1)', d.max_days_reached === true && Number(d.total_units) === 4 && Number(d.eligible_units) === 1, JSON.stringify(d));
+  const single = await call('temporary_engagement_due', eng);
+  ok('single-engagement summary agrees', single.max_days_reached === true && Number(single.total_units) === 4);
+  const [extra] = await book(a, [W[4]], { keepSubmitted: true });
+  ok('a submitted (not yet approved) day counts toward the total', Number((await call('temporary_engagement_due', eng)).total_units) === 5);
+  await call('transition_time_entry', extra, 'reject', pmApp, 'production_manager', 'Not worked');
+  ok('a rejected day does not count', Number((await call('temporary_engagement_due', eng)).total_units) === 4);
+  const noMax = await engage(await worker(1000));
+  ok('an engagement without max_days never warns', (await call('temporary_engagements_due', arr([noMax])))[noMax].max_days_reached === false);
+  // the total follows the worker across a rate revision (the new version inherits max_days)
+  const emp2 = await worker(1000);
+  const e1 = await call('create_temporary_engagement', emp2, ORDER, 1000, '2026-11-02', null, 3, null, true, hos1, 'head_of_sales');
+  const a1 = await assign(emp2, e1); await book(a1, W.slice(0, 2));
+  const e2 = await call('revise_engagement_rate', e1, 1200, 'New rate', hos1, 'head_of_sales');
+  const a2 = await newAssignment(emp2); await call('link_assignment_to_engagement', a2, e2, pmRec, 'production_manager');
+  const today = await val(`SELECT start_date::text FROM temporary_worker_engagements WHERE id=$1`, [e2]);
+  await book(a2, [today]);
+  const dd = (await call('temporary_engagements_due', arr([e2])))[e2];
+  ok('across a rate revision the total counts the earlier version (2 + 1 = 3 of 3 -> warning)', Number(dd.total_units) === 3 && dd.max_days_reached === true, JSON.stringify(dd));
+  void ids;
 }
 
 { // damage default

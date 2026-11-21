@@ -65,6 +65,14 @@ test('uuid and date validators', () => {
   assert.equal(isIsoDate('2028-02-29'), true);   // leap day
 });
 
+test('a missing migration names every migration to run, in order', () => {
+  const m = mapTemporaryDbError({ code: '42883', message: 'function temporary_engagements_due does not exist' });
+  assert.equal(m.status, 503);
+  assert.equal(m.body.code, 'SETUP_INCOMPLETE');
+  for (const f of ['temporary_workers_stage1,', 'temporary_workers_stage1b', 'temporary_workers_stage1c']) assert.ok(m.body.error.includes(f), f);
+  assert.ok(m.body.error.indexOf('stage1b') < m.body.error.indexOf('stage1c'));
+});
+
 test('database errors map to safe responses', () => {
   assert.equal(mapTemporaryDbError({ code: 'P0001', message: 'Not allowed' }).status, 403);
   assert.equal(mapTemporaryDbError({ code: 'P0001', message: 'Settlement not found' }).status, 404);

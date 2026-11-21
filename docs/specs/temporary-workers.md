@@ -394,3 +394,12 @@ Migration `supabase/migrations/temporary_workers_stage1b.sql`, run after Stage 1
 **Tests.** pglite 225 checks; real-Postgres script 63 checks, including both directions of: create vs payroll insert, activate vs payroll insert, revise vs payroll insert, run-date edit vs create, run approval vs create, attendance vs payroll insert, attendance vs completion, and a deterministic proof of sorted lock order. Removing the employee lock from create, or from the run-date trigger, or reversing the lock order, each fails the tests.
 
 **Known limits.** Two transactions that insert payroll entries for several employees in different orders in one statement could still deadlock; Postgres aborts one and the retry succeeds. Planned engagements already block overlapping payroll, so the activation race is defence in depth.
+
+### 15.1 Stage 1c — review follow-ups
+
+Migration `temporary_workers_stage1c.sql` (after stage1 and stage1b).
+
+- **Cancelled engagements** are settleable. Approved days worked before a cancellation are still owed and are paid by a close-out settlement. The list API now asks for the due summary of every non-planned engagement, and the list row, the engagement modal and "Due for payment" all offer settlement for active, completed and cancelled engagements.
+- **Maximum days** is a warning only. The due summaries return `total_units` (non-voided attendance: draft, submitted and approved; rejected and voided excluded; summed across the worker's rate versions on that project), `max_days` and `max_days_reached` (`total_units >= max_days`). It is the total, not the unsettled amount, so the warning stays after payment. The UI shows a "max days" badge and a banner in the engagement modal; nothing is blocked.
+- The setup-incomplete message names stage1, stage1b and stage1c in order. The payout-sheet wording is singular.
+- Tests: pglite 237, routes 93, UI 55, unit 500, real-Postgres 63.
