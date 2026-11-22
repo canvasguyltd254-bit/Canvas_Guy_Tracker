@@ -6,17 +6,13 @@
  */
 import React, { useState, useEffect, useCallback } from 'react';
 import { C } from '@/shared/ui/ds';
-import { createClient } from '@/shared/supabase/client';
 import {
-  canVoidApprovedSettlement, canApprovePayoutSheet, overApprovalLimit, deductionNeedsAdmin,
-  validateDeductionInput, validateReceiverName, DEDUCTION_TYPES, OTHER_REASON_MIN_CHARS,
+  canVoidApprovedSettlement, canApprovePayoutSheet, canExportPayoutSheet, canReleasePayoutRows, overApprovalLimit, deductionNeedsAdmin,
+  validateDeductionInput, DEDUCTION_TYPES, OTHER_REASON_MIN_CHARS,
 } from '@/shared/lib/payroll/temporaryAccess';
 import {
   api, fmt, fmtD, fmtDT, inputStyle, Badge, AdminBadge, Spinner, Banner, Empty, Modal, Field, Btn, th, td, num, Table,
 } from './payrollUi';
-
-const supabase = createClient();
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // ════════════════════════════════════════════════════════════════
 // Settlements list
@@ -49,7 +45,7 @@ export function SettlementsPanel({ role, userId, settings, refreshKey, onChanged
       </div>
       {loading ? <Spinner /> : rows.length === 0 ? <Empty>No settlements yet. When a worker is due, open “Due for payment” and choose “Prepare settlement”.</Empty> : (
         <Table>
-          <thead><tr><th style={th}>Settlement</th><th style={th}>Worker</th><th style={th}>Period</th><th style={{ ...th, ...num }}>Days</th><th style={{ ...th, ...num }}>Gross</th><th style={{ ...th, ...num }}>Deductions</th><th style={{ ...th, ...num }}>Net cash</th><th style={th}>Status</th><th style={th} /></tr></thead>
+          <thead><tr><th style={th}>Settlement</th><th style={th}>Worker</th><th style={th}>Period</th><th style={{ ...th, ...num }}>Days</th><th style={{ ...th, ...num }}>Gross</th><th style={{ ...th, ...num }}>Deductions</th><th style={{ ...th, ...num }}>Net pay</th><th style={th}>Status</th><th style={th} /></tr></thead>
           <tbody>
             {rows.map(s => (
               <tr key={s.id}>
@@ -84,7 +80,7 @@ function nextStep(s, { unapproved, canApprove, isAdmin, needsAdmin, iPrepared })
     if (iPrepared) return 'You prepared this, so someone else must approve it. Add any deductions first.';
     return canApprove ? 'Check the days and deductions, then approve it.' : 'Add any deductions, then have it approved.';
   }
-  if (s.status === 'approved') return s.payout_sheet_id ? 'Continue in “Payout sheets”: print, get the worker’s signature, upload it, then mark paid.' : 'Create a payout sheet for this settlement.';
+  if (s.status === 'approved') return s.payout_sheet_id ? 'Continue in “Payout sheets”: download the ChatPesa file, upload it in ChatPesa, then match the payments.' : 'Put it on a payout sheet (the worker needs an M-Pesa number on their employee record).';
   if (s.status === 'paid') return 'Nothing. This settlement is paid and final.';
   return 'Nothing. This settlement was voided and its days can be settled again.';
 }
@@ -142,7 +138,7 @@ function SettlementModal({ id, role, userId, settings, onClose, onChanged, onOpe
       {s.reason && <Banner tone="info" message={`Reason: ${s.reason}`} />}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 14 }}>
-        {[['Days', fmt(s.units_included)], ['Gross', `KES ${fmt(s.gross_amount)}`], ['Deductions', `KES ${fmt(s.deductions_total)}`], ['Net cash', `KES ${fmt(s.net_amount)}`]].map(([k, v]) => (
+        {[['Days', fmt(s.units_included)], ['Gross', `KES ${fmt(s.gross_amount)}`], ['Deductions', `KES ${fmt(s.deductions_total)}`], ['Net pay', `KES ${fmt(s.net_amount)}`]].map(([k, v]) => (
           <div key={k} style={{ background: C.bg, borderRadius: 9, padding: '10px 12px' }}><div style={{ fontSize: 11, color: C.muted, textTransform: 'uppercase' }}>{k}</div><div style={{ fontSize: 16, fontWeight: 800 }}>{v}</div></div>
         ))}
       </div>
@@ -169,7 +165,7 @@ function SettlementModal({ id, role, userId, settings, onClose, onChanged, onOpe
                 <td style={td}>{x.reason}{x.evidence_ref && <div style={{ fontSize: 11, color: C.muted }}>Ref: {x.evidence_ref}</div>}{!x.active && <div style={{ fontSize: 11 }}>Voided: {x.void_reason}</div>}</td>
                 <td style={td}>{!x.active ? '—' : x.approved_by ? <Badge label={`approved · ${x.approved_by_role.replace(/_/g, ' ')}`} tone={['#dcfce7', '#166534']} /> : <Badge label="pending" tone={['#fef9c3', '#854d0e']} />}
                   {x.active && admin && (!x.approved_by || x.approved_by_role !== 'admin') && <div style={{ marginTop: 4 }}><AdminBadge /></div>}
-                  {x.worker_acknowledged_at && <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Acknowledged on signed sheet</div>}</td>
+</td>
                 <td style={td}>{s.status === 'draft' && x.active && (
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                     {(!x.approved_by || (isAdmin && x.approved_by_role !== 'admin' && admin)) && (
@@ -227,7 +223,9 @@ function SettlementModal({ id, role, userId, settings, onClose, onChanged, onOpe
 
       {s.status === 'paid' && (
         <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
-          <Banner tone="info" message={`Paid in cash — KES ${fmt(s.net_amount)} to ${s.received_by_full_name} on ${fmtDT(s.paid_at)}.${s.payment_note ? ` Note: ${s.payment_note}` : ''}`} />
+          <Banner tone="info" message={s.received_by_full_name
+            ? `Paid in cash — KES ${fmt(s.net_amount)} to ${s.received_by_full_name} on ${fmtDT(s.paid_at)}.${s.payment_note ? ` Note: ${s.payment_note}` : ''}`
+            : `Paid by M-Pesa through ChatPesa — KES ${fmt(s.net_amount)} on ${fmtDT(s.paid_at)}.${s.payment_note ? ` ${s.payment_note}.` : ''}`} />
           <div style={{ fontSize: 12, color: C.muted }}>Paid settlements are final: they cannot be voided or edited, and their days cannot be paid again.</div>
         </div>)}
       {s.status === 'voided' && <Banner tone="info" message={`Voided ${fmtDT(s.voided_at)}: ${s.void_reason}. The days are free to be settled again.`} />}
@@ -286,8 +284,10 @@ function AddDeduction({ settlementId, settings, onAdded, setError }) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// Payout sheets
+// Payout sheets: paid through ChatPesa (M-Pesa). No cash.
 // ════════════════════════════════════════════════════════════════
+const SHEET_TONE = { open: ['#f3f4f6', '#374151'], exported: ['#fff5d9', '#96620a'], paid: ['#dcfce7', '#166534'], cancelled: ['#fee2e2', '#991b1b'] };
+
 export function SheetsPanel({ role, userId, settings, refreshKey, onChanged, focusId, onFocusDone }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -308,17 +308,17 @@ export function SheetsPanel({ role, userId, settings, refreshKey, onChanged, foc
     <div>
       <Banner message={error} onDismiss={() => setError('')} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 12, color: C.muted, maxWidth: 560 }}>Cash is paid from a payout sheet: create it for one settlement, print it, have the worker sign, upload the signed copy, then mark the settlement paid.</span>
+        <span style={{ fontSize: 12, color: C.muted, maxWidth: 600 }}>Workers are paid by M-Pesa through ChatPesa. A sheet gathers approved settlements into one ChatPesa file; a settlement is only marked paid once its payment shows up in the imported ChatPesa statement.</span>
         <Btn onClick={() => setShowNew(true)}>+ New payout sheet</Btn>
       </div>
       {loading ? <Spinner /> : rows.length === 0 ? <Empty>No payout sheets yet. Approve a settlement first, then create its sheet from the settlement or with “+ New payout sheet”.</Empty> : (
         <Table>
-          <thead><tr><th style={th}>Sheet</th><th style={th}>Created</th><th style={{ ...th, ...num }}>Gross</th><th style={{ ...th, ...num }}>Deductions</th><th style={{ ...th, ...num }}>Net cash</th><th style={th}>Status</th><th style={th} /></tr></thead>
+          <thead><tr><th style={th}>Sheet</th><th style={th}>Created</th><th style={{ ...th, ...num }}>Gross</th><th style={{ ...th, ...num }}>Deductions</th><th style={{ ...th, ...num }}>Net pay</th><th style={th}>Status</th><th style={th} /></tr></thead>
           <tbody>{rows.map(sh => (
             <tr key={sh.id}>
               <td style={td}><strong>{sh.sheet_num}</strong></td><td style={td}>{fmtD(sh.created_at)}</td>
               <td style={{ ...td, ...num }}>{fmt(sh.total_gross)}</td><td style={{ ...td, ...num }}>{fmt(sh.total_deductions)}</td><td style={{ ...td, ...num }}><strong>{fmt(sh.total_net)}</strong></td>
-              <td style={td}><Badge label={sh.status} />{['open', 'printed'].includes(sh.status) && overApprovalLimit(settings, sh.total_net) && !sh.admin_approved_by && <div style={{ marginTop: 4 }}><AdminBadge /></div>}</td>
+              <td style={td}><Badge label={sh.status} tone={SHEET_TONE[sh.status]} />{sh.status === 'open' && overApprovalLimit(settings, sh.total_net) && !sh.admin_approved_by && <div style={{ marginTop: 4 }}><AdminBadge /></div>}</td>
               <td style={td}><Btn small variant="secondary" onClick={() => setOpenId(sh.id)}>Open</Btn></td>
             </tr>))}</tbody>
         </Table>)}
@@ -330,30 +330,32 @@ export function SheetsPanel({ role, userId, settings, refreshKey, onChanged, foc
 
 function NewSheetModal({ onClose, onCreated }) {
   const [rows, setRows] = useState(null);
-  const [picked, setPicked] = useState(null);      // one settlement per sheet
+  const [picked, setPicked] = useState([]);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   useEffect(() => { (async () => {
     const r = await api('GET', '/api/payroll/temporary/settlements?status=approved');
     if (r.ok) setRows(r.data.settlements.filter(s => !s.payout_sheet_id)); else setError(r.error);
   })(); }, []);
-  const chosen = (rows || []).find(s => s.id === picked);
+  const chosen = (rows || []).filter(s => picked.includes(s.id));
+  const total = chosen.reduce((a, s) => a + Number(s.net_amount), 0);
+  const toggle = (id) => setPicked(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
   return (
     <Modal title="New payout sheet" onClose={onClose} width={640}>
       <Banner message={error} />
-      <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>One sheet covers one worker’s settlement, so the signed copy matches exactly one payment. Create a separate sheet for each worker.</div>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Tick every worker you want to pay in the same ChatPesa upload. Each worker needs an M-Pesa number on their employee record.</div>
       {!rows ? <Spinner /> : rows.length === 0 ? <Empty>No approved settlements are waiting for a sheet.</Empty> : (
         <>
           <Table>
-            <thead><tr><th style={th} /><th style={th}>Settlement</th><th style={th}>Worker</th><th style={{ ...th, ...num }}>Net cash</th></tr></thead>
+            <thead><tr><th style={th} /><th style={th}>Settlement</th><th style={th}>Worker</th><th style={{ ...th, ...num }}>Net pay</th></tr></thead>
             <tbody>{rows.map(s => (
-              <tr key={s.id}><td style={td}><input type="radio" name="sheet-settlement" aria-label={`Select ${s.settlement_num}`} checked={picked === s.id} onChange={() => setPicked(s.id)} /></td>
+              <tr key={s.id}><td style={td}><input type="checkbox" aria-label={`Select ${s.settlement_num}`} checked={picked.includes(s.id)} onChange={() => toggle(s.id)} /></td>
                 <td style={td}>{s.settlement_num}</td><td style={td}>{s.employees?.name}</td><td style={{ ...td, ...num }}>{fmt(s.net_amount)}</td></tr>))}</tbody>
           </Table>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 }}>
-            <strong>{chosen ? `${chosen.employees?.name} · KES ${fmt(chosen.net_amount)}` : 'Choose a settlement'}</strong>
-            <Btn loading={saving} disabled={!chosen} onClick={async () => {
-              setSaving(true); const r = await api('POST', '/api/payroll/temporary/payout-sheets', { settlement_ids: [picked] }); setSaving(false);
+            <strong>{chosen.length ? `${chosen.length} worker${chosen.length > 1 ? 's' : ''} · KES ${fmt(total)}` : 'Choose at least one settlement'}</strong>
+            <Btn loading={saving} disabled={!chosen.length} onClick={async () => {
+              setSaving(true); const r = await api('POST', '/api/payroll/temporary/payout-sheets', { settlement_ids: picked }); setSaving(false);
               if (!r.ok) setError(r.error); else onCreated(r.data.data);
             }}>Create sheet</Btn>
           </div>
@@ -362,41 +364,35 @@ function NewSheetModal({ onClose, onCreated }) {
   );
 }
 
-function printSheet(d) {
-  const { sheet, settlements, deductions } = d;
-  const byS = {}; deductions.forEach(x => { (byS[x.settlement_id] ||= []).push(x); });
-  const rows = settlements.map(s => `
-    <tr><td>${esc(s.employees?.name)}<br><small>${esc(s.employees?.employee_num)} · ${esc(s.settlement_num)}</small></td>
-    <td class="n">${fmt(s.units_included)}</td><td class="n">${fmt(s.gross_amount)}</td>
-    <td>${(byS[s.id] || []).map(x => `${esc(x.deduction_type.replace(/_/g, ' '))}: ${fmt(x.amount)}<br><small>${esc(x.reason)}${x.evidence_ref ? ' · ' + esc(x.evidence_ref) : ''}</small>`).join('<br>') || '—'}</td>
-    <td class="n"><strong>${fmt(s.net_amount)}</strong></td><td class="sig"></td></tr>`).join('');
-  const w = window.open('', '_blank', 'width=1000,height=800');
-  if (!w) return false;
-  w.document.write(`<!doctype html><html><head><title>${esc(sheet.sheet_num)}</title><style>
-    body{font-family:Arial,sans-serif;margin:24px;color:#111} h1{font-size:20px;margin:0} .sub{color:#555;font-size:12px;margin:4px 0 16px}
-    table{width:100%;border-collapse:collapse;font-size:12px} th,td{border:1px solid #999;padding:7px;vertical-align:top;text-align:left}
-    th{background:#eee} .n{text-align:right;white-space:nowrap} .sig{width:170px;height:46px} small{color:#555}
-    .tot td{font-weight:bold;background:#f6f6f6} .note{font-size:11px;margin-top:14px;color:#333}
-    @media print{button{display:none}}
-  </style></head><body>
-    <button onclick="window.print()">Print</button>
-    <h1>Canvas Guy Limited — Cash payout sheet ${esc(sheet.sheet_num)}</h1>
-    <div class="sub">Temporary workers · cash payment · printed ${esc(new Date().toLocaleString('en-KE'))}</div>
-    <table><thead><tr><th>Worker</th><th class="n">Days</th><th class="n">Gross (KES)</th><th>Deductions (KES)</th><th class="n">Cash received (KES)</th><th>Signature</th></tr></thead>
-    <tbody>${rows}<tr class="tot"><td>Total</td><td></td><td class="n">${fmt(sheet.total_gross)}</td><td class="n">${fmt(sheet.total_deductions)}</td><td class="n">${fmt(sheet.total_net)}</td><td></td></tr></tbody></table>
-    <p class="note">By signing, the worker confirms the days worked, the deductions listed, and receipt of the cash shown. Paid by: ____________________ Date: ____________</p>
-  </body></html>`);
-  w.document.close();
-  return true;
+// The ChatPesa file: POST (it changes state), then hand the response to the browser as a download.
+async function downloadChatpesaFile(sheetId) {
+  let res;
+  try { res = await fetch(`/api/payroll/temporary/payout-sheets/${sheetId}/export`, { method: 'POST' }); }
+  catch { return { ok: false, error: 'Could not reach the server. Nothing was changed.' }; }
+  if (!res.ok) { const j = await res.json().catch(() => ({})); return { ok: false, error: j.error || 'The export failed. Nothing was changed.' }; }
+  const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '')?.[1] || 'chatpesa.csv';
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  return { ok: true, first: res.headers.get('X-First-Export') === '1' };
+}
+
+function rowState(r) {
+  if (r.chatpesa_transaction_id) return { label: 'paid', tone: ['#dcfce7', '#166534'], note: `${r.confirm_code ? `M-Pesa ${r.confirm_code} · ` : ''}${fmtDT(r.matched_at)}${r.match_method === 'phone_amount' ? ' · matched by phone and amount' : ''}` };
+  if (r.released_at) return { label: 'released', tone: ['#f3f4f6', '#374151'], note: r.release_reason };
+  return { label: 'waiting for statement', tone: ['#fef9c3', '#854d0e'], note: 'Not in an imported ChatPesa statement yet.' };
 }
 
 function SheetModal({ id, role, userId, settings, onClose, onChanged }) {
   const [d, setD] = useState(null);
   const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
   const [busy, setBusy] = useState('');
-  const [payFor, setPayFor] = useState(null);
   const [cancelReason, setCancelReason] = useState('');
   const [showCancel, setShowCancel] = useState(false);
+  const [releaseReason, setReleaseReason] = useState('');
+  const [showRelease, setShowRelease] = useState(false);
+  const [confirmAgain, setConfirmAgain] = useState(false);
 
   const load = useCallback(async () => {
     const r = await api('GET', `/api/payroll/temporary/payout-sheets/${id}`);
@@ -407,119 +403,124 @@ function SheetModal({ id, role, userId, settings, onClose, onChanged }) {
   const act = async (key, fn) => { setBusy(key); setError(''); const r = await fn(); setBusy(''); if (!r.ok) { setError(r.error); return false; } await load(); onChanged?.(); return true; };
 
   if (!d) return <Modal title="Payout sheet" onClose={onClose}>{error ? <Banner message={error} /> : <Spinner />}</Modal>;
-  const { sheet, settlements } = d;
+  const { sheet, settlements, rows } = d;
+  const byS = Object.fromEntries(settlements.map(s => [s.id, s]));
   const needsAdmin = overApprovalLimit(settings, sheet.total_net);
   const adminOk = !needsAdmin || !!sheet.admin_approved_by;
   const isAdmin = canApprovePayoutSheet(role);
-  const anyPaid = settlements.some(s => s.status === 'paid');
-  const canCancel = !anyPaid && sheet.status !== 'cancelled' && (sheet.status !== 'signed' || isAdmin);
+  const iPrepared = settlements.some(s => s.prepared_by === userId);
+  const waiting = rows.filter(r => !r.chatpesa_transaction_id && !r.released_at);
+  const canExport = canExportPayoutSheet(role) && !iPrepared && adminOk;
+  const exportBlock = !canExportPayoutSheet(role) ? 'Only an admin can release the payment file.'
+    : iPrepared ? 'You prepared a settlement on this sheet, so someone else must release its payment.'
+    : !adminOk ? 'This sheet is above the approval limit: an admin must approve it first.' : '';
 
-  const upload = async (file) => {
-    if (!file) return;
-    setBusy('upload'); setError('');
-    const init = await patch({ action: 'receipt_init', file_name: file.name, file_size: file.size });
-    if (!init.ok) { setBusy(''); setError(init.error); return; }
-    const up = await supabase.storage.from(init.data.bucket).uploadToSignedUrl(init.data.path, init.data.token, file);
-    if (up.error) { setBusy(''); setError('The upload failed. Check your connection and try again.'); return; }
-    const done = await patch({ action: 'receipt_complete', path: init.data.path });
+  const doDownload = async () => {
+    setBusy('export'); setError(''); setInfo('');
+    const r = await downloadChatpesaFile(id);
+    setBusy(''); setConfirmAgain(false);
+    if (!r.ok) { setError(r.error); return; }
+    setInfo(r.first ? 'The ChatPesa file was downloaded and the sheet is now exported. Upload it in ChatPesa, then import the statement and match the payments.' : 'Downloaded again. It contains only payments that are still unpaid.');
+    await load(); onChanged?.();
+  };
+  const doMatch = async () => {
+    setBusy('match'); setError(''); setInfo('');
+    const r = await patch({ action: 'match' });
     setBusy('');
-    if (!done.ok) { setError(done.error); return; }
+    if (!r.ok) { setError(r.error); return; }
+    const m = r.data.data;
+    const bits = [`${m.matched} payment${m.matched === 1 ? '' : 's'} matched`];
+    if (m.pending) bits.push(`${m.pending} still not in the statement`);
+    if (m.ambiguous?.length) bits.push(`${m.ambiguous.length} ambiguous (${m.ambiguous.join(', ')}): more than one statement line fits, check them in Suppliers → Payments`);
+    setInfo(bits.join(' · ') + (m.pending ? '. Import a newer ChatPesa statement and match again; rows ChatPesa rejected will never appear.' : '.'));
     await load(); onChanged?.();
   };
 
   return (
-    <Modal title={`Payout sheet ${sheet.sheet_num}`} onClose={onClose} width={820}>
+    <Modal title={`Payout sheet ${sheet.sheet_num}`} onClose={onClose} width={860}>
       <Banner message={error} onDismiss={() => setError('')} />
+      {info && <Banner tone="info" message={info} onDismiss={() => setInfo('')} />}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
-        <Badge label={sheet.status} />
-        {needsAdmin && !sheet.admin_approved_by && sheet.status !== 'cancelled' && <AdminBadge text="Admin approval needed (sheet above limit)" />}
+        <Badge label={sheet.status} tone={SHEET_TONE[sheet.status]} />
+        {needsAdmin && !sheet.admin_approved_by && sheet.status === 'open' && <AdminBadge text="Admin approval needed (sheet above limit)" />}
         {sheet.admin_approved_by && <Badge label="admin approved" tone={['#dcfce7', '#166534']} />}
-        <span style={{ fontSize: 13 }}>Gross KES {fmt(sheet.total_gross)} · Deductions KES {fmt(sheet.total_deductions)} · <strong>Cash KES {fmt(sheet.total_net)}</strong></span>
+        <span style={{ fontSize: 13 }}>Gross KES {fmt(sheet.total_gross)} · Deductions KES {fmt(sheet.total_deductions)} · <strong>Net pay KES {fmt(sheet.total_net)}</strong></span>
       </div>
 
-      <ol style={{ fontSize: 12, color: C.muted, paddingLeft: 18, margin: '0 0 14px' }}>
-        <li style={{ fontWeight: sheet.status === 'open' ? 700 : 400, color: sheet.status === 'open' ? C.ink : undefined }}>Create the sheet {needsAdmin ? '(an admin approves it because it is above the limit)' : ''}</li>
-        <li style={{ fontWeight: sheet.status === 'printed' ? 700 : 400, color: sheet.status === 'printed' ? C.ink : undefined }}>Print it and have the worker sign next to their cash</li>
-        <li style={{ fontWeight: sheet.status === 'signed' ? 700 : 400, color: sheet.status === 'signed' ? C.ink : undefined }}>Upload a photo or scan of the signed sheet</li>
-        <li>Mark the settlement paid (receiver’s full name; a different person from the preparer)</li>
+      <ol data-testid="sheet-steps" style={{ fontSize: 12, color: C.muted, paddingLeft: 18, margin: '0 0 14px' }}>
+        {[
+          ['open', `Create the sheet${needsAdmin ? ' (an admin approves it because it is above the limit)' : ''}`],
+          ['open', 'An admin downloads the ChatPesa file (someone other than the person who prepared the settlements)'],
+          ['exported', 'Upload that file in ChatPesa to send the M-Pesa payments'],
+          ['exported', 'Import the ChatPesa statement (Suppliers → Payments), then press “Match payments”'],
+          ['exported', 'Anything ChatPesa rejected stays unpaid. An admin releases it so it can go on a new sheet'],
+        ].map(([when, text], i) => (
+          <li key={i} style={{ fontWeight: sheet.status === when ? 700 : 400, color: sheet.status === when ? C.ink : undefined }}>{text}</li>))}
       </ol>
 
       <Table>
-        <thead><tr><th style={th}>Worker</th><th style={{ ...th, ...num }}>Gross</th><th style={{ ...th, ...num }}>Deductions</th><th style={{ ...th, ...num }}>Cash</th><th style={th}>Status</th><th style={th} /></tr></thead>
-        <tbody>{settlements.map(s => {
-          const sameUser = s.prepared_by === userId;
-          return (
-            <tr key={s.id}>
-              <td style={td}>{s.employees?.name}<div style={{ fontSize: 11, color: C.muted }}>{s.settlement_num}</div></td>
-              <td style={{ ...td, ...num }}>{fmt(s.gross_amount)}</td><td style={{ ...td, ...num }}>{Number(s.deductions_total) ? fmt(s.deductions_total) : '—'}</td><td style={{ ...td, ...num }}><strong>{fmt(s.net_amount)}</strong></td>
-              <td style={td}><Badge label={s.status} />{s.status === 'paid' && <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Received by {s.received_by_full_name}<br />{fmtDT(s.paid_at)}</div>}</td>
-              <td style={td}>{s.status === 'approved' && sheet.status === 'signed' && adminOk && (
-                <Btn small variant="success" disabled={sameUser} title={sameUser ? 'You prepared this settlement — someone else must pay it' : ''} onClick={() => setPayFor(s)}>Mark paid</Btn>)}</td>
-            </tr>);
-        })}</tbody>
+        <thead><tr><th style={th}>Worker</th><th style={th}>M-Pesa number</th><th style={{ ...th, ...num }}>Amount sent</th><th style={th}>Payment</th></tr></thead>
+        <tbody>
+          {sheet.status === 'open'
+            ? settlements.map(s => (
+              <tr key={s.id}><td style={td}>{s.employees?.name}<div style={{ fontSize: 11, color: C.muted }}>{s.settlement_num}</div></td>
+                <td style={td}>—</td><td style={{ ...td, ...num }}><strong>{fmt(Math.round(Number(s.net_amount)))}</strong></td>
+                <td style={td}><Badge label="not exported" tone={['#f3f4f6', '#374151']} /></td></tr>))
+            : rows.map(r => {
+              const s = byS[r.settlement_id]; const st = rowState(r);
+              return (
+                <tr key={r.id} data-testid="payout-row">
+                  <td style={td}>{s?.employees?.name}<div style={{ fontSize: 11, color: C.muted }}>{s?.settlement_num}</div></td>
+                  <td style={td}>{r.phone_masked}</td>
+                  <td style={{ ...td, ...num }}><strong>{fmt(r.amount)}</strong></td>
+                  <td style={td}><Badge label={st.label} tone={st.tone} /><div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{st.note}</div></td>
+                </tr>);
+            })}
+        </tbody>
       </Table>
+      {sheet.status === 'open' && <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>Amounts are rounded to whole shillings in the ChatPesa file. Numbers are shown masked once the file is made.</div>}
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
-        {['open', 'printed'].includes(sheet.status) && isAdmin && needsAdmin && !sheet.admin_approved_by && (
+        {sheet.status === 'open' && isAdmin && needsAdmin && !sheet.admin_approved_by && (
           <Btn variant="success" loading={busy === 'approve'} onClick={() => act('approve', () => patch({ action: 'approve' }))}>Approve sheet (admin)</Btn>)}
-        {['open', 'printed', 'signed'].includes(sheet.status) && (
-          <Btn variant={sheet.status === 'open' ? 'primary' : 'secondary'} loading={busy === 'print'} disabled={sheet.status === 'open' && !adminOk}
-            title={sheet.status === 'open' && !adminOk ? 'An admin must approve this sheet first' : ''}
-            onClick={async () => {
-              if (!printSheet(d)) { setError('Your browser blocked the print window. Allow pop-ups for this site and try again.'); return; }
-              if (sheet.status === 'open') await act('print', () => patch({ action: 'print' }));
-            }}>{sheet.status === 'open' ? 'Print sheet' : 'Reprint'}</Btn>)}
-        {sheet.status === 'printed' && (
-          <label style={{ display: 'inline-flex' }}>
-            <input type="file" accept=".pdf,.png,.jpg,.jpeg,.heic,image/*" style={{ display: 'none' }} disabled={busy === 'upload'} onChange={(e) => { upload(e.target.files?.[0]); e.target.value = ''; }} />
-            <span style={{ padding: '9px 15px', borderRadius: 8, background: C.coral, color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', opacity: busy === 'upload' ? 0.5 : 1 }}>{busy === 'upload' ? 'Uploading…' : 'Upload signed copy'}</span>
-          </label>)}
-        {sheet.status === 'signed' && (
-          <Btn variant="secondary" onClick={async () => { const r = await patch({ action: 'receipt_url' }); if (r.ok) window.open(r.data.url, '_blank', 'noopener'); else setError(r.error); }}>View signed copy</Btn>)}
-        {canCancel && <Btn variant="danger" onClick={() => setShowCancel(v => !v)}>Cancel sheet…</Btn>}
+        {sheet.status === 'open' && (
+          <Btn loading={busy === 'export'} disabled={!canExport} title={exportBlock} onClick={doDownload}>Download ChatPesa file</Btn>)}
+        {sheet.status === 'exported' && waiting.length > 0 && canExportPayoutSheet(role) && !confirmAgain && (
+          <Btn variant="secondary" disabled={!canExport} title={exportBlock} onClick={() => setConfirmAgain(true)}>Download again…</Btn>)}
+        {sheet.status === 'exported' && (
+          <Btn variant="success" loading={busy === 'match'} onClick={doMatch}>Match payments</Btn>)}
+        {sheet.status === 'exported' && waiting.length > 0 && canReleasePayoutRows(role) && (
+          <Btn variant="danger" onClick={() => setShowRelease(v => !v)}>Release unpaid…</Btn>)}
+        {sheet.status === 'open' && <Btn variant="danger" onClick={() => setShowCancel(v => !v)}>Cancel sheet…</Btn>}
       </div>
-      {sheet.status === 'signed' && !anyPaid && <div style={{ fontSize: 12, color: C.muted, marginTop: 8 }}>The signed copy shows the worker acknowledged the deductions. It proves a signed document exists; counting the cash in front of a witness is still good practice.</div>}
+      {(sheet.status === 'open' || (sheet.status === 'exported' && waiting.length > 0)) && exportBlock && <div style={{ fontSize: 12, color: C.muted, marginTop: 8 }}>{exportBlock}</div>}
+      {sheet.status === 'exported' && <div style={{ fontSize: 12, color: C.muted, marginTop: 8 }}>The file was generated {fmtDT(sheet.exported_at)} ({sheet.export_downloads} download{sheet.export_downloads === 1 ? '' : 's'}). Do not upload it to ChatPesa twice: that pays the workers twice.</div>}
+      {sheet.status === 'paid' && <Banner tone="info" message="Every payment on this sheet was matched to a real ChatPesa payment. Paid settlements are final." />}
       {sheet.status === 'cancelled' && <Banner tone="info" message={`Cancelled ${fmtDT(sheet.cancelled_at)}: ${sheet.cancel_reason}. A cancelled sheet is never reused; its settlements are free to join a new sheet.`} />}
-      {sheet.status === 'signed' && !isAdmin && <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>Only an admin can cancel a signed sheet.</div>}
 
-      {showCancel && canCancel && (
+      {confirmAgain && (
+        <div style={{ marginTop: 12, background: C.redBg, border: `1px solid ${C.redBd}`, borderRadius: 9, padding: 12 }}>
+          <div style={{ fontSize: 13, marginBottom: 8 }}>Only download again if the first file was <strong>not</strong> uploaded to ChatPesa (or you lost it). The new file lists only the {waiting.length} payment{waiting.length === 1 ? '' : 's'} still unpaid. Uploading a file that ChatPesa already processed pays those workers twice.</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Btn variant="danger" loading={busy === 'export'} onClick={doDownload}>Yes, download the unpaid rows</Btn>
+            <Btn variant="secondary" onClick={() => setConfirmAgain(false)}>No</Btn>
+          </div>
+        </div>)}
+
+      {showRelease && (
+        <div style={{ marginTop: 12, background: C.redBg, border: `1px solid ${C.redBd}`, borderRadius: 9, padding: 12 }}>
+          <div style={{ fontSize: 13, marginBottom: 8 }}>Release only after importing a fresh ChatPesa statement and pressing “Match payments”. A payment that already left ChatPesa but is not in your statement yet would be paid a second time on a new sheet.</div>
+          <Field label="Why are these payments being released?" required><input style={inputStyle} value={releaseReason} onChange={(e) => setReleaseReason(e.target.value)} placeholder="e.g. ChatPesa rejected the row: number not registered" /></Field>
+          <Btn variant="danger" disabled={!releaseReason.trim()} loading={busy === 'release'}
+            onClick={async () => { if (await act('release', () => patch({ action: 'release', reason: releaseReason }))) { setShowRelease(false); setReleaseReason(''); } }}>Release {waiting.length} unpaid payment{waiting.length === 1 ? '' : 's'}</Btn>
+        </div>)}
+
+      {showCancel && sheet.status === 'open' && (
         <div style={{ marginTop: 12, background: C.redBg, border: `1px solid ${C.redBd}`, borderRadius: 9, padding: 12 }}>
           <Field label="Reason for cancelling" required><input style={inputStyle} value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} /></Field>
           <Btn variant="danger" disabled={!cancelReason.trim()} loading={busy === 'cancel'}
             onClick={async () => { if (await act('cancel', () => patch({ action: 'cancel', reason: cancelReason }))) { setShowCancel(false); setCancelReason(''); } }}>Cancel sheet</Btn>
         </div>)}
-
-      {payFor && <PayModal s={payFor} sheet={sheet} settings={settings} onClose={() => setPayFor(null)}
-        onPay={async (name, note) => {
-          const r = await api('PATCH', `/api/payroll/temporary/settlements/${payFor.id}`, { action: 'pay', received_by_full_name: name, payment_note: note || undefined });
-          if (!r.ok) return r.error;
-          setPayFor(null); await load(); onChanged?.(); return null;
-        }} />}
-    </Modal>
-  );
-}
-
-function PayModal({ s, settings, onClose, onPay }) {
-  const [name, setName] = useState('');
-  const [note, setNote] = useState('');
-  const [err, setErr] = useState('');
-  const [saving, setSaving] = useState(false);
-  const noteRequired = overApprovalLimit(settings, s.gross_amount) || overApprovalLimit(settings, s.net_amount);
-  const nameErr = name ? validateReceiverName(name) : null;
-  const valid = !validateReceiverName(name) && (!noteRequired || note.trim());
-  return (
-    <Modal title={`Mark ${s.employees?.name} paid`} onClose={onClose} width={460}>
-      <Banner message={err} />
-      <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 12 }}>KES {fmt(s.net_amount)} <span style={{ fontSize: 12, color: C.muted, fontWeight: 600 }}>cash</span></div>
-      <Field label="Receiver's full name" required error={nameErr}><input style={inputStyle} autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="As written on the signed sheet" /></Field>
-      <Field label="Payment note" required={noteRequired} hint={noteRequired ? 'Required: this payment is above the approval limit. Say how the cash was counted and handed over.' : 'Optional'}>
-        <textarea style={{ ...inputStyle, minHeight: 56 }} value={note} onChange={(e) => setNote(e.target.value)} />
-      </Field>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <Btn variant="success" disabled={!valid} loading={saving} onClick={async () => { setSaving(true); const e = await onPay(name.trim(), note.trim()); setSaving(false); if (e) setErr(e); }}>Confirm — cash handed over</Btn>
-        <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
-      </div>
-      <div style={{ fontSize: 11, color: C.muted, marginTop: 10 }}>This cannot be undone: paid settlements are final.</div>
     </Modal>
   );
 }

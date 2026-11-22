@@ -2,7 +2,7 @@
 
 /**
  * Payroll → Temporary Workers (admin, production manager, head of sales).
- * Cash-paid short-term labour: the worker is engaged for ONE project, days present are marked here, and the days are settled. Spec: docs/specs/temporary-workers.md
+ * Short-term labour paid by M-Pesa through ChatPesa (no cash): the worker is engaged for ONE project, days present are marked here, and the days are settled. Spec: docs/specs/temporary-workers.md
  *
  * Production assigns the worker's tasks separately; paying does not depend on Production assignments.
  */
@@ -70,7 +70,7 @@ const TAB_HELP = {
   engagements: 'An engagement is the deal with one worker on one project: the agreed daily rate and the dates. Create one, then mark the days they were present.',
   due: 'Workers whose marked days are ready to be paid. Choose “Prepare settlement” on a row to start paying them.',
   settlements: 'A settlement is the amount owed to one worker for their marked days. Check it, add any deductions, then have a second person approve it.',
-  sheets: 'A payout sheet is the paper the worker signs when they receive their cash. One sheet covers one settlement.',
+  sheets: 'A payout sheet gathers approved settlements into one ChatPesa file. An admin downloads it, uploads it in ChatPesa, and the settlements become paid when their payments appear in the imported statement.',
   settings: 'Admin only: the amounts above which an admin must approve, and the deduction rules.',
 };
 
@@ -81,12 +81,12 @@ function HowItWorks() {
     ['Mark the days present', 'Open the engagement and mark each day they came: Full or Half. Mistakes are cleared, never deleted.'],
     ['Prepare the settlement', 'When days are due (3 days marked, or the job ends), prepare a settlement. Add any deductions.'],
     ['Approve it', 'Someone other than the preparer, and other than whoever marked the days, approves. Above the approval limit, an admin does.'],
-    ['Create a payout sheet', 'Print it, the worker signs next to their cash, upload a photo of the signed copy.'],
-    ['Mark it paid', 'Enter the receiver’s full name. A different person from the one who prepared it pays. Paid is final.'],
+    ['Create a payout sheet', 'Tick the approved settlements to pay together. Each worker needs an M-Pesa number on their employee record.'],
+    ['Pay through ChatPesa', 'An admin (not the preparer) downloads the ChatPesa file and uploads it in ChatPesa. Then import the ChatPesa statement and press “Match payments”: each one found becomes paid, final. Anything ChatPesa rejected stays unpaid.'],
   ];
   return (
     <details style={{ background: C.blueBg, border: `1px solid ${C.blueBd}`, borderRadius: 9, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: C.blue }}>
-      <summary style={{ cursor: 'pointer', fontWeight: 700 }}>How temporary workers are paid (6 steps) — cash only, no statutory deductions</summary>
+      <summary style={{ cursor: 'pointer', fontWeight: 700 }}>How temporary workers are paid (6 steps) — M-Pesa through ChatPesa, no statutory deductions</summary>
       <ol style={{ margin: '10px 0 2px', paddingLeft: 20, lineHeight: 1.55 }}>
         {steps.map(([t, d]) => <li key={t}><strong>{t}.</strong> {d}</li>)}
       </ol>
@@ -419,7 +419,7 @@ function LimitsPanel({ settings, onSaved }) {
     <Card style={{ maxWidth: 560 }}>
       <Banner message={error} onDismiss={() => setError('')} />
       <Banner tone="info" message={msg} />
-      {field('admin_approval_limit_kes', 'Admin approval limit (KES)', 'Settlements (and payout sheets, by cash amount) above this need an admin. Leave empty to require an admin for everything.')}
+      {field('admin_approval_limit_kes', 'Admin approval limit (KES)', 'Settlements (and payout sheets, by total amount) above this need an admin. Leave empty to require an admin for everything.')}
       {settings && settings.admin_approval_limit_kes === null && <Banner tone="warn" message="No limit is set: only an admin can approve right now." />}
       {field('settlement_threshold_units', 'Settlement threshold (days marked)')}
       {field('rolling_window_days', 'Split-payment window (days)', 'A worker’s other approved settlements in this window count towards the limit.')}

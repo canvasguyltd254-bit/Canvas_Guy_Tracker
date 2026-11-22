@@ -19,6 +19,8 @@ await db.exec(`
  CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role;
  CREATE SCHEMA auth; CREATE TABLE auth.users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), created_at timestamptz DEFAULT now());
  CREATE TABLE orders (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), order_num text NOT NULL UNIQUE, client text NOT NULL, notes text, status text NOT NULL DEFAULT 'Inquiry');
+ CREATE TABLE chatpesa_imports (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), uploaded_by uuid REFERENCES auth.users(id), uploaded_at timestamptz NOT NULL DEFAULT now(), account_name text, notes text, row_count int NOT NULL DEFAULT 0, debit_count int NOT NULL DEFAULT 0);
+ CREATE TABLE chatpesa_transactions (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), import_id uuid NOT NULL REFERENCES chatpesa_imports(id) ON DELETE CASCADE, chatpesa_id bigint NOT NULL UNIQUE, tx_type text NOT NULL, match_status text NOT NULL DEFAULT 'unmatched', account_number text, description text, confirm_code text, amount numeric(12,2) NOT NULL DEFAULT 0, transaction_date date NOT NULL, ignored_at timestamptz, ignored_by uuid REFERENCES auth.users(id));
  CREATE TABLE order_items (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), order_id uuid REFERENCES orders(id));
  CREATE TABLE production_plans (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), order_id uuid UNIQUE REFERENCES orders(id));
  CREATE TABLE production_jobs (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), status text NOT NULL DEFAULT 'Planned', order_id uuid NOT NULL REFERENCES orders(id));
@@ -28,7 +30,7 @@ await db.exec(`
 `);
 await db.exec(mig('payroll_module.sql'));
 await db.exec(`ALTER TABLE production_job_assignments ADD CONSTRAINT fk_emp FOREIGN KEY (employee_id) REFERENCES employees(id)`);
-for (const f of ['production_v3a_labour_costing.sql', 'production_v3b_time_entry_day_lock.sql', 'temporary_workers_stage1.sql', 'temporary_workers_stage1b.sql', 'temporary_workers_stage1c.sql', 'temporary_workers_stage2.sql']) await db.exec(mig(f));
+for (const f of ['production_v3a_labour_costing.sql', 'production_v3b_time_entry_day_lock.sql', 'temporary_workers_stage1.sql', 'temporary_workers_stage1b.sql', 'temporary_workers_stage1c.sql', 'temporary_workers_stage2.sql', 'temporary_workers_stage3.sql']) await db.exec(mig(f));
 const seed = readFileSync(R + 'staging/temporary_workers_dummy_seed.sql', 'utf8');
 const cleanup = readFileSync(R + 'staging/temporary_workers_dummy_cleanup.sql', 'utf8');
 
@@ -50,10 +52,17 @@ function await_d(n) { const d = new Date(); d.setDate(d.getDate() - n); return d
 await call('mark_temporary_attendance', eng, JSON.stringify(days), u1, 'head_of_sales');
 const p = await call('prepare_temporary_settlement', eng, today, 'threshold', null, u1, 'head_of_sales');
 await call('approve_temporary_settlement', p.id, u2, 'head_of_sales', null);
+const u3 = (await one(`INSERT INTO auth.users DEFAULT VALUES RETURNING id`)).id;   // the admin who releases the payment
+ok('seed: the dummy workers have placeholder M-Pesa numbers (so a sheet can be made)', Number(await val(`SELECT count(*) FROM employees WHERE employee_num LIKE 'EMP-TST-%' AND tw_normalise_phone(phone) IS NOT NULL`)) === 5);
 const sh = await call('create_payout_sheet', '{' + p.id + '}', u1, 'head_of_sales');
-await call('mark_sheet_printed', sh, u1, 'head_of_sales'); await call('attach_signed_receipt', sh, 'r.jpg', u1, 'head_of_sales');
-await call('pay_temporary_settlement', p.id, u2, 'head_of_sales', 'Jane Wanjiru', null);
-ok('staged: a PAID settlement with 3 days exists on the dummy data', (await val(`SELECT status FROM temporary_worker_settlements WHERE id=$1`, [p.id])) === 'paid');
+const exp = await call('export_payout_sheet', sh, u3, 'admin');
+// the seed's documented fake statement line (the commented block at the bottom of the seed), run for real
+const snippet = seed.slice(seed.indexOf('-- do $$')).split('\n').filter(l => l.startsWith('-- ')).map(l => l.slice(3)).join('\n');
+const num = await val(`SELECT settlement_num FROM temporary_worker_settlements WHERE id=$1`, [p.id]);
+await db.exec(snippet.replace('SETTLEMENT_NUM', num).replace('AMOUNT', String(exp.rows[0].amount)));
+const m = await call('match_payout_sheet', sh, u1, 'head_of_sales');
+ok('staged: the seed\'s fake statement line matches the exported row and the settlement is PAID', m.matched === 1 && (await val(`SELECT status FROM temporary_worker_settlements WHERE id=$1`, [p.id])) === 'paid');
+ok('staged: the matched statement line is marked ignored (out of the supplier queue)', (await val(`SELECT match_status FROM chatpesa_transactions WHERE confirm_code='DUMMYCODE1'`)) === 'ignored');
 // and a production chain on the dummy project, plus a deduction on a second settlement
 const ord = await val(`SELECT id FROM orders WHERE order_num='TST-TW-001'`);
 const job = (await one(`INSERT INTO production_jobs (order_id) VALUES ($1) RETURNING id`, [ord])).id;
@@ -61,6 +70,17 @@ await db.query(`INSERT INTO production_plans (order_id) VALUES ($1)`, [ord]); aw
 const stg = (await one(`INSERT INTO production_job_stages (job_id, stage_key, stage_label) VALUES ($1,'cut','Cut') RETURNING id`, [job])).id;
 const emp = await val(`SELECT id FROM employees WHERE employee_num='EMP-TST-001'`);
 await db.query(`INSERT INTO production_job_assignments (job_id, stage_id, employee_id) VALUES ($1,$2,$3)`, [job, stg, emp]);
+// a dummy payment matched to a statement line that belongs to the REAL statement: cleanup must hand that line back untouched
+const eng2 = await val(`SELECT e.id FROM temporary_worker_engagements e JOIN employees x ON x.id=e.employee_id WHERE x.employee_num='EMP-TST-002'`);
+await call('mark_temporary_attendance', eng2, JSON.stringify(days), u1, 'head_of_sales');
+const p2 = await call('prepare_temporary_settlement', eng2, today, 'threshold', null, u1, 'head_of_sales');
+await call('approve_temporary_settlement', p2.id, u2, 'head_of_sales', null);
+const sh2 = await call('create_payout_sheet', '{' + p2.id + '}', u1, 'head_of_sales');
+const exp2 = await call('export_payout_sheet', sh2, u3, 'admin');
+const realImp = (await one(`INSERT INTO chatpesa_imports (account_name) VALUES ('Canvas Guy Limited') RETURNING id`)).id;
+const realLine = (await one(`INSERT INTO chatpesa_transactions (import_id, chatpesa_id, tx_type, account_number, description, confirm_code, amount, transaction_date) VALUES ($1, 1234567, 'debit', '0700000002', $2, 'REALCODE', $3, current_date) RETURNING id`, [realImp, 'x - ' + await val(`SELECT settlement_num FROM temporary_worker_settlements WHERE id=$1`, [p2.id]), exp2.rows[0].amount])).id;
+await call('match_payout_sheet', sh2, u1, 'head_of_sales');
+ok('staged: a second dummy payment is matched to a line of the real statement', (await val(`SELECT match_status FROM chatpesa_transactions WHERE id=$1`, [realLine])) === 'ignored');
 // a REAL worker and order that must survive
 const realEmp = (await one(`INSERT INTO employees (employee_num, name, type, day_rate) VALUES ('EMP-001','Real Person','casual',900) RETURNING id`)).id;
 const realOrd = (await one(`INSERT INTO orders (order_num, client) VALUES ('ORD-REAL-1','Real Client') RETURNING id`)).id;
@@ -74,7 +94,9 @@ ok('cleanup: engagements, days, settlements, lines, sheets, deductions are all g
   await left(`SELECT count(*) FROM temporary_worker_engagements WHERE id <> $1`.replace('$1', `'${realEng}'`)) === 0
   && await left(`SELECT count(*) FROM temporary_worker_attendance WHERE engagement_id <> '${realEng}'`) === 0
   && await left(`SELECT count(*) FROM temporary_worker_settlements`) === 0 && await left(`SELECT count(*) FROM temporary_worker_settlement_lines`) === 0
-  && await left(`SELECT count(*) FROM temporary_worker_payout_sheets`) === 0);
+  && await left(`SELECT count(*) FROM temporary_worker_payout_sheets`) === 0 && await left(`SELECT count(*) FROM temporary_worker_payout_rows`) === 0);
+ok('cleanup: the seed\'s fake statement import and its debit are gone', await left(`SELECT count(*) FROM chatpesa_transactions WHERE confirm_code='DUMMYCODE1'`) === 0 && await left(`SELECT count(*) FROM chatpesa_imports WHERE account_name LIKE 'DUMMY%'`) === 0);
+ok('cleanup: a REAL statement line that a dummy payment had claimed is handed back to the review queue, unharmed', (await val(`SELECT match_status FROM chatpesa_transactions WHERE id=$1`, [realLine])) === 'unmatched' && (await val(`SELECT ignored_at FROM chatpesa_transactions WHERE id=$1`, [realLine])) === null && await left(`SELECT count(*) FROM chatpesa_imports WHERE account_name='Canvas Guy Limited'`) === 1);
 ok('cleanup: the production plan, job, stage, assignment and order items of the dummy project are gone',
   await left(`SELECT count(*) FROM production_jobs`) === 0 && await left(`SELECT count(*) FROM production_plans`) === 0 && await left(`SELECT count(*) FROM production_job_assignments`) === 0 && await left(`SELECT count(*) FROM order_items`) === 0);
 ok('cleanup: activity-log rows of the deleted engagements and settlements are gone, the real engagement\'s remain',

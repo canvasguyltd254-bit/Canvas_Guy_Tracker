@@ -1,4 +1,4 @@
-// Two-connection concurrency tests for the temporary-workers migrations (stage 1, 1b, 1c, 2), on REAL Postgres.
+// Two-connection concurrency tests for the temporary-workers migrations (stage 1, 1b, 1c, 2, 3), on REAL Postgres.
 // pglite is single-connection and cannot prove any of this.
 //
 // Technique: connection A opens a transaction and calls a function WITHOUT committing, so it holds its
@@ -6,7 +6,7 @@
 // = 'Lock' in pg_stat_activity), then A commits and we assert B's outcome and the final database state.
 //
 // Run it against an EMPTY SCRATCH database (a local Postgres, or a throwaway Supabase branch). It builds its own
-// schema (payroll_module.sql, production v3a/v3b, the stage 1-2 migrations, and minimal Production parent-table stubs)
+// schema (payroll_module.sql, production v3a/v3b, the stage 1-3 migrations, and minimal Production parent-table stubs)
 // and REFUSES to run if an `employees` table already exists, so it can never touch real data.
 //
 //   mkdir -p /tmp/pgc && cd /tmp/pgc && npm init -y && npm i pg
@@ -51,6 +51,7 @@ await admin.query(`
   CREATE SCHEMA IF NOT EXISTS auth;
   CREATE TABLE IF NOT EXISTS auth.users (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
   CREATE TABLE orders (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
+  CREATE TABLE chatpesa_transactions (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), chatpesa_id bigint NOT NULL UNIQUE, tx_type text NOT NULL, match_status text NOT NULL DEFAULT 'unmatched', account_number text, description text, confirm_code text, amount numeric(12,2) NOT NULL DEFAULT 0, transaction_date date NOT NULL, ignored_at timestamptz, ignored_by uuid REFERENCES auth.users(id));
   CREATE TABLE production_jobs (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), status text NOT NULL DEFAULT 'Planned', order_id uuid NOT NULL REFERENCES orders(id));
   CREATE TABLE production_job_stages (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), job_id uuid REFERENCES production_jobs(id), stage_key text, stage_label text, is_enabled boolean NOT NULL DEFAULT true);
   CREATE TABLE production_operations (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), stage_key text, is_active boolean DEFAULT true);
@@ -58,13 +59,13 @@ await admin.query(`
 `);
 await admin.query(mig('payroll_module.sql'));
 await admin.query(`ALTER TABLE production_job_assignments ADD CONSTRAINT fk_emp FOREIGN KEY (employee_id) REFERENCES employees(id)`);
-for (const f of ['production_v3a_labour_costing.sql', 'production_v3b_time_entry_day_lock.sql', 'temporary_workers_stage1.sql', 'temporary_workers_stage1b.sql', 'temporary_workers_stage1c.sql', 'temporary_workers_stage2.sql']) await admin.query(mig(f));
+for (const f of ['production_v3a_labour_costing.sql', 'production_v3b_time_entry_day_lock.sql', 'temporary_workers_stage1.sql', 'temporary_workers_stage1b.sql', 'temporary_workers_stage1c.sql', 'temporary_workers_stage2.sql', 'temporary_workers_stage3.sql']) await admin.query(mig(f));
 // Fixtures use fixed November 2026 dates: pin "today" far ahead (scratch database only).
 await admin.query(`CREATE OR REPLACE FUNCTION public.tw_today() RETURNS date LANGUAGE sql STABLE AS $$ SELECT '2099-12-31'::date $$`);
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 const user = async () => (await one(admin, `INSERT INTO auth.users DEFAULT VALUES RETURNING id`)).id;
-const [adm, pmRec, pmApp, hos1, hos2, pmPay] = [await user(), await user(), await user(), await user(), await user(), await user()];
+const [adm, pmRec, pmApp, hos1, hos2, pmPay, adm2] = [await user(), await user(), await user(), await user(), await user(), await user(), await user()];
 const ORDER = (await one(admin, `INSERT INTO orders DEFAULT VALUES RETURNING id`)).id;
 const JOB = (await one(admin, `INSERT INTO production_jobs (order_id) VALUES ($1) RETURNING id`, [ORDER])).id;
 const STAGE = (await one(admin, `INSERT INTO production_job_stages (job_id, stage_key, stage_label) VALUES ($1,'cut','Cut') RETURNING id`, [JOB])).id;
@@ -74,7 +75,7 @@ const DATES = ['2026-11-02', '2026-11-03', '2026-11-04'];
 
 // A worker with 3 marked days and a draft settlement (status per `upTo`).
 async function scenario(upTo = 'draft') {
-  const emp = (await one(admin, `INSERT INTO employees (employee_num, name, type, day_rate) VALUES ($1,$2,'casual',1000) RETURNING id`, [`C-${++n}`, `Conc ${n}`])).id;
+  const emp = (await one(admin, `INSERT INTO employees (employee_num, name, type, day_rate, phone) VALUES ($1,$2,'casual',1000,$3) RETURNING id`, [`C-${++n}`, `Conc ${n}`, `07${20000000 + n}`])).id;
   const eng = await call(admin, 'create_temporary_engagement', emp, ORDER, 1000, '2026-11-02', null, null, null, true, hos1, 'head_of_sales');
   await call(admin, 'mark_temporary_attendance', eng, JSON.stringify(DATES.map(d => ({ date: d, units: 1 }))), pmRec, 'production_manager');
   const entries = (await admin.query(`SELECT id FROM temporary_worker_attendance WHERE engagement_id=$1 ORDER BY work_date`, [eng])).rows.map(r => r.id);
@@ -85,11 +86,19 @@ async function scenario(upTo = 'draft') {
   await call(admin, 'approve_temporary_settlement', s.id, hos2, 'head_of_sales', null);
   if (upTo === 'approved') return s;
   s.sheet = await call(admin, 'create_payout_sheet', arr([s.id]), hos1, 'head_of_sales');
-  if (upTo === 'sheet') return s;
-  await call(admin, 'mark_sheet_printed', s.sheet, hos1, 'head_of_sales');
-  await call(admin, 'attach_signed_receipt', s.sheet, 'receipts/x.jpg', hos1, 'head_of_sales');
-  return s;                                                     // 'signed'
+  if (upTo === 'sheet' || upTo === 'sheet-open') return s;
+  await call(admin, 'export_payout_sheet', s.sheet, adm, 'admin');
+  return s;                                                     // 'exported'
 }
+let cp = 9000;
+// A ChatPesa statement debit for a scenario's worker (settlement number echoed unless `echo` is false).
+async function debit(s, { echo = true, amount = 3000, phone } = {}) {
+  const num = await val(admin, `SELECT settlement_num FROM temporary_worker_settlements WHERE id=$1`, [s.id]);
+  const ph = phone ?? await val(admin, `SELECT phone FROM employees WHERE id=$1`, [s.emp]);
+  return (await one(admin, `INSERT INTO chatpesa_transactions (chatpesa_id, tx_type, account_number, description, confirm_code, amount, transaction_date) VALUES ($1,'debit',$2,$3,$4,$5,(now() AT TIME ZONE 'Africa/Nairobi')::date) RETURNING id`,
+    [++cp, ph, echo ? `Pay - ${num}` : 'MPESA payout', `RC${cp}`, amount])).id;
+}
+const sheetSt = id => val(admin, `SELECT status FROM temporary_worker_payout_sheets WHERE id=$1`, [id]);
 
 // Run `fnA` inside an open transaction on A (locks held), then start `fnB` on B and prove it is blocked,
 // then commit A (or roll back) and return B's outcome.
@@ -145,14 +154,15 @@ const st = id => val(admin, `SELECT status FROM temporary_worker_settlements WHE
     && Number(await val(admin, `SELECT count(*) FROM temporary_worker_settlement_lines WHERE settlement_id=$1 AND active`, [s.id])) === 0);
 }
 
-// ── S4: the same settlement paid twice at once ──────────────────────────────
+// ── S4: the same sheet matched twice at once ───────────────────────────────
 {
-  const s = await scenario('signed');
-  const r = await race('S4 pay vs pay',
-    c => call(c, 'pay_temporary_settlement', s.id, pmPay, 'production_manager', 'Jane Wanjiru', null),
-    c => call(c, 'pay_temporary_settlement', s.id, hos2, 'head_of_sales', 'Jane Wanjiru', null));
-  ok('S4: second payment refused (already paid)', r.b && /already paid/.test(r.b.message), r.b?.message);
-  ok('S4: paid exactly once, by the first payer', (await st(s.id)) === 'paid' && (await val(admin, `SELECT paid_by FROM temporary_worker_settlements WHERE id=$1`, [s.id])) === pmPay);
+  const s = await scenario('exported'); await debit(s);
+  const r = await race('S4 match vs match',
+    c => call(c, 'match_payout_sheet', s.sheet, hos1, 'head_of_sales'),
+    c => call(c, 'match_payout_sheet', s.sheet, hos2, 'head_of_sales'));
+  ok('S4: the second match is harmless (the sheet is already paid) and matches nothing', !r.b && r.bRes && r.bRes.matched === 0 && r.bRes.sheet_status === 'paid', r.b?.message);
+  ok('S4: paid exactly once, by the person who exported', (await st(s.id)) === 'paid' && (await val(admin, `SELECT paid_by FROM temporary_worker_settlements WHERE id=$1`, [s.id])) === adm
+    && Number(await val(admin, `SELECT count(*) FROM temporary_worker_payout_rows WHERE settlement_id=$1 AND chatpesa_transaction_id IS NOT NULL`, [s.id])) === 1 && (await sheetSt(s.sheet)) === 'paid');
 }
 
 // ── S5: clearing a day while a settlement is being prepared ─────────────────
@@ -174,22 +184,24 @@ const st = id => val(admin, `SELECT status FROM temporary_worker_settlements WHE
   ok('S5b: no active line references a voided day', Number(await val(admin, `SELECT count(*) FROM temporary_worker_settlement_lines l JOIN temporary_worker_attendance a ON a.id=l.attendance_id WHERE l.active AND NOT a.active`)) === 0);
 }
 
-// ── S6: paying vs cancelling the sheet ──────────────────────────────────────
+// ── S6: matching vs releasing the same sheet ───────────────────────────────
 {
-  const s = await scenario('signed');
-  const r = await race('S6 pay first, cancel sheet second',
-    c => call(c, 'pay_temporary_settlement', s.id, pmPay, 'production_manager', 'Jane Wanjiru', null),
-    c => call(c, 'cancel_payout_sheet', s.sheet, 'wrong sheet', adm, 'admin'));
-  ok('S6: cancel refused once the settlement is paid', r.b && /paid settlement cannot be cancelled/.test(r.b.message), r.b?.message);
-  ok('S6: settlement paid, sheet still signed', (await st(s.id)) === 'paid' && (await val(admin, `SELECT status FROM temporary_worker_payout_sheets WHERE id=$1`, [s.sheet])) === 'signed');
+  const s = await scenario('exported'); const tx = await debit(s);
+  const r = await race('S6 match first, release second',
+    c => call(c, 'match_payout_sheet', s.sheet, hos1, 'head_of_sales'),
+    c => call(c, 'release_unpaid_payout_rows', s.sheet, 'rejected by ChatPesa', adm, 'admin'));
+  ok('S6: release refused once the payment is matched', r.b && /exported payout sheet|no unpaid rows/.test(r.b.message), r.b?.message);
+  ok('S6: settlement paid, sheet paid, debit consumed exactly once', (await st(s.id)) === 'paid' && (await sheetSt(s.sheet)) === 'paid'
+    && (await val(admin, `SELECT match_status FROM chatpesa_transactions WHERE id=$1`, [tx])) === 'ignored');
 }
 {
-  const s = await scenario('signed');
-  const r = await race('S6b cancel sheet first, pay second',
-    c => call(c, 'cancel_payout_sheet', s.sheet, 'wrong sheet', adm, 'admin'),
-    c => call(c, 'pay_temporary_settlement', s.id, pmPay, 'production_manager', 'Jane Wanjiru', null));
-  ok('S6b: payment refused after the sheet is cancelled', r.b && /sheet changed|signed and attached|payout sheet first/.test(r.b.message), r.b?.message);
-  ok('S6b: settlement unpaid, back to approved with no sheet', (await st(s.id)) === 'approved' && (await val(admin, `SELECT payout_sheet_id FROM temporary_worker_settlements WHERE id=$1`, [s.id])) === null);
+  const s = await scenario('exported'); const tx = await debit(s);
+  const r = await race('S6b release first, match second',
+    c => call(c, 'release_unpaid_payout_rows', s.sheet, 'rejected by ChatPesa', adm, 'admin'),
+    c => call(c, 'match_payout_sheet', s.sheet, hos1, 'head_of_sales'));
+  ok('S6b: matching refused after the release commits (the sheet is closed)', r.b && /Only an exported payout sheet can be matched/.test(r.b.message), r.b?.message);
+  ok('S6b: settlement approved with no sheet; the statement line was NOT consumed', (await st(s.id)) === 'approved' && (await val(admin, `SELECT payout_sheet_id FROM temporary_worker_settlements WHERE id=$1`, [s.id])) === null
+    && (await val(admin, `SELECT match_status FROM chatpesa_transactions WHERE id=$1`, [tx])) === 'unmatched');
 }
 
 // ── S7: one settlement put on two sheets at once ────────────────────────────
@@ -202,15 +214,51 @@ const st = id => val(admin, `SELECT status FROM temporary_worker_settlements WHE
   ok('S7: the settlement is on exactly one sheet', Number(await val(admin, `SELECT count(DISTINCT payout_sheet_id) FROM temporary_worker_settlements WHERE id=$1 AND payout_sheet_id IS NOT NULL`, [s.id])) === 1);
 }
 
-// ── S8: voiding an approved settlement while it is being paid ───────────────
+// ── S8: voiding an approved settlement while the sheet is being exported ──
 {
-  const s = await scenario('signed');
-  const r = await race('S8 void (approved) vs pay',
-    c => call(c, 'pay_temporary_settlement', s.id, pmPay, 'production_manager', 'Jane Wanjiru', null),
+  const s = await scenario('sheet-open');
+  const r = await race('S8 export first, void second',
+    c => call(c, 'export_payout_sheet', s.sheet, adm, 'admin'),
     c => call(c, 'void_temporary_settlement', s.id, 'changed my mind', adm, 'admin'));
-  ok('S8: void refused once payment commits (paid is final)', r.b && /paid settlement is final|signed payout sheet/.test(r.b.message), r.b?.message);
-  ok('S8: settlement is paid and its lines are still active', (await st(s.id)) === 'paid'
-    && Number(await val(admin, `SELECT count(*) FROM temporary_worker_settlement_lines WHERE settlement_id=$1 AND active`, [s.id])) === 3);
+  ok('S8: void refused once the file is exported (money may be on its way)', r.b && /exported payout sheet/.test(r.b.message), r.b?.message);
+  ok('S8: settlement still approved on the sheet; its row exists', (await st(s.id)) === 'approved' && (await sheetSt(s.sheet)) === 'exported'
+    && Number(await val(admin, `SELECT count(*) FROM temporary_worker_payout_rows WHERE settlement_id=$1 AND released_at IS NULL`, [s.id])) === 1);
+}
+{
+  const s = await scenario('sheet-open');
+  const r = await race('S8b void first, export second',
+    c => call(c, 'void_temporary_settlement', s.id, 'changed my mind', adm, 'admin'),
+    c => call(c, 'export_payout_sheet', s.sheet, adm, 'admin'));
+  ok('S8b: nothing is exported for a voided settlement (the sheet is empty)', r.b && /empty/.test(r.b.message), r.b?.message);
+  ok('S8b: no payout row was written', Number(await val(admin, `SELECT count(*) FROM temporary_worker_payout_rows WHERE settlement_id=$1`, [s.id])) === 0 && (await st(s.id)) === 'voided');
+}
+
+// ── S9: two admins press "Download ChatPesa file" at the same moment ───────
+{
+  const s = await scenario('sheet-open');
+  const r = await race('S9 export vs export',
+    c => call(c, 'export_payout_sheet', s.sheet, adm, 'admin'),
+    c => call(c, 'export_payout_sheet', s.sheet, adm2, 'admin'));
+  ok('S9: the second admin gets a REPEAT download, not a second first export', !r.b && r.bRes && r.bRes.first_export === false && r.bRes.rows.length === 1, r.b?.message);
+  ok('S9: one set of rows, exported once, by the first admin; the repeat is counted', Number(await val(admin, `SELECT count(*) FROM temporary_worker_payout_rows WHERE settlement_id=$1`, [s.id])) === 1
+    && (await val(admin, `SELECT exported_by FROM temporary_worker_payout_sheets WHERE id=$1`, [s.sheet])) === adm
+    && Number(await val(admin, `SELECT export_downloads FROM temporary_worker_payout_sheets WHERE id=$1`, [s.sheet])) === 2
+    && Number(await val(admin, `SELECT count(*) FROM payroll_activities WHERE entity_id=$1 AND activity_type='exported'`, [s.sheet])) === 1);
+}
+
+// ── S10: ONE statement debit, two sheets competing for it ──────────────────
+{
+  const a = await scenario('exported'), b = await scenario('sheet-open');
+  await admin.query(`UPDATE employees SET phone=(SELECT phone FROM employees WHERE id=$1) WHERE id=$2`, [a.emp, b.emp]);   // same number, same amount
+  await call(admin, 'export_payout_sheet', b.sheet, adm, 'admin');                                                          // the row freezes the number at export
+  const tx = await debit(a, { echo: false });                                                                              // no settlement number echoed: both rows qualify
+  const r = await race('S10 match sheet A vs match sheet B',
+    c => call(c, 'match_payout_sheet', a.sheet, hos1, 'head_of_sales'),
+    c => call(c, 'match_payout_sheet', b.sheet, hos1, 'head_of_sales'));
+  ok('S10: the loser matches nothing', !r.b && r.bRes && r.bRes.matched === 0, r.b?.message);
+  const paid = Number(await val(admin, `SELECT count(*) FROM temporary_worker_settlements WHERE id = ANY($1::uuid[]) AND status='paid'`, [arr([a.id, b.id])]));
+  ok('S10: exactly ONE settlement is paid and the debit is linked to exactly one row', paid === 1
+    && Number(await val(admin, `SELECT count(*) FROM temporary_worker_payout_rows WHERE chatpesa_transaction_id=$1`, [tx])) === 1);
 }
 
 // ════════════════════════════════════════════════════════════════════════════

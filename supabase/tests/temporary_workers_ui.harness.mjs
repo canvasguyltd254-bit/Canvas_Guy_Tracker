@@ -18,7 +18,6 @@ writeFileSync('/tmp/rt/uiAuthStub.js', `export const useAuth = () => window.__au
 writeFileSync('/tmp/rt/uiSupabaseStub.js', `
 export const createClient = () => ({
   from: () => { const q = { select: () => q, order: () => q, limit: async () => ({ data: window.__orders }) }; return q; },
-  storage: { from: () => ({ uploadToSignedUrl: async () => ({ error: null }) }) },
 });`);
 writeFileSync('/tmp/rt/uiEntry.js', `
 import React, { act } from 'react';
@@ -74,17 +73,24 @@ const route = (method, url, body) => {
   if (p.endsWith('/temporary/settlements') && method === 'GET') return { settlements: backend.settlements };
   if (/\/settlements\/[^/]+$/.test(p) && method === 'GET') { const id = p.split('/').pop(); const s = backend.settlements.find(x => x.id === id); return { settlement: s, lines: [{ id: 'l1', work_date: '2026-11-02', attendance_units: 1, base_amount: 4000, overtime_amount: 0, sunday_amount: 0, line_amount: 4000, active: true }], deductions: backend.deductions[id] || [] }; }
   if (p.endsWith('/payout-sheets') && method === 'GET') return { sheets: backend.sheets };
-  if (/\/payout-sheets\/[^/]+$/.test(p) && method === 'GET') return { sheet: backend.sheets[0], settlements: backend.sheetSettlements, deductions: [] };
+  if (/\/payout-sheets\/[^/]+$/.test(p) && method === 'GET') return { sheet: backend.sheets[0], settlements: backend.sheetSettlements, deductions: [], rows: backend.sheetRows || [] };
+  if (/\/payout-sheets\/[^/]+$/.test(p) && method === 'PATCH' && body?.action === 'match') return { data: backend.matchResult || { matched: 1, pending: 1, ambiguous: [], not_found: ['TW-2'], sheet_status: 'exported' } };
   if (p.startsWith('/api/payroll/employees')) return { employees: [{ id: 'w1', name: 'Jane Worker', employee_num: 'EMP-1' }] };
   return { data: { ok: true } };
 };
 globalThis.fetch = async (url, init = {}) => {
   const method = init.method || 'GET'; calls.push({ method, url: String(url), body: init.body ? JSON.parse(init.body) : undefined });
+  if (/\/payout-sheets\/[^/]+\/export$/.test(String(url))) {
+    if (backend.exportRefuse) return { ok: false, status: 422, json: async () => ({ error: backend.exportRefuse }), text: async () => JSON.stringify({ error: backend.exportRefuse }) };
+    return { ok: true, status: 200, headers: { get: (k) => ({ 'Content-Disposition': 'attachment; filename="chatpesa_PS-2026-0001_2026-11-07.csv"', 'X-First-Export': backend.firstExport === false ? '0' : '1' })[k] ?? null }, blob: async () => new window.Blob(['Type,Amount']) };
+  }
   const body = route(method, String(url), init.body ? JSON.parse(init.body) : undefined);
   if (body && body.__status) return { ok: false, status: body.__status, text: async () => JSON.stringify({ error: body.error }) };
   return { ok: true, status: 200, text: async () => JSON.stringify(body) };
 };
 window.fetch = globalThis.fetch;
+window.URL.createObjectURL = () => 'blob:test'; window.URL.revokeObjectURL = () => {};
+window.HTMLAnchorElement.prototype.click = function () { (window.__downloads ||= []).push(this.download); };
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => { cond ? pass++ : fail++; console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '  ' + extra}`); };
@@ -101,7 +107,7 @@ let root;
 const mount = async (role, over = {}) => {
   document.getElementById('root').innerHTML = ''; document.querySelectorAll('[role=dialog]').forEach(d => d.remove());
   backend = { settings: SETTINGS, engagements: [{ id: 'e1', engagement_num: 'TE-2026-0001', status: 'active', version: 1, agreed_daily_rate: 4000, start_date: START, expected_end_date: null, employees: emp('Jane Worker'), orders: { order_num: 'ORD-9', client: 'Acme' }, due: { eligible_units: 3, eligible_gross: 12000, due: true, close_out_due: false, threshold_units: 3 } }],
-    settlements: [settlement({})], deductions: {}, sheets: [], sheetSettlements: [], ...over };
+    settlements: [settlement({})], deductions: {}, sheets: [], sheetSettlements: [], sheetRows: [], ...over };
   calls = []; window.__auth = { user: { id: USER }, userRole: role, loaded: true }; window.__orders = [{ id: 'o1', order_num: 'ORD-9', client: 'Acme', status: 'In Production' }];
   root = createRoot(document.getElementById('root'));
   await act(async () => { root.render(React.createElement(TemporaryWorkersTab)); }); await settle();
@@ -167,73 +173,101 @@ await mount('admin'); await tab('Settlements'); await click(byText('button', 'Op
 ok('admin sees the override-reason field and can approve above the limit', /Admin override reason/.test(dialog().textContent) && !byText('button', 'Approve settlement', dialog()).disabled); await unmount();
 
 // ── paid is final ──
-await mount('admin', { settlements: [settlement({ status: 'paid', approved_by: OTHER, approved_by_role: 'head_of_sales', approved_at: '2026-11-06T08:00:00Z', paid_by: 'u-pay', paid_at: '2026-11-07T08:00:00Z', received_by_full_name: 'Jane Wanjiru', payout_sheet_id: 'sh1' })] });
+await mount('admin', { settlements: [settlement({ status: 'paid', approved_by: OTHER, approved_by_role: 'head_of_sales', approved_at: '2026-11-06T08:00:00Z', paid_by: 'u-pay', paid_at: '2026-11-07T08:00:00Z', payment_note: 'M-Pesa RKA123', payout_sheet_id: 'sh1' })] });
 await tab('Settlements'); await click(byText('button', 'Open'));
-ok('a paid settlement shows who received the cash and offers no void/approve/pay button', /Jane Wanjiru/.test(dialog().textContent) && !byText('button', 'Void…', dialog()) && !byText('button', 'Approve settlement', dialog()) && /final/.test(dialog().textContent)); await unmount();
+ok('a paid settlement says it was paid by M-Pesa through ChatPesa (with the code) and offers no void/approve/pay button', /M-Pesa through ChatPesa/.test(dialog().textContent) && /RKA123/.test(dialog().textContent) && !/in cash/.test(dialog().textContent) && !byText('button', 'Void…', dialog()) && !byText('button', 'Approve settlement', dialog()) && /final/.test(dialog().textContent)); await unmount();
 await mount('head_of_sales', { settlements: [settlement({ status: 'approved', approved_by: OTHER, approved_by_role: 'head_of_sales', approved_at: '2026-11-06T08:00:00Z' })] });
 await tab('Settlements'); await click(byText('button', 'Open'));
 ok('only an admin can void an approved settlement', !byText('button', 'Void…', dialog()) && /Only an admin can void/.test(dialog().textContent)); await unmount();
 
-// ── payout sheet and payment ──
-const sheet = (o) => ({ id: 'sh1', sheet_num: 'PS-2026-0001', status: 'signed', total_gross: 6000, total_deductions: 0, total_net: 6000, admin_approved_by: null, created_at: '2026-11-06T08:00:00Z', ...o });
+// ── payout sheet: ChatPesa (M-Pesa), no cash ──
+const sheet = (o) => ({ id: 'sh1', sheet_num: 'PS-2026-0001', status: 'exported', total_gross: 6000, total_deductions: 0, total_net: 6000, admin_approved_by: null, exported_by: 'u-admin', exported_at: '2026-11-07T08:00:00Z', export_downloads: 1, created_at: '2026-11-06T08:00:00Z', ...o });
 const approvedS = (o) => settlement({ status: 'approved', gross_amount: 3000, net_amount: 3000, base_amount: 3000, approved_by: OTHER, approved_by_role: 'head_of_sales', approved_at: '2026-11-06T08:00:00Z', payout_sheet_id: 'sh1', ...o });
-await mount('head_of_sales', { sheets: [sheet({})], sheetSettlements: [approvedS({ id: 's1', settlement_num: 'TW-1', prepared_by: OTHER, employees: emp('Jane Worker') }), approvedS({ id: 's2', settlement_num: 'TW-2', prepared_by: USER, employees: emp('Peter Mine') })] });
+const prow = (o) => ({ id: 'r1', sheet_id: 'sh1', settlement_id: 's1', amount: 3000, phone_masked: '07•• ••• 678', description: 'x', chatpesa_transaction_id: null, match_method: null, confirm_code: null, matched_at: null, released_at: null, release_reason: null, ...o });
+const two = () => [approvedS({ id: 's1', settlement_num: 'TW-1', prepared_by: OTHER, employees: emp('Jane Worker') }), approvedS({ id: 's2', settlement_num: 'TW-2', prepared_by: OTHER, employees: emp('Peter Mine') })];
+const rowsMixed = () => [prow({ id: 'r1', settlement_id: 's1', chatpesa_transaction_id: 't1', match_method: 'settlement_ref', confirm_code: 'RKA123', matched_at: '2026-11-08T08:00:00Z' }), prow({ id: 'r2', settlement_id: 's2', amount: 3000, phone_masked: '01•• ••• 321' })];
+const noMoney = () => !q('button', dialog()).some(b => /Print|Upload|Mark paid|signed/i.test(b.textContent)) && !/signed copy|in cash|counted/i.test(dialog().textContent);
+
+// exported sheet, a non-admin who prepared nothing: sees progress and can match, cannot release money
+await mount('head_of_sales', { sheets: [sheet({})], sheetSettlements: two(), sheetRows: rowsMixed() });
 await tab('Payout sheets'); await click(byText('button', 'Open'));
-const payBtns = q('button', dialog()).filter(b => b.textContent === 'Mark paid');
-ok('Mark paid is offered for each approved settlement on a signed sheet', payBtns.length === 2);
-ok('Mark paid is disabled for a settlement the user prepared (payer ≠ preparer)', payBtns[1].disabled && !payBtns[0].disabled);
-ok('signed sheet offers to view the signed copy and (not admin) cannot cancel', !!byText('button', 'View signed copy', dialog()) && !byText('button', 'Cancel sheet…', dialog()));
-await click(payBtns[0]);
-const modals = q('[role=dialog]'); const pay = modals[modals.length - 1];
-const confirm = byText('button', 'Confirm', pay); ok('payment confirm is disabled until a full name is entered', confirm.disabled);
-const nameInput = q('input', pay)[0]; await type(nameInput, 'Jane');
-ok('a one-word name shows the validation message and keeps confirm disabled', /full name/.test(pay.textContent) && byText('button', 'Confirm', pay).disabled);
-await type(nameInput, 'Jane Wanjiru');
-ok('a full name enables confirm (3,000 is under the limit so the note is optional)', !byText('button', 'Confirm', pay).disabled && /Optional/.test(pay.textContent));
-await click(byText('button', 'Confirm', pay));
-const payCall = calls.find(c => c.method === 'PATCH' && c.body.action === 'pay');
-ok('payment sends the receiver name only (no actor, no role)', payCall && payCall.body.received_by_full_name === 'Jane Wanjiru' && !('p_actor' in payCall.body) && !('role' in payCall.body), JSON.stringify(payCall));
+ok('the exported sheet lists each worker with a MASKED number, never a full one', /07•• ••• 678/.test(dialog().textContent) && !/0712345678|712345678/.test(dialog().textContent));
+ok('a matched row shows paid, the M-Pesa code and how it matched; an unmatched row waits for the statement', /RKA123/.test(dialog().textContent) && q('[data-testid=payout-row]', dialog()).length === 2 && /waiting for statement/.test(dialog().textContent));
+ok('no cash, printing, signing or receipt controls anywhere on the sheet', noMoney());
+ok('the steps tell the user to import the statement before matching', /Import the ChatPesa statement/.test(dialog().textContent));
+ok('non-admin cannot release the money file or close out unpaid rows', !q('button', dialog()).some(b => /Download|Release unpaid|Cancel sheet/.test(b.textContent)));
+await click(byText('button', 'Match payments', dialog()));
+const mcall = calls.find(c => c.method === 'PATCH' && c.body.action === 'match');
+ok('Match payments sends only the action (identity comes from the session)', mcall && Object.keys(mcall.body).join() === 'action', JSON.stringify(mcall));
+ok('the result is explained: how many matched, how many are still not in the statement, and what to do', /1 payment matched/.test(dialog().textContent) && /1 still not in the statement/.test(dialog().textContent) && /Import a newer ChatPesa statement/.test(dialog().textContent));
 await unmount();
 
-await mount('production_manager', { sheets: [sheet({ total_net: 12000, admin_approved_by: 'u-admin' })], sheetSettlements: [approvedS({ id: 's1', gross_amount: 12000, net_amount: 12000, base_amount: 12000 })] });
+// admin on an exported sheet: download again (with a double-payment warning), release with a reason
+await mount('admin', { sheets: [sheet({})], sheetSettlements: two(), sheetRows: rowsMixed() });
 await tab('Payout sheets'); await click(byText('button', 'Open'));
-const pm = q('button', dialog()).find(b => b.textContent === 'Mark paid');
-await click(pm); const m2 = q('[role=dialog]'); const pay2 = m2[m2.length - 1];
-await type(q('input', pay2)[0], 'Peter Otieno Odhiambo');
-ok('a payment above the limit requires a note (confirm stays disabled, "Required" shown)', byText('button', 'Confirm', pay2).disabled && /Required: this payment is above the approval limit/.test(pay2.textContent));
-await type(q('textarea', pay2)[0], 'Counted twice with the foreman');
-ok('...and is enabled once the note is written', !byText('button', 'Confirm', pay2).disabled);
+ok('admin sees Download again, Match payments and Release unpaid on an exported sheet', ['Download again…', 'Match payments', 'Release unpaid…'].every(t => !!exactBtn(t, dialog())));
+ok('it warns the file was already made and must not be uploaded twice', /Do not upload it to ChatPesa twice/.test(dialog().textContent));
+await click(exactBtn('Download again…', dialog()));
+ok('downloading again first asks for confirmation and explains the double-payment risk', /pays those workers twice/.test(dialog().textContent) && !calls.some(c => /export$/.test(c.url)));
+await click(exactBtn('No', dialog()));
+ok('answering No downloads nothing', !calls.some(c => /export$/.test(c.url)) && !/pays those workers twice/.test(dialog().textContent));
+await click(exactBtn('Download again…', dialog())); backend.firstExport = false;
+await click(exactBtn('Yes, download the unpaid rows', dialog()));
+ok('confirming POSTs to the export route (never a GET) and saves a .csv file', calls.some(c => c.method === 'POST' && /payout-sheets\/sh1\/export$/.test(c.url)) && (window.__downloads || []).some(n => /\.csv$/.test(n)));
+ok('...and explains the repeat file contains only unpaid payments', /only payments that are still unpaid/.test(dialog().textContent));
+await click(exactBtn('Release unpaid…', dialog()));
+const rel = byText('button', 'Release 1 unpaid payment', dialog());
+ok('release warns to match first and keeps the button disabled until a reason is written', /Release only after importing a fresh ChatPesa statement/.test(dialog().textContent) && rel.disabled);
+await type(q('input', dialog()).pop(), 'ChatPesa rejected the row: number not registered');
+ok('...enabled once the reason is written', !byText('button', 'Release 1 unpaid payment', dialog()).disabled);
+await click(byText('button', 'Release 1 unpaid payment', dialog()));
+const rcall = calls.find(c => c.method === 'PATCH' && c.body.action === 'release');
+ok('release sends the reason and nothing about identity', rcall && rcall.body.reason === 'ChatPesa rejected the row: number not registered' && !('p_actor' in rcall.body) && !('role' in rcall.body), JSON.stringify(rcall));
 await unmount();
 
-await mount('production_manager', { sheets: [sheet({ total_net: 12000 })], sheetSettlements: [approvedS({ id: 's1', gross_amount: 12000, net_amount: 12000, base_amount: 12000 })] });
+// the preparer cannot release their own settlement's payment
+await mount('admin', { sheets: [sheet({})], sheetSettlements: [approvedS({ id: 's1', settlement_num: 'TW-1', prepared_by: USER, employees: emp('Jane Worker') })], sheetRows: [prow({})] });
 await tab('Payout sheets'); await click(byText('button', 'Open'));
-ok('a signed sheet above the limit WITHOUT admin approval offers no payment', !q('button', dialog()).some(b => b.textContent === 'Mark paid')); await unmount();
+ok('an admin who prepared a settlement on the sheet cannot download again, and is told why', exactBtn('Download again…', dialog()).disabled && /You prepared a settlement on this sheet/.test(dialog().textContent)); await unmount();
 
-await mount('head_of_sales', { sheets: [sheet({ status: 'open', total_net: 12000 })], sheetSettlements: [approvedS({ gross_amount: 12000, net_amount: 12000, base_amount: 12000 })] });
+// open sheet above the limit
+await mount('head_of_sales', { sheets: [sheet({ status: 'open', total_net: 12000, exported_by: null, exported_at: null })], sheetSettlements: [approvedS({ gross_amount: 12000, net_amount: 12000, base_amount: 12000 })] });
 await tab('Payout sheets'); await click(byText('button', 'Open'));
-ok('an open sheet above the limit cannot be printed until an admin approves it', byText('button', 'Print sheet', dialog()).disabled && !byText('button', 'Approve sheet (admin)', dialog()) && /Admin approval needed/.test(dialog().textContent));
+ok('a non-admin never gets the money file for an open sheet', !q('button', dialog()).some(b => /Download ChatPesa file/.test(b.textContent)) || byText('button', 'Download ChatPesa file', dialog()).disabled);
+ok('an open sheet shows "not exported" rows, not numbers', /not exported/.test(dialog().textContent) && !/•/.test(dialog().textContent)); await unmount();
+await mount('admin', { sheets: [sheet({ status: 'open', total_net: 12000, exported_by: null, exported_at: null })], sheetSettlements: [approvedS({ gross_amount: 12000, net_amount: 12000, base_amount: 12000 })] });
+await tab('Payout sheets'); await click(byText('button', 'Open'));
+ok('above the limit an admin must approve the sheet before the file can be downloaded', !!byText('button', 'Approve sheet (admin)', dialog()) && byText('button', 'Download ChatPesa file', dialog()).disabled && /above the approval limit/.test(dialog().textContent)); await unmount();
+
+// open sheet within the limit: the admin downloads the file; the sheet becomes exported
+await mount('admin', { sheets: [sheet({ status: 'open', total_net: 6000, exported_by: null, exported_at: null })], sheetSettlements: two() });
+await tab('Payout sheets'); await click(byText('button', 'Open'));
+ok('admin can download the ChatPesa file for an open sheet under the limit', !byText('button', 'Download ChatPesa file', dialog()).disabled);
+await click(byText('button', 'Download ChatPesa file', dialog()));
+ok('the first download POSTs to export and says what to do next', calls.some(c => c.method === 'POST' && /export$/.test(c.url)) && /Upload it in ChatPesa, then import the statement and match the payments/.test(dialog().textContent));
 await unmount();
-await mount('admin', { sheets: [sheet({ status: 'open', total_net: 12000 })], sheetSettlements: [approvedS({ gross_amount: 12000, net_amount: 12000, base_amount: 12000 })] });
-await tab('Payout sheets'); await click(byText('button', 'Open'));
-ok('admin sees "Approve sheet" for a sheet above the limit', !!byText('button', 'Approve sheet (admin)', dialog())); await unmount();
-await mount('head_of_sales', { sheets: [sheet({ status: 'printed' })], sheetSettlements: [approvedS({})] });
-await tab('Payout sheets'); await click(byText('button', 'Open'));
-ok('a printed sheet offers the signed-copy upload and no pay button yet', /Upload signed copy/.test(dialog().textContent) && !q('button', dialog()).some(b => b.textContent === 'Mark paid')); await unmount();
-await mount('admin', { sheets: [sheet({ status: 'cancelled', cancelled_at: '2026-11-08T08:00:00Z', cancel_reason: 'Wrong names' })], sheetSettlements: [] });
-await tab('Payout sheets'); await click(byText('button', 'Open'));
-ok('a cancelled sheet is read-only and says it is never reused', /never reused/.test(dialog().textContent) && !byText('button', 'Print sheet', dialog()) && !q('button', dialog()).some(b => /Upload|Mark paid|Cancel sheet/.test(b.textContent))); await unmount();
+await mount('admin', { sheets: [sheet({ status: 'open', total_net: 6000, exported_by: null, exported_at: null })], sheetSettlements: two(), exportRefuse: 'No valid M-Pesa number on file for: Peter Mine. Add the number to the worker’s employee record first.' });
+await tab('Payout sheets'); await click(byText('button', 'Open')); await click(byText('button', 'Download ChatPesa file', dialog()));
+ok('a refusal (e.g. a worker with no M-Pesa number) is shown in plain words and nothing is marked exported', /No valid M-Pesa number on file for: Peter Mine/.test(dialog().textContent) && !window.__downloads?.some(n => /Peter/.test(n))); await unmount();
 
+// paid and cancelled sheets are read-only
+await mount('admin', { sheets: [sheet({ status: 'paid' })], sheetSettlements: [approvedS({ status: 'paid' })], sheetRows: [prow({ chatpesa_transaction_id: 't1', match_method: 'phone_amount', confirm_code: 'RKB456', matched_at: '2026-11-08T08:00:00Z' })] });
+await tab('Payout sheets'); await click(byText('button', 'Open'));
+ok('a paid sheet says every payment was matched, flags a phone+amount match, and has no money buttons', /matched to a real ChatPesa payment/.test(dialog().textContent) && /matched by phone and amount/.test(dialog().textContent) && !q('button', dialog()).some(b => /Download|Match|Release|Cancel sheet/.test(b.textContent))); await unmount();
+await mount('admin', { sheets: [sheet({ status: 'cancelled', exported_by: null, exported_at: null, cancelled_at: '2026-11-08T08:00:00Z', cancel_reason: 'Wrong names' })], sheetSettlements: [] });
+await tab('Payout sheets'); await click(byText('button', 'Open'));
+ok('a cancelled sheet is read-only and says it is never reused', /never reused/.test(dialog().textContent) && !q('button', dialog()).some(b => /Download|Match|Release|Cancel sheet/.test(b.textContent))); await unmount();
 
 // ── first-time-user guidance (audit) ──
 {
   await mount('head_of_sales');
   const how = document.querySelector('details');
   ok('a "How temporary workers are paid" guide is on the page with six numbered steps', how && /6 steps/.test(how.textContent) && how.querySelectorAll('li').length === 6);
-  ok('the guide names the key rules: cash only, a different person approves, paid is final', /cash only/.test(how.textContent) && /other than the preparer/i.test(how.textContent) && /Paid is final/.test(how.textContent));
+  ok('the guide names the key rules: paid through ChatPesa (no cash), a different person approves, a match makes it paid and final', /through ChatPesa/.test(how.textContent) && !/cash only/.test(how.textContent) && /other than the preparer/i.test(how.textContent) && /final/.test(how.textContent));
   ok('each tab has a one-sentence explanation (Engagements)', /An engagement is the deal with one worker on one project/.test(document.querySelector('[data-testid=tab-help]').textContent));
   await tab('Due for payment'); ok('...and it changes with the tab (Due for payment)', /ready to be paid/.test(document.querySelector('[data-testid=tab-help]').textContent));
   await tab('Settlements'); ok('...(Settlements)', /amount owed to one worker/.test(document.querySelector('[data-testid=tab-help]').textContent));
-  await tab('Payout sheets'); ok('...(Payout sheets)', /One sheet covers one settlement/.test(document.querySelector('[data-testid=tab-help]').textContent));
+  await tab('Payout sheets'); ok('...(Payout sheets)', /one ChatPesa file/.test(document.querySelector('[data-testid=tab-help]').textContent));
   ok('an empty payout-sheet list says what to do first', /Approve a settlement first/.test(text()));
   await unmount();
 
@@ -281,13 +315,13 @@ ok('a cancelled sheet is read-only and says it is never reused', /never reused/.
   await tab('Settlements'); await click(byText('button', 'Open'));
   ok('draft under the limit prepared by someone else: Next says check and approve', /Next: Check the days and deductions, then approve it/.test(dialog().textContent));
   ok('the settlement tables say "Days" (not the jargon "Units")', /Days/.test(dialog().textContent) && !/\bUnits\b/.test(dialog().textContent)); await unmount();
-  await mount('head_of_sales', { settlements: [approvedS({ payout_sheet_id: null })], sheets: [sheet({ status: 'open', total_net: 3000 })], sheetSettlements: [approvedS({})] });
+  await mount('head_of_sales', { settlements: [approvedS({ payout_sheet_id: null })], sheets: [sheet({ status: 'open', total_net: 3000, exported_by: null, exported_at: null })], sheetSettlements: [approvedS({})] });
   await tab('Settlements'); await click(byText('button', 'Open'));
-  ok('approved without a sheet: Next says to create a payout sheet, with the button right there', /Next: Create a payout sheet/.test(dialog().textContent) && !!exactBtn('Create payout sheet', dialog()));
+  ok('approved without a sheet: Next says to create a payout sheet, with the button right there', /Next: Put it on a payout sheet/.test(dialog().textContent) && !!exactBtn('Create payout sheet', dialog()));
   await click(exactBtn('Create payout sheet', dialog()));
   const mk = calls.find(c => c.method === 'POST' && /payout-sheets$/.test(c.url));
   ok('Create payout sheet posts exactly this settlement', mk && mk.body.settlement_ids.length === 1 && mk.body.settlement_ids[0] === 's1', JSON.stringify(mk));
-  ok('...then jumps to the Payout sheets tab with the new sheet open (no hunting for it)', /Payout sheet PS-/.test(dialog()?.getAttribute('aria-label') || '') && /Print sheet/.test(dialog().textContent));
+  ok('...then jumps to the Payout sheets tab with the new sheet open (no hunting for it)', /Payout sheet PS-/.test(dialog()?.getAttribute('aria-label') || '') && /Download ChatPesa file/.test(dialog().textContent));
   await unmount();
   await mount('head_of_sales', { settlements: [approvedS({ payout_sheet_id: 'sh1' })] });
   await tab('Settlements'); await click(byText('button', 'Open'));
@@ -329,20 +363,20 @@ ok('a cancelled sheet is read-only and says it is never reused', /never reused/.
   ok('no warning below the guide', !/max days/.test(text())); await unmount();
 }
 
-// ── new payout sheet: ONE settlement per sheet ──
+// ── new payout sheet: several workers, one ChatPesa upload ──
 {
-  const two = [approvedS({ id: 's1', settlement_num: 'TW-1', payout_sheet_id: null, employees: emp('Jane Worker') }), approvedS({ id: 's2', settlement_num: 'TW-2', payout_sheet_id: null, employees: emp('Peter Mine') })];
-  await mount('head_of_sales', { settlements: two, sheets: [sheet({ status: 'open', total_net: 3000 })], sheetSettlements: [approvedS({ id: 's2' })] });   // the sheet the server "creates" and the UI then opens
+  const two2 = [approvedS({ id: 's1', settlement_num: 'TW-1', payout_sheet_id: null, employees: emp('Jane Worker') }), approvedS({ id: 's2', settlement_num: 'TW-2', payout_sheet_id: null, employees: emp('Peter Mine') })];
+  await mount('head_of_sales', { settlements: two2, sheets: [sheet({ status: 'open', total_net: 6000, exported_by: null, exported_at: null })], sheetSettlements: two() });
   await tab('Payout sheets'); await click(byText('button', '+ New payout sheet'));
-  const boxes = q('input[name="sheet-settlement"]', dialog());
-  ok('new sheet form lists each approved settlement as a single-choice radio (not checkboxes)', boxes.length === 2 && boxes.every(b => b.type === 'radio') && q('input[type=checkbox]', dialog()).length === 0);
-  ok('new sheet form says one sheet covers one worker', /exactly one|one worker/i.test(dialog().textContent));
-  ok('Create sheet is disabled until a settlement is chosen', byText('button', 'Create sheet', dialog()).disabled);
+  const boxes = q('input[type=checkbox]', dialog());
+  ok('new sheet form lists each approved settlement with a checkbox (several workers per sheet)', boxes.length === 2 && q('input[type=radio]', dialog()).length === 0);
+  ok('it says each worker needs an M-Pesa number on their employee record', /M-Pesa number on their employee record/.test(dialog().textContent));
+  ok('Create sheet is disabled until at least one settlement is ticked', byText('button', 'Create sheet', dialog()).disabled);
   await click(boxes[0]); await click(boxes[1]);
-  ok('choosing a second settlement replaces the first (never two)', q('input[name="sheet-settlement"]:checked', dialog()).length === 1 && boxes[1].checked);
+  ok('ticking both shows the count and the combined amount', boxes.every(b => b.checked) && /2 workers · KES 6,000/.test(dialog().textContent), dialog().textContent.slice(0, 400));
   await click(byText('button', 'Create sheet', dialog()));
   const post = calls.find(c => c.method === 'POST' && /payout-sheets$/.test(c.url));
-  ok('the request carries exactly one settlement id', post && post.body.settlement_ids.length === 1 && post.body.settlement_ids[0] === 's2', JSON.stringify(post));
+  ok('the request carries both settlement ids', post && post.body.settlement_ids.length === 2 && post.body.settlement_ids.includes('s1') && post.body.settlement_ids.includes('s2'), JSON.stringify(post));
   await unmount();
 }
 

@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   TEMP_ROLES, canUseTemporaryWorkers, canManageTemporarySettings, canVoidApprovedSettlement, canMarkAttendance, validateAttendanceDays, ATTENDANCE_COLUMNS,
-  validateDeductionInput, validateReceiverName, mapTemporaryDbError, isUuid, isIsoDate, isFullName,
-  ENGAGEMENT_COLUMNS, SETTLEMENT_COLUMNS, LINE_COLUMNS, DEDUCTION_COLUMNS, SHEET_COLUMNS, SETTINGS_COLUMNS,
+  validateDeductionInput, mapTemporaryDbError, isUuid, isIsoDate, isFullName,
+  ENGAGEMENT_COLUMNS, SETTLEMENT_COLUMNS, LINE_COLUMNS, DEDUCTION_COLUMNS, SHEET_COLUMNS, SETTINGS_COLUMNS, PAYOUT_ROW_COLUMNS,
   ENGAGEMENT_JOINS, SETTLEMENT_JOINS, OTHER_REASON_MIN_CHARS, overApprovalLimit, deductionNeedsAdmin,
+  normaliseKenyanPhone, maskPhone, buildChatpesaCsv, CHATPESA_HEADER, canExportPayoutSheet, canReleasePayoutRows,
 } from '../payroll/temporaryAccess.js';
 
 test('only admin, production manager and head of sales may use temporary workers', () => {
@@ -22,7 +23,7 @@ test('settings and voiding approved settlements are admin-only; marking days is 
 });
 
 test('column allow-lists are explicit and never carry private or storage fields', () => {
-  for (const c of [ENGAGEMENT_COLUMNS, SETTLEMENT_COLUMNS, LINE_COLUMNS, DEDUCTION_COLUMNS, SHEET_COLUMNS, SETTINGS_COLUMNS, ENGAGEMENT_JOINS, SETTLEMENT_JOINS]) {
+  for (const c of [ENGAGEMENT_COLUMNS, SETTLEMENT_COLUMNS, LINE_COLUMNS, DEDUCTION_COLUMNS, SHEET_COLUMNS, SETTINGS_COLUMNS, PAYOUT_ROW_COLUMNS, ENGAGEMENT_JOINS, SETTLEMENT_JOINS]) {
     assert.ok(!c.includes('*'), c);
     for (const banned of ['phone', 'bank', 'id_number', 'nssf', 'monthly_salary', 'evidence_path', 'signed_receipt_path']) {
       assert.ok(!c.includes(banned), `${banned} in ${c}`);
@@ -50,11 +51,53 @@ test('amount, type and reason are validated', () => {
   assert.match(validateDeductionInput({ type: 'cash_advance', amount: 10, reason: ' ', ref: 'x' }), /reason is required/);
 });
 
-test('receiver must be a full name', () => {
-  assert.equal(validateReceiverName('Jane Wanjiru'), null);
-  assert.equal(validateReceiverName('  Jane   Wanjiru Kamau '), null);
-  for (const v of ['Jane', '   ', '', null, undefined, 42]) assert.ok(validateReceiverName(v));
+test('isFullName still needs two names', () => {
   assert.equal(isFullName('a b'), true);
+  for (const v of ['Jane', '   ', '', null, undefined, 42]) assert.equal(isFullName(v), false);
+});
+
+test('releasing money is admin-only', () => {
+  assert.equal(canExportPayoutSheet('admin'), true);
+  assert.equal(canReleasePayoutRows('admin'), true);
+  for (const r of ['production_manager', 'head_of_sales', 'sales', null, undefined]) {
+    assert.equal(canExportPayoutSheet(r), false, String(r));
+    assert.equal(canReleasePayoutRows(r), false, String(r));
+  }
+});
+
+test('M-Pesa numbers normalise to the 9-digit ChatPesa form (mirrors the database)', () => {
+  for (const [raw, want] of [['0712345678', '712345678'], ['+254 712 345 678', '712345678'], ['254112345678', '112345678'], ['712345678', '712345678'], ['0112-345-678', '112345678']]) {
+    assert.equal(normaliseKenyanPhone(raw), want, raw);
+  }
+  for (const bad of ['0612345678', '0201234567', '12345', '', null, undefined, '25471234567', '071234567890']) assert.equal(normaliseKenyanPhone(bad), '', String(bad));
+});
+
+test('a masked number keeps only the last three digits', () => {
+  assert.equal(maskPhone('0712345678'), '07•• ••• 678');
+  assert.equal(maskPhone('+254112345678'), '01•• ••• 678');
+  assert.equal(maskPhone('nonsense'), '—');
+  assert.ok(!maskPhone('0712345678').includes('12345'));
+});
+
+test('the ChatPesa file matches the format ChatPesa accepts for regular payroll', () => {
+  const csv = buildChatpesaCsv([
+    { settlement_num: 'TW-2026-0001', phone: '712345678', amount: '3000.00', description: 'Jane Wanjiru - TW-2026-0001' },
+    { settlement_num: 'TW-2026-0002', phone: '0112345678', amount: 5254, description: 'Doe, John "JJ" - TW-2026-0002' },
+  ]);
+  const lines = csv.split('\n');
+  assert.equal(lines[0], CHATPESA_HEADER);
+  assert.equal(lines[1], 'mpesa,3000,712345678,,,,,Jane Wanjiru - TW-2026-0001,712345678');
+  assert.equal(lines[2], 'mpesa,5254,112345678,,,,,Doe John JJ - TW-2026-0002,112345678');   // no commas or quotes survive
+  assert.ok(!csv.includes('"'));
+  for (const l of lines.slice(1)) { const c = l.split(','); assert.equal(c.length, 9); assert.equal(c[6], ''); assert.ok(c[7].length > 0); assert.equal(c[2], c[8]); }
+});
+
+test('a bad row stops the file rather than producing a payment ChatPesa would misread', () => {
+  const ok = { settlement_num: 'TW-1', phone: '712345678', amount: 100, description: 'A B - TW-1' };
+  for (const patch of [{ phone: '12' }, { amount: 0 }, { amount: -5 }, { amount: 'x' }, { description: '  ' }]) {
+    assert.throws(() => buildChatpesaCsv([{ ...ok, ...patch }]), /Invalid payout row/, JSON.stringify(patch));
+  }
+  assert.equal(buildChatpesaCsv([]), CHATPESA_HEADER);
 });
 
 test('uuid and date validators', () => {
@@ -69,8 +112,9 @@ test('a missing migration names every migration to run, in order', () => {
   const m = mapTemporaryDbError({ code: '42883', message: 'function temporary_engagements_due does not exist' });
   assert.equal(m.status, 503);
   assert.equal(m.body.code, 'SETUP_INCOMPLETE');
-  for (const f of ['temporary_workers_stage1,', 'temporary_workers_stage1b', 'temporary_workers_stage1c', 'temporary_workers_stage2']) assert.ok(m.body.error.includes(f), f);
+  for (const f of ['temporary_workers_stage1,', 'temporary_workers_stage1b', 'temporary_workers_stage1c', 'temporary_workers_stage2', 'temporary_workers_stage3']) assert.ok(m.body.error.includes(f), f);
   assert.ok(m.body.error.indexOf('stage1b') < m.body.error.indexOf('stage1c'));
+  assert.ok(m.body.error.indexOf('stage2') < m.body.error.indexOf('stage3'));
 });
 
 test('database errors map to safe responses', () => {

@@ -6,11 +6,11 @@ v2.1 adds: references required for advances and issued tools/materials, a termin
 
 ## 1. Purpose and decisions
 
-Temporary workers are short-term, bulk-work labour paid in **cash** after a small number of approved working days. They must not enter the weekly payroll runs, and their labour must be costed exactly once.
+Temporary workers are short-term, bulk-work labour paid after a small number of approved working days. They must not enter the weekly payroll runs, and their labour must be costed exactly once.
 
 | Decision | Value |
 |---|---|
-| Payment | Cash only |
+| Payment | ~~Cash only~~ **M-Pesa through ChatPesa, no cash** (changed in §17) |
 | Statutory deductions | None. Statutory deduction types are blocked by a database constraint |
 | Operational deductions | Allowed and fully itemised: `damage`, `cash_advance`, `tools_or_materials`, `other` |
 | Who creates and approves | Head of sales and production manager (admin always) |
@@ -451,3 +451,46 @@ paying never depends on it. The person paying sees only the project, the days pr
 - **Tests.** `temporary_workers_stage2.pglite.mjs` (271), `temporary_workers_concurrency.mjs` on real Postgres (69, incl. R10 two people marking
   the same day, R11 prepare vs mark; mutation: removing the employee lock from marking fails R7/R10), route harness (108), UI harness (95),
   `temporary_workers_seed.pglite.mjs` (13: seed, use, cleanup, real data survives), `npm test` (502).
+
+## 17. Stage 3 — payment is through ChatPesa (M-Pesa); no cash
+
+**Decision.** The business holds no cash. Payout sheets prepare the ChatPesa bulk-payment upload, and a settlement becomes PAID only when its
+payment appears in the imported ChatPesa statement. This replaces the printed, signed paper receipt, the receiver-name step and
+`pay_temporary_settlement` (§5, §7, §13–15 describe the retired cash flow).
+
+**Sheet lifecycle:** `open → exported → paid`, or `cancelled` (open only) / released (exported). Printing, signing and the receipts bucket are gone.
+
+- **A sheet holds several workers** (up to 200), giving ONE ChatPesa upload. The one-settlement-per-sheet rule (and its unique index) existed so one
+  signed paper matched one payment; with no paper it is lifted.
+- **M-Pesa numbers** come from `employees.phone`, normalised by `tw_normalise_phone` (07xx / 01xx / +254… → 9 digits). A worker without a valid number
+  blocks the sheet at creation (and again at export), naming the worker. Nothing is silently skipped.
+- **Export** (`export_payout_sheet`, `POST …/payout-sheets/:id/export`): **admin only**. Refused if the sheet is above the approval limit without
+  admin approval, if any settlement is not approved, if a number is invalid, or if the exporter prepared any settlement on the sheet (the preparer
+  cannot release the payment; there is no override). The first call freezes one row per settlement in `temporary_worker_payout_rows` (phone, whole-shilling
+  amount = net rounded, description `Name - TW-2026-0001`, commas and quotes stripped) and marks the sheet exported with who/when. The CSV is exactly the
+  format regular payroll batches use (9 columns, `mpesa`, 9-digit phone, blank recipient name, unquoted description).
+  **A repeat download** returns only rows still unpaid and unreleased, is counted and logged, and the screen asks for confirmation first, because uploading
+  the same file twice pays twice. It is POST, never GET, so a prefetch cannot trigger it.
+- **Match** (`match_payout_sheet`, any run role): pairs each unpaid row with an imported ChatPesa statement line that is a `debit`, still `unmatched`, for exactly
+  the row's amount, to the row's number (any phone format), dated on/after the export day. Tier 1: the settlement number appears in the description. Tier 2
+  (only if tier 1 finds nothing): a debit with NO settlement number at all, so another settlement's line is never taken. More than one candidate = ambiguous:
+  nothing is paid and it is reported. A match sets the settlement PAID (`paid_by` = the exporter, note `M-Pesa <code>`), records the transaction, method and
+  code on the row, and marks the statement line `ignored` so it leaves the supplier-allocation queue. Matching a paid sheet is harmless; every row matched
+  makes the sheet `paid`. Row locks on the statement line plus a unique index (`uq_twr_transaction`) mean one debit can pay only one row, even across sheets.
+- **Rows ChatPesa rejected never appear in the statement, so they stay unpaid and are reported "not found", never assumed paid.** `release_unpaid_payout_rows`
+  (**admin only**, reason required) closes them: the settlements return to approved with no sheet and can go on a new one; if nothing was paid the sheet is
+  cancelled, otherwise it is paid for what was. Warn: releasing before importing a fresh statement can lead to paying twice.
+- **Voiding** a settlement on an exported sheet is refused (money may be on its way); a paid settlement can never be voided.
+- **Not changed:** days present, settlements, deductions, approval rules, the approval limit (sheet total above it needs admin approval before export).
+- **Known limits.** (1) Whether ChatPesa echoes our description into the statement is unverified; if not, matching falls to tier 2 (phone + amount) and
+  the screen says "matched by phone and amount". (2) The statement import is the existing Suppliers → Payments upload; it must be run before matching.
+  (3) A matched payment is not posted to the general ledger: labour cost does not reach accounting automatically (as before for temporary workers; a
+  journal can be added later). (4) Rounding: the file sends the net rounded to whole shillings; the settlement keeps its exact figure.
+- **Migration order.** stage1 → 1b → 1c → 2 → **3**. Stage 3 refuses to run while a printed or signed (cash) sheet exists: cancel it first. After stage 3, never
+  re-run 1/1b/1c (or 2) without re-running 2 and 3.
+- **Staging data.** The seed's workers carry placeholder numbers (0700 000 001–005): never upload a file made from dummy data to the real ChatPesa. The seed
+  documents a fake statement line for testing the match; cleanup removes it and hands back any REAL statement line a dummy payment had claimed.
+- **Tests.** `temporary_workers_stage3.pglite.mjs` (98), `temporary_workers_concurrency.mjs` on real Postgres (78, new races: match vs match, match vs release,
+  export vs void, export vs export, one statement line contested by two sheets; mutation: removing the row lock on the statement line fails S10 via the
+  unique-index backstop), route harness (121), UI harness (106), seed/cleanup (18), unit tests. The real-Postgres run found a defect pglite missed
+  (`void_temporary_settlement` failed for a settlement on no sheet; fixed and covered).

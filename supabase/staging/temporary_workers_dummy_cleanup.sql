@@ -2,8 +2,8 @@
 -- Temporary Workers — DUMMY DATA CLEANUP  (STAGING ONLY)
 --
 -- Removes everything tied to the dummy workers (EMP-TST-%) and the dummy project (TST-TW-%), including
--- anything you created on them through the UI: days present, settlements, deductions, payout sheets, and the
--- activity-log rows, plus any production plan/jobs/stages/assignments/time entries built on the dummy project.
+-- anything you created on them through the UI: days present, settlements, deductions, payout sheets and their ChatPesa rows,
+-- the activity-log rows, the fake statement lines made by the seed's DUMMY import, plus any production plan/jobs/stages/assignments/time entries built on the dummy project.
 --
 -- The guard triggers deliberately block DELETE on paid/approved records, so this script switches USER triggers
 -- off for the affected tables inside ONE transaction and back on at the end. If anything fails (for example a
@@ -22,6 +22,7 @@ alter table temporary_worker_settlement_lines     disable trigger user;
 alter table temporary_worker_settlement_deductions disable trigger user;
 alter table temporary_worker_payout_sheets        disable trigger user;
 alter table temporary_worker_attendance           disable trigger user;
+alter table temporary_worker_payout_rows          disable trigger user;
 alter table production_time_entries               disable trigger user;
 alter table production_job_assignments            disable trigger user;
 
@@ -33,6 +34,10 @@ create temp table _tw_eng  on commit drop as
 create temp table _tw_set  on commit drop as
   select id, payout_sheet_id from temporary_worker_settlements
    where engagement_id in (select id from _tw_eng) or employee_id in (select id from _tw_emp);
+create temp table _tw_sheets on commit drop as
+  select payout_sheet_id as id from _tw_set where payout_sheet_id is not null
+  union
+  select sheet_id from temporary_worker_payout_rows where settlement_id in (select id from _tw_set) or employee_id in (select id from _tw_emp);
 create temp table _tw_job  on commit drop as select id from production_jobs where order_id in (select id from _tw_ord);
 create temp table _tw_asg  on commit drop as
   select id from production_job_assignments
@@ -40,12 +45,19 @@ create temp table _tw_asg  on commit drop as
       or employee_id in (select id from _tw_emp)
       or temporary_engagement_id in (select id from _tw_eng);
 
+-- Statement lines a dummy payment was matched to go back to the review queue exactly as they were (the match marked them 'ignored')
+update chatpesa_transactions set match_status = 'unmatched', ignored_at = null, ignored_by = null
+ where match_status = 'ignored'
+   and id in (select chatpesa_transaction_id from temporary_worker_payout_rows where employee_id in (select id from _tw_emp) and chatpesa_transaction_id is not null);
+
+-- ChatPesa payout rows first (they reference settlements and sheets)
+delete from temporary_worker_payout_rows where sheet_id in (select id from _tw_sheets) or settlement_id in (select id from _tw_set) or employee_id in (select id from _tw_emp);
+
 -- Settlement tree
 delete from temporary_worker_settlement_lines      where settlement_id in (select id from _tw_set);
 delete from temporary_worker_settlement_deductions where settlement_id in (select id from _tw_set);
 delete from temporary_worker_settlements           where id in (select id from _tw_set);
-delete from temporary_worker_payout_sheets
- where id in (select payout_sheet_id from _tw_set where payout_sheet_id is not null);
+delete from temporary_worker_payout_sheets where id in (select id from _tw_sheets);
 
 -- Days present (stage 2), then anything built in Production for the dummy project
 delete from temporary_worker_attendance where engagement_id in (select id from _tw_eng) or employee_id in (select id from _tw_emp);
@@ -65,7 +77,11 @@ delete from temporary_worker_engagements where id in (select id from _tw_eng);
 delete from payroll_activities
  where entity_id in (select id from _tw_eng)
     or entity_id in (select id from _tw_set)
-    or entity_id in (select payout_sheet_id from _tw_set where payout_sheet_id is not null);
+    or entity_id in (select id from _tw_sheets);
+
+-- The seed's fake statement line(s), and nothing else
+delete from chatpesa_transactions where import_id in (select id from chatpesa_imports where account_name = 'DUMMY statement – delete me');
+delete from chatpesa_imports where account_name = 'DUMMY statement – delete me';
 
 -- Project and workers last
 delete from order_items where order_id in (select id from _tw_ord);
@@ -79,6 +95,7 @@ alter table temporary_worker_settlement_lines     enable trigger user;
 alter table temporary_worker_settlement_deductions enable trigger user;
 alter table temporary_worker_payout_sheets        enable trigger user;
 alter table temporary_worker_attendance           enable trigger user;
+alter table temporary_worker_payout_rows          enable trigger user;
 alter table production_time_entries               enable trigger user;
 alter table production_job_assignments            enable trigger user;
 
@@ -91,7 +108,7 @@ select
   (select count(*) from pg_trigger t join pg_class c on c.oid = t.tgrelid
      where c.relname in ('temporary_worker_engagements','temporary_worker_settlements','temporary_worker_settlement_lines',
                          'temporary_worker_settlement_deductions','temporary_worker_payout_sheets',
-                         'production_time_entries','production_job_assignments','temporary_worker_attendance')
+                         'production_time_entries','production_job_assignments','temporary_worker_attendance','temporary_worker_payout_rows')
        and not t.tgisinternal and t.tgenabled = 'D')                                             as triggers_still_disabled;
 
 commit;

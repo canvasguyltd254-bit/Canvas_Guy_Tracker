@@ -14,7 +14,12 @@
 -- (Payroll → Temporary workers) so the real rules and approvals are exercised. See the walkthrough at the bottom.
 --
 -- Safe to re-run: existing dummy rows are reused, not duplicated.
--- Requires: stage1, stage1b, stage1c and stage2 applied, and at least one row in auth.users.
+-- Requires: stage1, stage1b, stage1c, stage2 and stage3 applied, and at least one row in auth.users.
+--
+-- !! MONEY WARNING !!  Temporary workers are paid through ChatPesa (M-Pesa). The dummy workers carry PLACEHOLDER numbers
+-- (0700 000 001 … 005) so the sheet and the CSV can be generated. Those numbers are not guaranteed to be unassigned.
+-- NEVER upload a ChatPesa file made from dummy data to the real ChatPesa. To test "Match payments", use the fake
+-- statement line at the bottom of this file, not a real statement.
 -- ════════════════════════════════════════════════════════════════════════════
 begin;
 
@@ -30,13 +35,15 @@ begin
   if v_actor is null then raise exception 'No row in auth.users — sign in to the app once first.'; end if;
 
   -- Workers
-  insert into employees (employee_num, name, type, day_rate, is_active) values
-    ('EMP-TST-001', 'DUMMY Mwangi (temp)',  'casual', 1500, true),
-    ('EMP-TST-002', 'DUMMY Achieng (temp)', 'casual', 2000, true),
-    ('EMP-TST-003', 'DUMMY Otieno (temp)',  'casual', 1800, true),
-    ('EMP-TST-004', 'DUMMY Wambui (temp)',  'casual', 1500, true),
-    ('EMP-TST-005', 'DUMMY Kamau (temp)',   'casual', 1500, true)
+  insert into employees (employee_num, name, type, day_rate, is_active, phone) values
+    ('EMP-TST-001', 'DUMMY Mwangi (temp)',  'casual', 1500, true, '0700000001'),
+    ('EMP-TST-002', 'DUMMY Achieng (temp)', 'casual', 2000, true, '0700000002'),
+    ('EMP-TST-003', 'DUMMY Otieno (temp)',  'casual', 1800, true, '0700000003'),
+    ('EMP-TST-004', 'DUMMY Wambui (temp)',  'casual', 1500, true, '0700000004'),
+    ('EMP-TST-005', 'DUMMY Kamau (temp)',   'casual', 1500, true, '0700000005')
   on conflict (employee_num) do nothing;
+  -- a seed from before stage 3 left these workers without a number
+  update employees set phone = '07' || '0000000' || right(employee_num, 2) where employee_num like 'EMP-TST-%' and phone is null;
 
   -- Project
   insert into orders (order_num, client, notes)
@@ -74,8 +81,24 @@ commit;
 --    he came (as one user, e.g. head of sales). Nothing here involves Production.
 -- 2. Mark 3+ days → the worker appears under "Due". Prepare the settlement (as the same user).
 -- 3. Approve it as a DIFFERENT user (not the preparer, not whoever marked the days). Above KES 10,000 an admin approves.
--- 4. Create the payout sheet, print, attach a photo of the signed copy, then mark paid (payer is not the preparer).
--- 5. Try the edge cases: a deduction (damage is OFF by default), a day before the start date or in the future (refused),
---    a day marked twice (changes it), clearing a day that is already in a settlement (refused), the max-days warning on
---    EMP-TST-001 (20 days), marking days on the planned engagement EMP-TST-003 (refused until activated).
+-- 4. Payout sheets → create a sheet (tick several settlements to pay them in ONE file), then, as an ADMIN who did not prepare
+--    them, "Download ChatPesa file". Look at the file; DO NOT upload it to the real ChatPesa.
+-- 5. To test matching without ChatPesa, run the fake statement line below with the settlement number and amount from the sheet,
+--    then press "Match payments": the settlement becomes paid. Try the amount wrong, the phone wrong, or no line at all:
+--    the settlement must stay unpaid, and "Release unpaid…" (admin) frees it for a new sheet.
+-- 6. Edge cases: a deduction (damage is OFF by default), a day before the start date or in the future (refused), a day marked
+--    twice (changes it), clearing a day already in a settlement (refused), the max-days warning on EMP-TST-001 (20 days),
+--    marking days on the planned engagement EMP-TST-003 (refused until activated), a worker with no phone (blocked at the sheet).
 -- When finished: run temporary_workers_dummy_cleanup.sql.
+
+-- ── FAKE statement line for testing "Match payments" (edit the three values, then run) ─────────────────────────────
+-- Replace SETTLEMENT_NUM (e.g. TW-2026-0001), AMOUNT (the whole-shilling net pay) and the phone if you changed it.
+-- It creates a throwaway import and ONE debit that looks like a ChatPesa statement line. Cleanup removes it too.
+-- do $$
+-- declare v_imp uuid; v_actor uuid := (select id from auth.users order by created_at limit 1);
+-- begin
+--   insert into chatpesa_imports (uploaded_by, account_name, notes, row_count, debit_count)
+--     values (v_actor, 'DUMMY statement – delete me', 'temporary workers staging test', 1, 1) returning id into v_imp;
+--   insert into chatpesa_transactions (import_id, chatpesa_id, tx_type, account_number, description, confirm_code, amount, transaction_date)
+--     values (v_imp, 990000000 + (random() * 1000000)::int, 'debit', '0700000001', 'DUMMY Mwangi - SETTLEMENT_NUM', 'DUMMYCODE1', AMOUNT, current_date);
+-- end $$;

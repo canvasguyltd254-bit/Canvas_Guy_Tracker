@@ -1,13 +1,14 @@
 /**
  * GET   /api/payroll/temporary/settlements/:id   settlement + lines + deductions
- * PATCH /api/payroll/temporary/settlements/:id   { action: approve | void | pay, ... }
+ * PATCH /api/payroll/temporary/settlements/:id   { action: approve | void }
  *
- * A paid settlement can never be voided: the database refuses it for every role.
+ * There is no "pay" action: a settlement becomes paid only when its ChatPesa row is matched to a real debit
+ * (PATCH .../payout-sheets/:id { action: 'match' }). A paid settlement can never be voided, for every role.
  */
 import { NextResponse } from 'next/server';
 import { guard, rpc, bad, readJson, serviceClient, dbError } from '@/shared/lib/payroll/temporaryServer';
 import {
-  SETTLEMENT_COLUMNS, SETTLEMENT_JOINS, LINE_COLUMNS, DEDUCTION_COLUMNS, isUuid, validateReceiverName,
+  SETTLEMENT_COLUMNS, SETTLEMENT_JOINS, LINE_COLUMNS, DEDUCTION_COLUMNS, isUuid,
 } from '@/shared/lib/payroll/temporaryAccess';
 
 export async function GET(request, props) {
@@ -37,11 +38,6 @@ export async function PATCH(request, props) {
       return rpc('approve_temporary_settlement', { p_id: id, ...who, p_override_reason: typeof b.override_reason === 'string' ? b.override_reason : null });
     case 'void':
       return rpc('void_temporary_settlement', { p_id: id, p_reason: String(b.reason || ''), ...who });
-    case 'pay': {
-      const nameError = validateReceiverName(b.received_by_full_name);
-      if (nameError) return bad(nameError);
-      return rpc('pay_temporary_settlement', { p_id: id, ...who, p_received_by: String(b.received_by_full_name), p_note: typeof b.payment_note === 'string' ? b.payment_note : null });
-    }
     default: return bad('Unknown action');
   }
 }

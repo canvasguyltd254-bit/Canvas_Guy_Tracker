@@ -18,7 +18,7 @@ const require = createRequire('/tmp/rt/');
 const esbuild = require('esbuild');
 mkdirSync('/tmp/rt/out', { recursive: true });
 
-writeFileSync('/tmp/rt/nextStub.js', `export const NextResponse = { json: (b, i = {}) => new Response(JSON.stringify(b), { status: i.status || 200, headers: { 'content-type': 'application/json' } }) };`);
+writeFileSync('/tmp/rt/nextStub.js', `export class NextResponse extends Response { static json(b, i = {}) { return new Response(JSON.stringify(b), { status: i.status || 200, headers: { 'content-type': 'application/json' } }); } };`);
 writeFileSync('/tmp/rt/apiAuthStub.js', `
 export const getAuthContext = async () => globalThis.__ctx;
 export const requireRole = (user, role, roles) => {
@@ -32,7 +32,7 @@ const T = 'app/api/payroll/temporary';
 const routes = {
   engagements: `${T}/engagements/route.js`, engagement: `${T}/engagements/[id]/route.js`, attendance: `${T}/engagements/[id]/attendance/route.js`,
   settlements: `${T}/settlements/route.js`, settlement: `${T}/settlements/[id]/route.js`, sdeductions: `${T}/settlements/[id]/deductions/route.js`,
-  deduction: `${T}/deductions/[id]/route.js`, sheets: `${T}/payout-sheets/route.js`, sheet: `${T}/payout-sheets/[id]/route.js`,
+  deduction: `${T}/deductions/[id]/route.js`, sheets: `${T}/payout-sheets/route.js`, sheet: `${T}/payout-sheets/[id]/route.js`, sheetExport: `${T}/payout-sheets/[id]/export/route.js`,
   settings: `${T}/settings/route.js`, entries: 'app/api/payroll/runs/[id]/entries/route.js',
 };
 for (const [name, rel] of Object.entries(routes)) {
@@ -99,13 +99,13 @@ const CALLS = {
   'POST settlements':         () => R.settlements.POST(req('POST', { engagement_id: ID, cutoff_date: '2026-11-30', kind: 'threshold' })),
   'GET settlement':           () => R.settlement.GET(req('GET'), P()),
   'PATCH settlement approve': () => R.settlement.PATCH(req('PATCH', { action: 'approve' }), P()),
-  'PATCH settlement pay':     () => R.settlement.PATCH(req('PATCH', { action: 'pay', received_by_full_name: 'Jane Wanjiru' }), P()),
+  'PATCH settlement void':    () => R.settlement.PATCH(req('PATCH', { action: 'void', reason: 'Wrong period' }), P()),
   'POST deduction':           () => R.sdeductions.POST(req('POST', { deduction_type: 'cash_advance', amount: 100, reason: 'Advance', evidence_ref: 'ADV-1' }), P()),
   'PATCH deduction':          () => R.deduction.PATCH(req('PATCH', { action: 'approve' }), P()),
   'GET sheets':               () => R.sheets.GET(req('GET')),
   'POST sheets':              () => R.sheets.POST(req('POST', { settlement_ids: [ID] })),
   'GET sheet':                () => R.sheet.GET(req('GET'), P()),
-  'PATCH sheet print':        () => R.sheet.PATCH(req('PATCH', { action: 'print' }), P()),
+  'PATCH sheet match':        () => R.sheet.PATCH(req('PATCH', { action: 'match' }), P()),
   'GET settings':             () => R.settings.GET(req('GET')),
 };
 
@@ -138,9 +138,13 @@ for (const role of ['admin', 'production_manager', 'head_of_sales']) {
   ok('approve: body cannot smuggle a different actor or role', !('role' in c.args) && c.args.p_actor !== ID2 && c.args.p_role !== 'admin');
   ok('approve: override reason is passed through for the database to judge', c.args.p_override_reason === 'because');
   reset('production_manager');
-  await run(() => R.settlement.PATCH(req('PATCH', { action: 'pay', received_by_full_name: 'Jane Wanjiru', payment_note: 'counted', p_role: 'admin' }), P()));
+  await run(() => R.sheet.PATCH(req('PATCH', { action: 'match', p_role: 'admin', p_actor: ID2 }), P()));
   const p = calls.rpc[0];
-  ok('pay: names the receiver and note, session identity only', p.name === 'pay_temporary_settlement' && p.args.p_received_by === 'Jane Wanjiru' && p.args.p_note === 'counted' && p.args.p_actor === UID && p.args.p_role === 'production_manager');
+  ok('match: session identity only (a body cannot claim admin or another actor)', p.name === 'match_payout_sheet' && p.args.p_id === ID && p.args.p_actor === UID && p.args.p_role === 'production_manager' && !('role' in p.args));
+  reset('admin');
+  await run(() => R.sheet.PATCH(req('PATCH', { action: 'release', reason: 'ChatPesa rejected row 2', p_role: 'head_of_sales' }), P()));
+  const rl = calls.rpc[0];
+  ok('release: reason passed through, session identity only', rl.name === 'release_unpaid_payout_rows' && rl.args.p_reason === 'ChatPesa rejected row 2' && rl.args.p_role === 'admin' && rl.args.p_actor === UID);
 }
 
 // ── 3. validation happens before the database ──
@@ -163,20 +167,21 @@ for (const [label, days, re] of [
 await invalid('attendance: bad engagement id', () => R.attendance.POST(req('POST', { days: [{ date: '2026-11-10', units: 1 }] }), P('nope')), /id/);
 await invalid('settlement kind', () => R.settlements.POST(req('POST', { engagement_id: ID, cutoff_date: '2026-11-30', kind: 'whenever' })), /kind/);
 await invalid('settlement cutoff', () => R.settlements.POST(req('POST', { engagement_id: ID, cutoff_date: 'soon', kind: 'threshold' })), /cutoff/);
-await invalid('pay with a one-word receiver', () => R.settlement.PATCH(req('PATCH', { action: 'pay', received_by_full_name: 'Jane' }), P()), /full name/);
+await invalid('the cash "pay" action no longer exists', () => R.settlement.PATCH(req('PATCH', { action: 'pay', received_by_full_name: 'Jane Wanjiru' }), P()), /action/);
 await invalid('settlement unknown action', () => R.settlement.PATCH(req('PATCH', { action: 'reopen' }), P()), /action/);
 await invalid('deduction: statutory type', () => R.sdeductions.POST(req('POST', { deduction_type: 'paye', amount: 10, reason: 'tax', evidence_ref: 'x' }), P()), /type/);
 await invalid('deduction: "other" under 20 characters', () => R.sdeductions.POST(req('POST', { deduction_type: 'other', amount: 10, reason: 'misc' }), P()), /at least 20 characters \(4\/20\)/);
 await invalid('deduction: advance without a voucher', () => R.sdeductions.POST(req('POST', { deduction_type: 'cash_advance', amount: 10, reason: 'Advance' }), P()), /Advance voucher/);
 await invalid('deduction: zero amount', () => R.sdeductions.POST(req('POST', { deduction_type: 'cash_advance', amount: 0, reason: 'Advance', evidence_ref: 'A' }), P()), /above 0/);
 await invalid('deduction unknown action', () => R.deduction.PATCH(req('PATCH', { action: 'edit' }), P()), /action/);
-await invalid('sheet with no settlements', () => R.sheets.POST(req('POST', { settlement_ids: [] })), /one settlement/);
-await invalid('sheet with a non-uuid', () => R.sheets.POST(req('POST', { settlement_ids: ['x'] })), /one settlement/);
-await invalid('sheet with two settlements (one settlement per sheet)', () => R.sheets.POST(req('POST', { settlement_ids: [ID, ID2] })), /one settlement/);
+await invalid('sheet with no settlements', () => R.sheets.POST(req('POST', { settlement_ids: [] })), /between 1 and 200/);
+await invalid('sheet with a non-uuid', () => R.sheets.POST(req('POST', { settlement_ids: ['x'] })), /between 1 and 200/);
+await invalid('sheet with one bad id among good ones', () => R.sheets.POST(req('POST', { settlement_ids: [ID, 'x'] })), /between 1 and 200/);
+await invalid('sheet with 201 settlements', () => R.sheets.POST(req('POST', { settlement_ids: Array.from({ length: 201 }, () => ID) })), /between 1 and 200/);
 await invalid('engagement start 2026-02-30 (impossible calendar date)', () => R.engagements.POST(req('POST', { ...VALID_ENG, start_date: '2026-02-30' })), /start date/i);
 await invalid('engagement end 2026-04-31', () => R.engagements.POST(req('POST', { ...VALID_ENG, expected_end_date: '2026-04-31' })), /end date/i);
 await invalid('settlement cutoff 2026-02-30', () => R.settlements.POST(req('POST', { engagement_id: ID, cutoff_date: '2026-02-30', kind: 'threshold' })), /cutoff/i);
-await invalid('sheet unknown action', () => R.sheet.PATCH(req('PATCH', { action: 'sign' }), P()), /action/);
+for (const gone of ['sign', 'print', 'receipt_init', 'receipt_complete', 'receipt_url']) await invalid(`the retired sheet action "${gone}" no longer exists`, () => R.sheet.PATCH(req('PATCH', { action: gone }), P()), /action/);
 await invalid('malformed JSON body is treated as empty', () => R.settlement.PATCH(new Request('http://x', { method: 'PATCH', body: '{nope' }), P()), /action/);
 
 // ── 4. the right database function with the right arguments ──
@@ -211,8 +216,8 @@ await invalid('malformed JSON body is treated as empty', () => R.settlement.PATC
   ok('add deduction: amount is numeric, attachment path is never taken from the client', calls.rpc[0].name === 'add_settlement_deduction' && calls.rpc[0].args.p_amount === 250 && calls.rpc[0].args.p_path === null);
   reset(); await run(() => R.deduction.PATCH(req('PATCH', { action: 'void', reason: 'entered twice' }), P()));
   ok('void deduction', calls.rpc[0].name === 'void_settlement_deduction' && calls.rpc[0].args.p_reason === 'entered twice');
-  reset(); await run(() => R.sheets.POST(req('POST', { settlement_ids: [ID] }))); ok('create sheet (exactly one settlement)', calls.rpc[0].name === 'create_payout_sheet' && calls.rpc[0].args.p_settlement_ids.length === 1);
-  for (const [action, fn] of [['approve', 'approve_payout_sheet'], ['print', 'mark_sheet_printed'], ['cancel', 'cancel_payout_sheet']]) {
+  reset(); await run(() => R.sheets.POST(req('POST', { settlement_ids: [ID, ID2] }))); ok('create sheet takes several settlements (one ChatPesa upload)', calls.rpc[0].name === 'create_payout_sheet' && calls.rpc[0].args.p_settlement_ids.length === 2);
+  for (const [action, fn] of [['approve', 'approve_payout_sheet'], ['match', 'match_payout_sheet'], ['cancel', 'cancel_payout_sheet'], ['release', 'release_unpaid_payout_rows']]) {
     reset('admin'); await run(() => R.sheet.PATCH(req('PATCH', { action, reason: 'wrong names' }), P()));
     ok(`sheet ${action} -> ${fn}`, calls.rpc[0]?.name === fn);
   }
@@ -298,44 +303,59 @@ await invalid('malformed JSON body is treated as empty', () => R.settlement.PATC
     'temporary_worker_engagements:one': { data: { id: ID, employee_id: ID, order_id: ID2 }, error: null },
     'temporary_worker_settlements': { data: [{ id: ID }], error: null },
     'temporary_worker_settlements:one': { data: { id: ID, status: 'draft' }, error: null },
-    'temporary_worker_payout_sheets:one': { data: { id: ID, status: 'printed', signed_receipt_path: null }, error: null },
+    'temporary_worker_payout_sheets:one': { data: { id: ID, status: 'exported' }, error: null },
+    'temporary_worker_payout_rows': { data: [{ id: ID, settlement_id: ID2, amount: 3000, phone: '0712345678' }], error: null },
     'production_jobs': { data: [{ id: ID, job_num: 'JOB-1' }], error: null } };
   for (const fn of [CALLS['GET engagements'], CALLS['GET engagement'], CALLS['GET attendance'], CALLS['GET settlements'], CALLS['GET settlement'], CALLS['GET sheets'], CALLS['GET sheet'], CALLS['GET settings']]) await run(fn);
-  const bad = calls.selects.filter(s => /\*/.test(s.cols) || BANNED.some(b => s.cols.includes(b)));
+  // The ONLY allowed raw phone read is the payout rows of a sheet, because the route masks it before responding (tested in section 8).
+  const bad = calls.selects.filter(s => /\*/.test(s.cols) || BANNED.some(b => s.cols.includes(b) && !(b === 'phone' && s.table === 'temporary_worker_payout_rows')));
   ok(`every select() is an explicit allow-list with no private or storage columns (${calls.selects.length} selects checked)`, calls.selects.length >= 8 && bad.length === 0, JSON.stringify(bad));
   ok('no route wrote to a table directly (all writes go through database functions)', calls.mutations === 0);
 }
 
-// ── 8. receipt upload ──
+// ── 8. ChatPesa payout: export file, masking, admin-only ──
 {
-  reset('head_of_sales'); tableResult = { 'temporary_worker_payout_sheets:one': { data: { status: 'open' }, error: null } };
-  let r = await run(() => R.sheet.PATCH(req('PATCH', { action: 'receipt_init', file_name: 'sheet.jpg', file_size: 1000 }), P()));
-  ok('receipt_init refused until the sheet is printed', r.status === 400 && calls.storage.length === 0);
-  reset('head_of_sales'); tableResult = { 'temporary_worker_payout_sheets:one': { data: { status: 'printed' }, error: null } };
-  r = await run(() => R.sheet.PATCH(req('PATCH', { action: 'receipt_init', file_name: 'malware.exe', file_size: 1000 }), P()));
-  ok('receipt_init refuses a non-image/PDF file', r.status === 400 && calls.storage.length === 0);
-  r = await run(() => R.sheet.PATCH(req('PATCH', { action: 'receipt_init', file_name: 'big.jpg', file_size: 20 * 1024 * 1024 }), P()));
-  ok('receipt_init refuses a file over 15 MB', r.status === 400 && calls.storage.length === 0);
-  r = await run(() => R.sheet.PATCH(req('PATCH', { action: 'receipt_init', file_name: 'Signed Sheet.JPG', file_size: 2_000_000 }), P()));
-  ok('receipt_init returns a signed upload path under this sheet only', r.status === 200 && r.body.path.startsWith(`sheets/${ID}/`) && r.body.token === 'tok' && !/ /.test(r.body.path), JSON.stringify(r));
+  // Export is admin-only: the file releases money and carries phone numbers.
+  for (const role of ['head_of_sales', 'production_manager', 'production_staff']) {
+    reset(role); const r = await run(() => R.sheetExport.POST(req('POST'), P()));
+    ok(`export: ${role} is 403 and the database is never called`, r.status === 403 && calls.rpc.length === 0, JSON.stringify(r));
+  }
+  reset('anon'); let r = await run(() => R.sheetExport.POST(req('POST'), P())); ok('export: unauthenticated is 401', r.status === 401 && calls.rpc.length === 0);
+  reset('admin'); r = await run(() => R.sheetExport.POST(req('POST'), P('nope'))); ok('export: a bad id is 400 before the database', r.status === 400 && calls.rpc.length === 0);
+
+  reset('admin');
+  rpcResult = { data: { sheet_num: 'PS-2026-0007', first_export: true, rows: [
+    { settlement_num: 'TW-2026-0001', phone: '712345678', amount: '3000.00', description: 'Jane Wanjiru - TW-2026-0001' },
+    { settlement_num: 'TW-2026-0002', phone: '112345678', amount: '4500.00', description: 'Peter Otieno - TW-2026-0002' }] }, error: null };
+  const res = await R.sheetExport.POST(req('POST', { p_role: 'head_of_sales', p_actor: ID2 }), P());
+  const csv = await res.text();
+  ok('export: calls export_payout_sheet with the SESSION admin, not body values', calls.rpc[0].name === 'export_payout_sheet' && calls.rpc[0].args.p_actor === UID && calls.rpc[0].args.p_role === 'admin' && calls.rpc[0].args.p_id === ID);
+  ok('export: a CSV download that is never cached', res.status === 200 && res.headers.get('content-type') === 'text/csv' && res.headers.get('cache-control') === 'no-store' && /attachment; filename="chatpesa_PS-2026-0007_\d{4}-\d{2}-\d{2}\.csv"/.test(res.headers.get('content-disposition')));
+  ok('export: header plus one line per payment, in the ChatPesa format', csv.split('\n').length === 3 && csv.startsWith('Type,Amount,Account/Phone,') && csv.includes('mpesa,3000,712345678,,,,,Jane Wanjiru - TW-2026-0001,712345678') && !csv.includes('"'));
+  ok('export: tells the screen it was the first export', res.headers.get('x-first-export') === '1');
+  reset('admin'); rpcResult = { data: { sheet_num: 'PS-2026-0007', first_export: false, rows: [{ settlement_num: 'TW-2026-0002', phone: '112345678', amount: 4500, description: 'Peter Otieno - TW-2026-0002' }] }, error: null };
+  const again = await R.sheetExport.POST(req('POST'), P());
+  ok('export: a repeat download is flagged as not the first', again.headers.get('x-first-export') === '0');
+
+  reset('admin'); rpcResult = { data: null, error: { code: 'P0001', message: 'You prepared a settlement on this sheet, so someone else must release its payment' } };
+  r = await run(() => R.sheetExport.POST(req('POST'), P())); ok('export: a rule refusal is a readable 422 JSON, not a file', r.status === 422 && /prepared a settlement/.test(r.body.error));
+  reset('admin'); rpcResult = { data: null, error: { code: '42883', message: 'function export_payout_sheet does not exist' } };
+  r = await run(() => R.sheetExport.POST(req('POST'), P())); ok('export: migration missing is 503 SETUP_INCOMPLETE naming stage 3', r.status === 503 && /stage3/.test(r.body.error));
+  reset('admin'); rpcResult = { data: { sheet_num: 'PS-1', first_export: true, rows: [{ settlement_num: 'TW-1', phone: 'bad', amount: 100, description: 'x - TW-1' }] }, error: null };
+  r = await run(() => R.sheetExport.POST(req('POST'), P())); ok('export: an invalid row returns a generic 500 and no file', r.status === 500 && !/phone|bad/.test(JSON.stringify(r.body)));
+  ok('export never uses GET (it changes state)', typeof R.sheetExport.GET === 'undefined');
+
+  // GET sheet: the phone number is masked on the server and the raw number never reaches the response.
   reset('head_of_sales');
-  r = await run(() => R.sheet.PATCH(req('PATCH', { action: 'receipt_complete', path: `sheets/${ID2}/x.jpg` }), P()));
-  ok('receipt_complete refuses a path from another sheet', r.status === 400 && calls.rpc.length === 0);
-  r = await run(() => R.sheet.PATCH(req('PATCH', { action: 'receipt_complete', path: `sheets/${ID}/../../secret.jpg` }), P()));
-  ok('receipt_complete refuses path traversal', r.status === 400 && calls.rpc.length === 0);
-  r = await run(() => R.sheet.PATCH(req('PATCH', { action: 'receipt_complete', path: `sheets/${ID}/123-x.jpg` }), P()));
-  ok('receipt_complete refuses an object that is not in storage', r.status === 400 && calls.rpc.length === 0);
-  globalThis.__listed = [{ name: '123-x.jpg', metadata: { size: 5000 } }];
-  r = await run(() => R.sheet.PATCH(req('PATCH', { action: 'receipt_complete', path: `sheets/${ID}/123-x.jpg` }), P()));
-  ok('receipt_complete verifies storage then calls attach_signed_receipt', r.status === 200 && calls.rpc[0].name === 'attach_signed_receipt' && calls.rpc[0].args.p_path === `sheets/${ID}/123-x.jpg`);
-  reset('head_of_sales'); globalThis.__listed = [{ name: '123-x.jpg', metadata: { size: 20 * 1024 * 1024 } }];
-  r = await run(() => R.sheet.PATCH(req('PATCH', { action: 'receipt_complete', path: `sheets/${ID}/123-x.jpg` }), P()));
-  ok('receipt_complete removes an oversized object and records nothing', r.status === 400 && calls.rpc.length === 0 && calls.storage.some(s => s[0] === 'remove'));
-  reset('head_of_sales'); tableResult = { 'temporary_worker_payout_sheets:one': { data: { signed_receipt_path: `sheets/${ID}/123-x.jpg` }, error: null } };
-  r = await run(() => R.sheet.PATCH(req('PATCH', { action: 'receipt_url' }), P()));
-  ok('receipt_url returns a short-lived signed URL, never a raw path', r.status === 200 && r.body.url === 'https://signed/x' && !('path' in r.body));
-  reset('head_of_sales'); tableResult = { 'temporary_worker_payout_sheets:one': { data: { signed_receipt_path: null }, error: null } };
-  r = await run(() => R.sheet.PATCH(req('PATCH', { action: 'receipt_url' }), P())); ok('receipt_url with no receipt is 404', r.status === 404);
+  tableResult = {
+    'temporary_worker_payout_sheets:one': { data: { id: ID, status: 'exported' }, error: null },
+    'temporary_worker_payout_rows': { data: [{ id: ID, settlement_id: ID2, amount: 3000, phone: '0712345678', chatpesa_transaction_id: null }], error: null },
+  };
+  r = await run(() => R.sheet.GET(req('GET'), P()));
+  ok('sheet detail: rows carry a masked phone only', r.status === 200 && r.body.rows[0].phone_masked === '07•• ••• 678' && !('phone' in r.body.rows[0]) && !/12345/.test(JSON.stringify(r.body)), JSON.stringify(r.body));
+  reset('head_of_sales'); tableResult = { 'temporary_worker_payout_sheets:one': { data: { id: ID, status: 'exported' }, error: null }, 'temporary_worker_payout_rows': { data: null, error: { code: 'XX000', message: 'boom' } } };
+  r = await run(() => R.sheet.GET(req('GET'), P())); ok('sheet detail: a failing rows read fails the request (500), not an empty list', r.status === 500);
+  ok('no storage is touched any more (no signed-receipt upload)', calls.storage.length === 0);
 }
 
 // ── 9. payroll entries route maps the engagement-overlap trigger ──

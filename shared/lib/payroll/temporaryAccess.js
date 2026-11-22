@@ -19,11 +19,11 @@ export const canVoidApprovedSettlement = (role) => role === 'admin';
 // Marking days present: the same three roles (the separation of duties is on approval, not on marking).
 export const canMarkAttendance = (role) => TEMP_ROLES.includes(role);
 export const canApprovePayoutSheet = (role) => role === 'admin';
+// Releasing money (generating the ChatPesa file) and closing out unpaid rows is the admin's alone, like regular payroll batches.
+export const canExportPayoutSheet = (role) => role === 'admin';
+export const canReleasePayoutRows = (role) => role === 'admin';
 
 export const OTHER_REASON_MIN_CHARS = 20;
-export const RECEIPT_BUCKET = 'temporary-worker-receipts';
-export const RECEIPT_EXTENSIONS = Object.freeze(['.pdf', '.png', '.jpg', '.jpeg', '.heic']);
-export const RECEIPT_MAX_BYTES = 15 * 1024 * 1024;
 
 export const DEDUCTION_TYPES = Object.freeze([
   { value: 'cash_advance',       label: 'Cash advance',        refLabel: 'Advance voucher / reference', refRequired: true },
@@ -50,8 +50,11 @@ export const DEDUCTION_COLUMNS =
   'id, settlement_id, deduction_type, amount, reason, evidence_ref, recorded_by, recorded_at, approved_by, approved_at, ' +
   'approved_by_role, worker_acknowledged_at, active, voided_by, voided_at, void_reason';
 export const SHEET_COLUMNS =
-  'id, sheet_num, status, total_gross, total_deductions, total_net, admin_approved_by, admin_approved_at, printed_at, ' +
-  'signed_receipt_uploaded_by, signed_receipt_uploaded_at, cancelled_by, cancelled_at, cancel_reason, created_by, created_at';
+  'id, sheet_num, status, total_gross, total_deductions, total_net, admin_approved_by, admin_approved_at, exported_by, exported_at, ' +
+  'export_downloads, cancelled_by, cancelled_at, cancel_reason, created_by, created_at';
+// Payout rows (what went into the ChatPesa file). The phone is deliberately NOT selected: the screen shows a masked copy built on the server.
+export const PAYOUT_ROW_COLUMNS =
+  'id, sheet_id, settlement_id, amount, description, chatpesa_transaction_id, match_method, confirm_code, matched_at, released_at, release_reason';
 export const SETTINGS_COLUMNS =
   'settlement_threshold_units, admin_approval_limit_kes, rolling_window_days, deduction_single_limit_kes, deduction_total_pct, damage_deductions_enabled, updated_at';
 
@@ -76,8 +79,36 @@ export function validateDeductionInput({ type, amount, reason, ref }) {
   return null;
 }
 
-/** Returns an error message, or null when the receiver name is acceptable. */
-export const validateReceiverName = (v) => (isFullName(v) ? null : "Enter the receiver's full name (at least two names).");
+/** 9-digit Kenyan mobile without the leading 0 (ChatPesa's format), or '' when it cannot be one. Mirrors tw_normalise_phone in the database. */
+export function normaliseKenyanPhone(raw) {
+  const d = String(raw ?? '').replace(/\D/g, '');
+  if (/^254[17]\d{8}$/.test(d)) return d.slice(3);
+  if (/^0[17]\d{8}$/.test(d)) return d.slice(1);
+  if (/^[17]\d{8}$/.test(d)) return d;
+  return '';
+}
+
+/** "0712345678" → "07•• ••• 678": enough for a person to recognise, not enough to copy. */
+export function maskPhone(raw) {
+  const p = normaliseKenyanPhone(raw);
+  return p ? `0${p[0]}•• ••• ${p.slice(-3)}` : '—';
+}
+
+// ── ChatPesa bulk-payment file ────────────────────────────────────────────────
+// Same format as the regular payroll batch export (verified against files ChatPesa accepted):
+// type "mpesa" lowercase, whole-shilling amount, 9-digit phone, recipient name BLANK, description mandatory and never quoted.
+export const CHATPESA_HEADER = 'Type,Amount,Account/Phone,Paybill Number,Bank Paybill Number,Airtime Vendor,Recipient Name,Description,SMS Number';
+export function buildChatpesaCsv(rows) {
+  const lines = [CHATPESA_HEADER];
+  for (const r of rows || []) {
+    const phone = normaliseKenyanPhone(r.phone);
+    const amount = Math.round(Number(r.amount));
+    const description = String(r.description ?? '').replace(/[,"\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!phone || !Number.isFinite(amount) || amount <= 0 || !description) throw new Error(`Invalid payout row for ${r.settlement_num || 'a settlement'}`);
+    lines.push(['mpesa', amount, phone, '', '', '', '', description, phone].join(','));
+  }
+  return lines.join('\n');
+}
 
 // ── Database error mapping ────────────────────────────────────────────────────
 // Our functions raise user-readable messages with SQLSTATE P0001; those are safe to show. Constraint
@@ -93,7 +124,7 @@ export function mapTemporaryDbError(error) {
   }
   // The migration has not been applied (or Supabase has not reloaded its schema cache since): say so plainly.
   if (['42P01', '42883', '42703', 'PGRST200', 'PGRST202', 'PGRST205'].includes(code)) {
-    return { status: 503, body: { error: 'Temporary workers is not set up on this database yet. An administrator must run the temporary_workers_stage1, temporary_workers_stage1b, temporary_workers_stage1c and temporary_workers_stage2 migrations (in that order), then reload the Supabase schema cache.', code: 'SETUP_INCOMPLETE' } };
+    return { status: 503, body: { error: 'Temporary workers is not set up on this database yet. An administrator must run the temporary_workers_stage1, temporary_workers_stage1b, temporary_workers_stage1c, temporary_workers_stage2 and temporary_workers_stage3 migrations (in that order), then reload the Supabase schema cache.', code: 'SETUP_INCOMPLETE' } };
   }
   if (code === '23505') return { status: 409, body: { error: 'That already exists or was changed by someone else. Refresh and try again.', code: 'CONFLICT' } };
   if (code.startsWith('23')) return { status: 409, body: { error: 'That change is not allowed in the current state.', code: 'NOT_ALLOWED' } };
