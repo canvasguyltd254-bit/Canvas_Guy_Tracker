@@ -91,7 +91,7 @@ export function mapTemporaryDbError(error) {
   }
   // The migration has not been applied (or Supabase has not reloaded its schema cache since): say so plainly.
   if (['42P01', '42883', '42703', 'PGRST200', 'PGRST202', 'PGRST205'].includes(code)) {
-    return { status: 503, body: { error: 'Temporary workers is not set up on this database yet. An administrator must run the temporary_workers_stage1, temporary_workers_stage1b and temporary_workers_stage1c migrations (in that order), then reload the Supabase schema cache.', code: 'SETUP_INCOMPLETE' } };
+    return { status: 503, body: { error: 'Temporary workers is not set up on this database yet. An administrator must run the temporary_workers_stage1, temporary_workers_stage1b, temporary_workers_stage1c and temporary_workers_stage1d migrations (in that order), then reload the Supabase schema cache.', code: 'SETUP_INCOMPLETE' } };
   }
   if (code === '23505') return { status: 409, body: { error: 'That already exists or was changed by someone else. Refresh and try again.', code: 'CONFLICT' } };
   if (code.startsWith('23')) return { status: 409, body: { error: 'That change is not allowed in the current state.', code: 'NOT_ALLOWED' } };

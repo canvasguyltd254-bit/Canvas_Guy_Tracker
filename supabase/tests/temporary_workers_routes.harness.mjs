@@ -180,6 +180,21 @@ await invalid('malformed JSON body is treated as empty', () => R.settlement.PATC
   ok('complete -> set_engagement_status completed with reason', calls.rpc[0].name === 'set_engagement_status' && calls.rpc[0].args.p_status === 'completed' && calls.rpc[0].args.p_reason === 'Job finished');
   reset(); await run(() => R.engagement.PATCH(req('PATCH', { action: 'link_assignment', assignment_id: ID2 }), P()));
   ok('link -> link_assignment_to_engagement', calls.rpc[0].name === 'link_assignment_to_engagement' && calls.rpc[0].args.p_assignment === ID2 && calls.rpc[0].args.p_engagement === ID);
+  { const body = { action: 'assign_worker', job_id: ID2, stage_id: ID, operation_id: ID2, quantity: 6, start: '2026-11-09', end: '2026-11-13', hours_per_day: 8 };
+    reset('production_manager'); await run(() => R.engagement.PATCH(req('PATCH', { ...body, p_actor: 'evil', p_role: 'admin', role: 'admin' }), P()));
+    const c = calls.rpc[0];
+    ok('assign_worker -> assign_engagement_worker with the typed arguments', c && c.name === 'assign_engagement_worker' && c.args.p_engagement === ID && c.args.p_job === ID2 && c.args.p_stage === ID && c.args.p_operation === ID2 && c.args.p_quantity === 6 && c.args.p_start === '2026-11-09' && c.args.p_end === '2026-11-13' && c.args.p_hours === 8, JSON.stringify(c));
+    ok('assign_worker: actor and role come from the session, never the body', c && c.args.p_role === 'production_manager' && c.args.p_actor !== 'evil');
+    for (const [label, patch] of [['job id', { job_id: 'x' }], ['stage id', { stage_id: null }], ['operation id', { operation_id: '' }]])
+      await invalid(`assign_worker: bad ${label}`, () => R.engagement.PATCH(req('PATCH', { ...body, ...patch }), P()), /job, a stage and an operation/);
+    for (const q of [0, -1, 1.5, 'abc', null, undefined])
+      await invalid(`assign_worker: quantity ${JSON.stringify(q)} rejected`, () => R.engagement.PATCH(req('PATCH', { ...body, quantity: q }), P()), /whole-number quantity/);
+    await invalid('assign_worker: impossible date (Feb 30) rejected', () => R.engagement.PATCH(req('PATCH', { ...body, start: '2026-02-30' }), P()), /valid start and end dates/);
+    await invalid('assign_worker: missing end date rejected', () => R.engagement.PATCH(req('PATCH', { ...body, end: undefined }), P()), /valid start and end dates/);
+    await invalid('assign_worker: zero hours rejected', () => R.engagement.PATCH(req('PATCH', { ...body, hours_per_day: 0 }), P()), /hours per day/);
+    reset('production_staff'); const r2 = await run(() => R.engagement.PATCH(req('PATCH', body), P()));
+    ok('assign_worker: production_staff gets 403 and nothing is called', r2.status === 403 && calls.rpc.length === 0);
+  }
   reset(); await run(() => R.settlements.POST(req('POST', { engagement_id: ID, cutoff_date: '2026-11-30', kind: 'early', reason: 'client asked' })));
   ok('prepare -> prepare_temporary_settlement (no entry list accepted: the database takes every eligible entry)', calls.rpc[0].name === 'prepare_temporary_settlement' && !Object.keys(calls.rpc[0].args).some(k => /entr/.test(k)));
   reset(); await run(() => R.settlement.PATCH(req('PATCH', { action: 'void', reason: 'Wrong period' }), P()));

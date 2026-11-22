@@ -60,7 +60,7 @@ const route = (method, url) => {
   const u = new URL(url, 'http://x'); const p = u.pathname;
   if (p.endsWith('/temporary/settings')) return { settings: backend.settings };
   if (p.endsWith('/temporary/engagements') && method === 'GET') return { engagements: backend.engagements };
-  if (/\/engagements\/[^/]+\/assignments$/.test(p)) return { assignments: [{ id: 'a1', status: 'Assigned', job_num: 'JOB-1', description: 'Doors', linked: false, linked_elsewhere: false }] };
+  if (/\/engagements\/[^/]+\/assignments$/.test(p)) return { assignments: backend.assignments ?? [{ id: 'a1', status: 'Assigned', job_num: 'JOB-1', description: 'Doors', linked: false, linked_elsewhere: false }], targets: backend.targets ?? [{ job_id: 'j1', job_num: 'JOB-1', description: 'Doors', planned_quantity: 10, stages: [{ stage_id: 'st1', stage_label: 'Cutting', operations: [{ id: 'op1', name: 'Cut' }] }] }] };
   if (p.endsWith('/temporary/settlements') && method === 'GET') return { settlements: backend.settlements };
   if (/\/settlements\/[^/]+$/.test(p) && method === 'GET') { const id = p.split('/').pop(); const s = backend.settlements.find(x => x.id === id); return { settlement: s, lines: [{ id: 'l1', work_date: '2026-11-02', attendance_units: 1, base_amount: 4000, overtime_amount: 0, sunday_amount: 0, line_amount: 4000, active: true }], deductions: backend.deductions[id] || [] }; }
   if (p.endsWith('/payout-sheets') && method === 'GET') return { sheets: backend.sheets };
@@ -97,6 +97,7 @@ const mount = async (role, over = {}) => {
 };
 const unmount = async () => { await act(async () => { root.unmount(); }); };
 const tab = async (label) => click(byText('button', label));
+const pick = async (el, value) => { await act(async () => { Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set.call(el, value); el.dispatchEvent(new window.Event('change', { bubbles: true })); }); };
 const exactBtn = (t, within = document) => q('button', within).find(b => b.textContent.trim() === t);
 const dialog = () => document.querySelector('[role=dialog]');
 
@@ -339,6 +340,42 @@ await mount('head_of_sales'); await click(byText('button', 'Open'));
 ok('head of sales cannot link a Production assignment (told to ask the production manager)', /Ask the production manager to link this/.test(dialog().textContent) && !byText('button', 'Link', dialog())); await unmount();
 await mount('production_manager'); await click(byText('button', 'Open'));
 ok('production manager can link an assignment', !!byText('button', 'Link', dialog())); await unmount();
+
+// ── engagement: assign a worker to a job stage without leaving the screen ──
+{
+  await mount('production_manager'); await click(byText('button', 'Open'));
+  ok('assign form is offered (collapsed) when the worker already has an assignment', !!byText('button', 'Assign to a job stage') && !dialog().querySelector('[data-testid=assign-form]'));
+  await click(byText('button', 'Assign to a job stage'));
+  const form = () => dialog().querySelector('[data-testid=assign-form]');
+  ok('assign form opens, and the only job is preselected', !!form() && form().querySelectorAll('select')[0].value === 'j1');
+  ok('submit is disabled until a stage is chosen, and says why', exactBtn('Assign and link', form()).disabled && /Choose a stage/.test(form().textContent));
+  await pick(form().querySelectorAll('select')[1], 'st1');
+  ok('a stage with one operation preselects it and prefills quantity from the job', form().querySelectorAll('select')[2].value === 'op1' && form().querySelector('input[inputmode=numeric]').value === '10');
+  const dates = q('input[type=date]', form());
+  ok('default dates are never a Sunday', dates.length === 2 && dates.every(d => new Date(d.value + 'T00:00:00Z').getUTCDay() !== 0), dates.map(d => d.value).join(','));
+  ok('end defaults to no earlier than start', dates[1].value >= dates[0].value);
+  ok('hours per day defaults to 8', q('input', form()).some(i => i.value === '8'));
+  await click(exactBtn('Assign and link', form()));
+  const c = calls.find(x => x.method === 'PATCH' && x.body.action === 'assign_worker');
+  ok('submit sends assign_worker with job, stage, operation, quantity, dates and hours', !!c && c.body.job_id === 'j1' && c.body.stage_id === 'st1' && c.body.operation_id === 'op1' && c.body.quantity === 10 && c.body.hours_per_day === 8 && /^\d{4}-\d{2}-\d{2}$/.test(c.body.start) && /^\d{4}-\d{2}-\d{2}$/.test(c.body.end), JSON.stringify(c && c.body));
+  ok('identity is not sent from the page', !!c && !('role' in c.body) && !('actor' in c.body) && !('p_actor' in c.body));
+  ok('success message tells the user what happens next', /assigned and linked/i.test(dialog().textContent));
+  await unmount();
+
+  await mount('head_of_sales'); await click(byText('button', 'Open'));
+  ok('head of sales does not get the assign form (production manager / admin only, like linking)', !byText('button', 'Assign to a job stage') && !dialog().querySelector('[data-testid=assign-form]')); await unmount();
+
+  await mount('production_manager', { assignments: [] }); await click(byText('button', 'Open'));
+  ok('with no assignment yet the form is open by default and the empty text points to it', !!dialog().querySelector('[data-testid=assign-form]') && /not assigned to any job on this project yet.*Assign them below/.test(dialog().textContent)); await unmount();
+
+  await mount('production_manager', { assignments: [], targets: [] }); await click(byText('button', 'Open'));
+  ok('a project with no production jobs explains what to do instead of showing an empty form', /no production jobs yet/i.test(dialog().textContent) && !dialog().querySelector('[data-testid=assign-form]')); await unmount();
+
+  await mount('admin', { assignments: [], targets: [{ job_id: 'j1', job_num: 'JOB-1', description: 'Doors', planned_quantity: 10, stages: [{ stage_id: 'st1', stage_label: 'Cutting', operations: [{ id: 'op1', name: 'Cut' }, { id: 'op2', name: 'Trim' }] }] }] }); await click(byText('button', 'Open'));
+  { const f = dialog().querySelector('[data-testid=assign-form]'); await pick(f.querySelectorAll('select')[1], 'st1');
+    ok('a stage with several operations makes the user choose (no silent default)', f.querySelectorAll('select')[2].value === '' && /Choose an operation/.test(f.textContent)); }
+  await unmount();
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

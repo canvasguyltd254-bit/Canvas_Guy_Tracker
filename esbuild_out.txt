@@ -1,0 +1,2 @@
+✘ [ERROR] Must use "outdir" when there are multiple input files
+

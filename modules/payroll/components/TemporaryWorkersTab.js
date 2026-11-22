@@ -215,8 +215,63 @@ const SETTLEABLE = ['active', 'completed', 'cancelled'];
 // Warning only (nothing is blocked). Counts ALL non-voided attendance, so it stays visible after payment.
 const maxDaysMessage = (d) => `Maximum days reached: ${fmt(d.total_units)} day(s) recorded against a guide of ${fmt(d.max_days)}. Check whether the agreed work has grown before more is booked.`;
 
+// Assignment dates cannot fall on a Sunday: move to the nearest working day in the given direction.
+const nonSunday = (iso, step = 1) => {
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (d.getUTCDay() === 0) d.setUTCDate(d.getUTCDate() + step);
+  return d.toISOString().slice(0, 10);
+};
+
+/** Put this worker on a job stage and link it to the engagement in one step (no trip to Production). */
+function AssignForm({ e, targets, busy, onSubmit, defaultOpen }) {
+  const today = todayISO();
+  const start0 = nonSunday(e.start_date > today ? e.start_date : today, 1);
+  const end0 = e.expected_end_date && e.expected_end_date >= start0 ? nonSunday(e.expected_end_date, -1) : start0;
+  const [open, setOpen] = useState(!!defaultOpen);
+  const [jobId, setJobId] = useState(targets.length === 1 ? targets[0].job_id : '');
+  const job = targets.find(t => t.job_id === jobId);
+  const [stageId, setStageId] = useState('');
+  const stage = job?.stages.find(s => s.stage_id === stageId);
+  const [opId, setOpId] = useState('');
+  const [qty, setQty] = useState(targets.length === 1 ? String(targets[0].planned_quantity ?? '') : '');
+  const [start, setStart] = useState(start0);
+  const [end, setEnd] = useState(end0 < start0 ? start0 : end0);
+  const [hours, setHours] = useState('8');
+
+  if (!targets.length) return <Empty>This project has no production jobs yet. Create its production plan in Production first, then come back to assign this worker.</Empty>;
+  if (!open) return <Btn small variant="secondary" onClick={() => setOpen(true)}>Assign to a job stage…</Btn>;
+
+  const pickJob = (v) => { setJobId(v); setStageId(''); setOpId(''); const j = targets.find(t => t.job_id === v); setQty(j ? String(j.planned_quantity ?? '') : ''); };
+  const pickStage = (v) => { setStageId(v); const s = job?.stages.find(x => x.stage_id === v); setOpId(s?.operations.length === 1 ? s.operations[0].id : ''); };
+  const missing = !jobId ? 'Choose a job' : !stageId ? 'Choose a stage' : !opId ? 'Choose an operation' : !(Number(qty) > 0) ? 'Enter a quantity' : !start || !end ? 'Enter the dates' : end < start ? 'End is before start' : !(Number(hours) > 0) ? 'Enter hours per day' : '';
+
+  return (
+    <div style={{ background: C.bg, borderRadius: 9, padding: 12, marginTop: 8 }} data-testid="assign-form">
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>Adds {e.employees?.name} to the stage and links it at KES {fmt(e.agreed_daily_rate)}/day. Other workers already on that stage are not changed.</div>
+      <Field label="Job" required><select style={inputStyle} value={jobId} onChange={(x) => pickJob(x.target.value)}>
+        <option value="">Select a job…</option>{targets.map(t => <option key={t.job_id} value={t.job_id}>{t.job_num}{t.description ? ` — ${t.description}` : ''}</option>)}</select></Field>
+      {job && <Field label="Stage" required><select style={inputStyle} value={stageId} onChange={(x) => pickStage(x.target.value)}>
+        <option value="">Select a stage…</option>{job.stages.map(s => <option key={s.stage_id} value={s.stage_id}>{s.stage_label}</option>)}</select></Field>}
+      {stage && <Field label="Operation" required><select style={inputStyle} value={opId} onChange={(x) => setOpId(x.target.value)}>
+        <option value="">Select an operation…</option>{stage.operations.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></Field>}
+      {opId && (
+        <>
+          <Field label={`Quantity (job has ${job.planned_quantity})`} required hint="Whole units this worker is responsible for."><input style={inputStyle} inputMode="numeric" value={qty} onChange={(x) => setQty(x.target.value)} /></Field>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <div style={{ flex: 1 }}><Field label="Planned start" required><input type="date" style={inputStyle} value={start} onChange={(x) => setStart(x.target.value)} /></Field></div>
+            <div style={{ flex: 1 }}><Field label="Planned end" required hint="Not a Sunday."><input type="date" style={inputStyle} value={end} onChange={(x) => setEnd(x.target.value)} /></Field></div>
+            <div style={{ width: 110 }}><Field label="Hours/day" required><input style={inputStyle} inputMode="decimal" value={hours} onChange={(x) => setHours(x.target.value)} /></Field></div>
+          </div>
+        </>)}
+      <Btn loading={busy === 'assign'} disabled={!!missing} title={missing} onClick={() => onSubmit({ action: 'assign_worker', job_id: jobId, stage_id: stageId, operation_id: opId, quantity: Number(qty), start, end, hours_per_day: Number(hours) })}>Assign and link</Btn>
+      {missing && <span style={{ fontSize: 11, color: C.muted, marginLeft: 10 }}>{missing}</span>}
+    </div>
+  );
+}
+
 function EngagementModal({ e, role, onClose, onChanged, onSettle }) {
   const [asg, setAsg] = useState(null);
+  const [targets, setTargets] = useState([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
   const [mode, setMode] = useState('');          // '', 'close', 'cancel', 'rate'
@@ -227,7 +282,7 @@ function EngagementModal({ e, role, onClose, onChanged, onSettle }) {
   const loadAsg = useCallback(async () => {
     if (e.status !== 'active') { setAsg([]); return; }
     const r = await api('GET', `/api/payroll/temporary/engagements/${e.id}/assignments`);
-    if (r.ok) setAsg(r.data.assignments); else { setAsg([]); setError(r.error); }
+    if (r.ok) { setAsg(r.data.assignments); setTargets(r.data.targets || []); } else { setAsg([]); setTargets([]); setError(r.error); }
   }, [e.id, e.status]);
   useEffect(() => { loadAsg(); }, [loadAsg]);
 
@@ -257,13 +312,16 @@ function EngagementModal({ e, role, onClose, onChanged, onSettle }) {
           {asg && asg.length > 0 && !asg.some(a => a.linked) && (
             <Banner tone="warn" message="No assignment is linked yet. Days recorded in Production will not appear or be paid here until you link this worker’s assignment below." />)}
           <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>Attendance only counts once the worker’s Production assignment is linked to this engagement. Linking sets the assignment’s rate to the agreed rate and is refused once time has been recorded on it.</div>
-          {!asg ? <Spinner /> : asg.length === 0 ? <Empty>No active Production assignments for this worker on this project. Assign the worker to a stage in Production first.</Empty> : (
+          {!asg ? <Spinner /> : asg.length === 0 ? <Empty>This worker is not assigned to any job on this project yet.{canLinkAssignment(role) ? ' Assign them below.' : ' Ask the production manager to assign them.'}</Empty> : (
             <Table><tbody>{asg.map(a => (
               <tr key={a.id}><td style={td}><strong>{a.job_num}</strong><div style={{ fontSize: 11, color: C.muted }}>{a.description}</div></td>
                 <td style={td}>{a.linked ? <Badge label="linked" tone={['#dcfce7', '#166534']} /> : a.linked_elsewhere ? <Badge label="linked to another engagement" /> : <Badge label="not linked" tone={['#fef9c3', '#854d0e']} />}</td>
                 <td style={td}>{!a.linked && !a.linked_elsewhere && (canLinkAssignment(role)
                   ? <Btn small loading={busy === a.id} onClick={() => patch(a.id, { action: 'link_assignment', assignment_id: a.id }, () => setMsg('Assignment linked.'))}>Link</Btn>
                   : <span style={{ fontSize: 11, color: C.muted }}>Ask the production manager to link this</span>)}</td></tr>))}</tbody></Table>)}
+          {asg && canLinkAssignment(role) && (
+            <AssignForm key={`${asg.length}-${targets.length}`} e={e} targets={targets} busy={busy} defaultOpen={asg.length === 0}
+              onSubmit={(body) => patch('assign', body, () => setMsg('Worker assigned and linked. Attendance can now be recorded in Production.'))} />)}
         </>)}
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>

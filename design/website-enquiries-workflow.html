@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Website enquiries workflow — developer handoff</title>
+  <style>
+    :root {
+      --coral: #e8512a;
+      --coral-dark: #c94120;
+      --coral-soft: #fde8e2;
+      --ink: #181818;
+      --muted: #667085;
+      --line: #e5e1db;
+      --page: #f7f6f3;
+      --card: #ffffff;
+      --soft: #f1efeb;
+      --green: #16794a;
+      --green-soft: #eaf7ef;
+      --amber: #815707;
+      --amber-soft: #fff5d9;
+      --red: #a8362d;
+      --red-soft: #fde9e7;
+      --blue: #245e9b;
+      --blue-soft: #eaf2fb;
+      --shadow: 0 14px 36px rgba(24, 24, 24, 0.09);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    button, input, select, textarea { font: inherit; }
+    button, select { min-height: 40px; }
+    button { cursor: pointer; }
+    a { color: var(--blue); }
+    :focus-visible { outline: 3px solid rgba(232, 81, 42, 0.38); outline-offset: 2px; }
+    .shell { max-width: 1220px; margin: 0 auto; padding: 22px 18px 64px; }
+    .topline { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    h1 { margin: 0; font-size: 24px; line-height: 1.2; }
+    h2 { margin: 30px 0 12px; font-size: 15px; }
+    h3 { margin: 0; font-size: 14px; }
+    p { margin: 0; }
+    .sub { color: var(--muted); margin-top: 5px; max-width: 780px; }
+    .prototype { padding: 5px 9px; border-radius: 999px; background: var(--amber-soft); color: var(--amber); font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .panel, .stat, .spec-card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .stat { padding: 13px 14px; }
+    .stat.alert { background: var(--red-soft); border-color: #efc8c4; }
+    .stat-label { color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-size: 11px; font-weight: 700; }
+    .stat-value { margin-top: 3px; font-size: 24px; font-weight: 750; font-variant-numeric: tabular-nums; }
+    .stat-note { margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .toolbar { display: grid; grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(150px, auto)); gap: 8px; margin: 12px 0; }
+    .control { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); color: var(--ink); padding: 0 12px; }
+    .table-head, .enquiry-row { display: grid; grid-template-columns: 160px minmax(190px, 1.1fr) minmax(250px, 1.5fr) 170px 190px; gap: 14px; align-items: center; padding: 12px 14px; }
+    .table-head { color: var(--muted); background: #fcfbf9; border-bottom: 1px solid var(--line); text-transform: uppercase; letter-spacing: .05em; font-size: 11px; font-weight: 700; }
+    .table-head div:last-child { text-align: right; }
+    .enquiry-wrap { border-bottom: 1px solid var(--line); }
+    .enquiry-wrap:last-child { border-bottom: 0; }
+    .enquiry-wrap.website-new { box-shadow: inset 4px 0 var(--coral); }
+    .enquiry-row:hover { background: #fcfbf9; }
+    .code { font-weight: 750; }
+    .muted { color: var(--muted); }
+    .small { font-size: 12px; }
+    .brief { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+    .badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+    .badge { display: inline-flex; align-items: center; min-height: 23px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; border: 1px solid transparent; }
+    .website { color: #963616; background: var(--coral-soft); border-color: #f3c3b5; }
+    .seating { color: var(--amber); background: var(--amber-soft); border-color: #ead69c; }
+    .canvas { color: var(--blue); background: var(--blue-soft); border-color: #c7dbef; }
+    .ok { color: var(--green); background: var(--green-soft); border-color: #c6e7d4; }
+    .warn { color: var(--amber); background: var(--amber-soft); border-color: #ead69c; }
+    .danger { color: var(--red); background: var(--red-soft); border-color: #efc8c4; }
+    .neutral { color: var(--ink); background: var(--soft); }
+    .clock { font-weight: 750; }
+    .clock.danger { background: none; border: 0; padding: 0; }
+    .clock.warn { background: none; border: 0; padding: 0; }
+    .clock.ok { background: none; border: 0; padding: 0; }
+    .actions { display: flex; justify-content: flex-end; align-items: center; gap: 7px; }
+    .btn { border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); padding: 0 12px; font-weight: 700; }
+    .btn:hover { background: var(--soft); }
+    .btn.primary { color: white; background: var(--coral); border-color: var(--coral); }
+    .btn.primary:hover { background: var(--coral-dark); }
+    .btn.ghost { border-color: transparent; background: transparent; }
+    .btn.danger-action { color: var(--red); }
+    .expand { width: 44px; padding: 0; font-size: 18px; }
+    .detail { padding: 14px; background: #fcfbf9; border-top: 1px dashed var(--line); }
+    .detail-grid { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 10px; }
+    .detail-card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    .detail-card h4 { margin: 0 0 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-size: 11px; }
+    .kv { display: grid; grid-template-columns: 105px 1fr; gap: 5px 9px; margin: 0; }
+    .kv dt { color: var(--muted); }
+    .kv dd { margin: 0; overflow-wrap: anywhere; }
+    .message { white-space: pre-line; margin-bottom: 10px; }
+    .candidate { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
+    .candidate:first-of-type { margin-top: 8px; }
+    .empty { padding: 32px 16px; text-align: center; color: var(--muted); }
+    .mobile-list { display: none; }
+    .mobile-card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 13px; margin-bottom: 10px; }
+    .mobile-card.website-new { border-left: 4px solid var(--coral); }
+    .mobile-top, .mobile-foot { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .mobile-foot { align-items: center; margin-top: 12px; }
+    .home-grid { display: grid; grid-template-columns: 1.45fr .75fr; gap: 12px; }
+    .priority { width: 100%; display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 10px; text-align: left; padding: 11px 14px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); }
+    .priority:last-child { border-bottom: 0; }
+    .priority:hover { background: #fcfbf9; }
+    .priority-icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; background: var(--coral-soft); color: var(--coral-dark); font-weight: 800; }
+    .priority small { color: var(--muted); display: block; }
+    .settings { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; }
+    .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+    .setting-row:last-child { border-bottom: 0; }
+    .switch { width: 44px; min-width: 44px; height: 26px; min-height: 26px; border: 0; border-radius: 999px; background: #cbc6bf; padding: 3px; }
+    .switch::before { content: ""; display: block; width: 20px; height: 20px; border-radius: 50%; background: white; transition: transform .15s; }
+    .switch[aria-checked="true"] { background: var(--green); }
+    .switch[aria-checked="true"]::before { transform: translateX(18px); }
+    .spec-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .spec-card { padding: 13px 14px; }
+    .spec-card ul { margin: 8px 0 0; padding-left: 18px; }
+    .spec-card li + li { margin-top: 5px; }
+    dialog { width: min(560px, calc(100% - 28px)); border: 0; border-radius: 14px; box-shadow: var(--shadow); padding: 0; color: var(--ink); }
+    dialog::backdrop { background: rgba(20, 20, 20, .45); }
+    .dialog-head { padding: 15px 17px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+    .dialog-body { padding: 16px 17px; }
+    .dialog-actions { padding: 13px 17px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; }
+    .field { display: grid; gap: 5px; margin-bottom: 13px; }
+    .field label { font-weight: 700; }
+    .field textarea { min-height: 90px; resize: vertical; padding-top: 10px; }
+    .notice { padding: 10px 12px; border-radius: 8px; background: var(--amber-soft); color: var(--amber); margin-bottom: 12px; }
+    .toast { position: fixed; right: 18px; bottom: 18px; max-width: 360px; padding: 11px 14px; border-radius: 9px; background: var(--ink); color: white; box-shadow: var(--shadow); z-index: 20; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    @media (max-width: 1000px) {
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .toolbar { grid-template-columns: 1fr 1fr; }
+      .detail-grid, .home-grid, .settings { grid-template-columns: 1fr; }
+      .desktop-table { display: none; }
+      .mobile-list { display: block; }
+    }
+    @media (max-width: 620px) {
+      .shell { padding: 15px 12px 48px; }
+      .topline { display: block; }
+      .prototype { display: inline-block; margin-top: 10px; }
+      .stats, .toolbar, .spec-grid { grid-template-columns: 1fr; }
+      .control, .btn { min-height: 44px; }
+      .mobile-foot { align-items: stretch; flex-direction: column; }
+      .mobile-foot .btn { width: 100%; }
+      .candidate { align-items: stretch; flex-direction: column; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="topline">
+      <div>
+        <h1>Website enquiries in CRM</h1>
+        <p class="sub">Developer-ready workflow prototype. Sample data only. Every filter, row expansion, contact action, match decision and alert setting below is interactive.</p>
+      </div>
+      <span class="prototype">Prototype · not connected to production</span>
+    </div>
+
+    <section aria-labelledby="home-title">
+      <h2 id="home-title">Home · needs attention</h2>
+      <div class="home-grid">
+        <div class="panel" id="priorityList"></div>
+        <div class="stat alert">
+          <div class="stat-label">Website enquiries awaiting human contact</div>
+          <div class="stat-value" id="homeWaiting">0</div>
+          <div class="stat-note" id="homeOldest">No website enquiries are waiting.</div>
+          <button class="btn primary" id="openWebsiteQueue" style="margin-top:13px">Open website queue</button>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="crm-title">
+      <h2 id="crm-title">CRM · Enquiries</h2>
+      <div class="stats" id="stats"></div>
+      <div class="toolbar" aria-label="Enquiry filters">
+        <label><span class="sr-only">Search enquiries</span><input class="control" id="search" placeholder="Search name, number, email or brief"></label>
+        <label><span class="sr-only">Stage</span><select class="control" id="stageFilter"><option value="">All stages</option><option value="new">New</option><option value="contacted">Contacted</option><option value="quoted">Quoted</option></select></label>
+        <label><span class="sr-only">Source</span><select class="control" id="sourceFilter"><option value="">All sources</option><option value="website">Website</option><option value="email">Email</option><option value="whatsapp">WhatsApp</option></select></label>
+        <label><span class="sr-only">Brand</span><select class="control" id="brandFilter"><option value="">All brands</option><option value="seating_company">Seating Company</option><option value="canvas_guy">Canvas Guy</option></select></label>
+      </div>
+
+      <div class="panel desktop-table">
+        <div class="table-head"><div>Enquiry</div><div>Customer</div><div>Brief</div><div>Response</div><div>Actions</div></div>
+        <div id="desktopRows"></div>
+      </div>
+      <div class="mobile-list" id="mobileRows" aria-live="polite"></div>
+      <div class="empty panel" id="emptyState" hidden>No enquiries match these filters.</div>
+    </section>
+
+    <section aria-labelledby="alerts-title">
+      <h2 id="alerts-title">Email alerts · first release</h2>
+      <div class="settings">
+        <div class="panel" style="padding:14px 16px">
+          <h3>Internal email preview</h3>
+          <p style="margin-top:9px"><strong>New website enquiry: Villa Rosa Hotel · ENQ-2026-0145</strong></p>
+          <p class="muted" style="margin-top:7px">Jane Wanjiru · +254 713 196 650<br>Dining · 40 units · Westlands</p>
+          <p style="margin-top:8px">40 upholstered dining chairs for a restaurant opening.</p>
+          <button class="btn primary" style="margin-top:12px">Open in CRM</button>
+          <p class="small muted" style="margin-top:9px">The alert does not mark the enquiry contacted. Only a logged human contact stops the SLA clock.</p>
+        </div>
+        <div class="panel" style="padding:8px 16px">
+          <div class="setting-row"><span><strong>Email on every new website enquiry</strong><br><span class="small muted">Best-effort after the enquiry is safely stored</span></span><button class="switch" role="switch" aria-checked="true" aria-label="Email on every new website enquiry"></button></div>
+          <div class="setting-row"><span><strong>Daily 08:00 Nairobi digest</strong><br><span class="small muted">Unanswered enquiries and failed alerts</span></span><button class="switch" role="switch" aria-checked="true" aria-label="Daily digest"></button></div>
+          <div class="setting-row"><span><strong>WhatsApp alerts</strong><br><span class="small muted">Deferred until a provider and templates are approved</span></span><button class="switch" role="switch" aria-checked="false" aria-label="WhatsApp alerts" disabled></button></div>
+          <div class="setting-row"><span><strong>Customer auto-reply</strong><br><span class="small muted">Deferred; does not count as human contact</span></span><button class="switch" role="switch" aria-checked="false" aria-label="Customer auto reply" disabled></button></div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="contract-title">
+      <h2 id="contract-title">Developer contract</h2>
+      <div class="spec-grid">
+        <article class="spec-card"><h3>Release A · visibility</h3><ul><li>Enrich enquiry reads from <code>web_form_submissions</code>.</li><li>One dataset powers desktop and mobile.</li><li>Website, source, brand, consent and attribution are read-only.</li><li>Consent time is labelled “Recorded at”.</li></ul></article>
+        <article class="spec-card"><h3>Release B · contact SLA</h3><ul><li>Use an atomic <code>mark_enquiry_contacted</code> function.</li><li>Store first contact time, user, method and note.</li><li>One business hour, 08:00–18:00 Mon–Sat, Nairobi time.</li><li>Automatic acknowledgements never stop the clock.</li></ul></article>
+        <article class="spec-card"><h3>Release C · customer match</h3><ul><li>Reuse the existing exact phone/email match result.</li><li>Resolve ambiguous matches with one database function.</li><li>Record linked/kept-as-prospect, resolver and timestamp.</li><li>Never update enquiry and submission separately.</li></ul></article>
+        <article class="spec-card"><h3>Release D · alerts</h3><ul><li>Email only in the first release.</li><li>Never roll back a saved enquiry because an alert failed.</li><li>Track queued, sent, failed and provider message ID.</li><li>Daily digest reconciles missed alerts.</li></ul></article>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="contactDialog" aria-labelledby="contactTitle">
+    <form id="contactForm">
+      <div class="dialog-head"><h3 id="contactTitle">Log first contact</h3><button type="button" class="btn ghost" data-close="contactDialog" aria-label="Close">✕</button></div>
+      <div class="dialog-body">
+        <div class="notice">This explicit action stops the response clock. Creating a quotation or sending an automatic acknowledgement does not.</div>
+        <div class="field"><label for="contactMethod">Contact method</label><select class="control" id="contactMethod" required><option value="">Select method</option><option>Phone call</option><option>Email</option><option>WhatsApp</option><option>Visit</option><option>Other</option></select></div>
+        <div class="field"><label for="contactNote">Note</label><textarea class="control" id="contactNote" placeholder="What was discussed?" required></textarea></div>
+      </div>
+      <div class="dialog-actions"><button type="button" class="btn" data-close="contactDialog">Cancel</button><button type="submit" class="btn primary">Save contact</button></div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <script>
+    const DEMO_NOW = new Date('2026-10-14T12:00:00+03:00');
+    const enquiries = [
+      { id:'145', num:'ENQ-2026-0145', stage:'new', source:'website', brand:'seating_company', createdAt:'2026-10-14T11:28:00+03:00', name:'Jane Wanjiru', company:'Villa Rosa Hotel', phone:'+254 713 196 650', email:'jane@villarosa.co.ke', project:'Hospitality', category:'Dining', qty:40, brief:'40 upholstered dining chairs for a restaurant opening in December, in a warm grey fabric.', location:'Westlands', matchStatus:'new_prospect', consentAt:'2026-10-14T11:28:00+03:00', consentVersion:'tsc-consent-v1', submission:'3f2b8c1e-5123-4ed7-b7fa-20c691f15a6b', sourceDetail:'google / cpc / dining-chairs-oct', landing:'/collections/dining', expanded:false },
+      { id:'143', num:'ENQ-2026-0143', stage:'new', source:'website', brand:'seating_company', createdAt:'2026-10-14T08:16:00+03:00', name:'Brian Otieno', company:'Kwetu Lounge', phone:'+254 733 555 222', email:'brian@kwetu.co.ke', project:'Commercial', category:'Bar Stool', qty:12, brief:'12 bar stools for our rooftop bar, black metal frame, seat height 75 cm.', location:'Kilimani', matchStatus:'ambiguous', consentAt:'2026-10-14T08:16:00+03:00', consentVersion:'tsc-consent-v1', submission:'65f86ce2-832d-4b23-9c64-f63fe5dced9b', sourceDetail:'instagram.com', landing:'/products/bar-stool', expanded:false, candidates:[{id:'c1',name:'Kwetu Lounge Ltd',meta:'6 orders · last order Aug 2026'},{id:'c2',name:'Otieno Brian (individual)',meta:'1 order · last order Mar 2025'}] },
+      { id:'144', num:'ENQ-2026-0144', stage:'new', source:'website', brand:'seating_company', createdAt:'2026-10-14T10:35:00+03:00', name:'Karura Suites', company:'Karura Suites', phone:'+254 722 000 111', email:'procurement@karurasuites.co.ke', project:'Hospitality', category:'Lounge', qty:8, brief:'Re-order of the lounge armchairs from March, same fabric, 8 units.', location:'Nairobi', matchStatus:'matched_phone', consentAt:'2026-10-14T10:35:00+03:00', consentVersion:'tsc-consent-v1', submission:'4fdb08e6-35fe-42ef-802e-39aca8cdd814', sourceDetail:'Direct visit', landing:'/pages/custom-orders', expanded:false },
+      { id:'139', num:'ENQ-2026-0139', stage:'contacted', source:'email', brand:'canvas_guy', createdAt:'2026-10-12T09:00:00+03:00', firstContactAt:'2026-10-12T10:05:00+03:00', contactMethod:'Email', name:'Rolaine Njoki', company:'', phone:'+254 700 000 000', email:'rolaine@example.com', project:'', category:'Frames', qty:24, brief:'Quote for 24 floating frames, A2 and A3 mix, black oak finish.', location:'', matchStatus:'matched_email', expanded:false }
+    ];
+
+    const state = { search:'', stage:'', source:'', brand:'', contactId:null };
+    const brandLabel = { seating_company:'Seating Company', canvas_guy:'Canvas Guy' };
+
+    function businessDue(input) {
+      const d = new Date(input);
+      const parts = new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Nairobi',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false,weekday:'short'}).formatToParts(d).reduce((a,p)=>(a[p.type]=p.value,a),{});
+      let local = new Date(`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:00+03:00`);
+      const day = local.getDay();
+      const hour = local.getHours() + local.getMinutes()/60;
+      if (day === 0) local.setDate(local.getDate()+1), local.setHours(8,0,0,0);
+      else if (hour < 8) local.setHours(8,0,0,0);
+      else if (hour >= 18 || (day === 6 && hour >= 18)) {
+        local.setDate(local.getDate() + (day === 6 ? 2 : 1)); local.setHours(8,0,0,0);
+      }
+      local.setHours(local.getHours()+1);
+      return local;
+    }
+    function duration(ms) {
+      const mins = Math.max(0, Math.floor(ms/60000));
+      if (mins < 60) return `${mins} min`;
+      return `${Math.floor(mins/60)}h ${String(mins%60).padStart(2,'0')}m`;
+    }
+    function responseState(e) {
+      if (e.firstContactAt || e.stage !== 'new') return { tone:'ok', title:`Contacted · ${e.contactMethod || 'recorded'}`, note:e.firstContactAt ? new Date(e.firstContactAt).toLocaleString('en-KE',{dateStyle:'medium',timeStyle:'short'}) : 'Clock stopped' };
+      const due = businessDue(e.createdAt);
+      const remaining = due - DEMO_NOW;
+      if (remaining < 0) return { tone:'danger', title:`Overdue ${duration(-remaining)}`, note:`Was due ${due.toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'})}` };
+      if (remaining <= 30*60000) return { tone:'warn', title:`Due in ${duration(remaining)}`, note:`Reply by ${due.toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'})}` };
+      return { tone:'ok', title:`New · ${duration(DEMO_NOW-new Date(e.createdAt))}`, note:`Reply by ${due.toLocaleTimeString('en-KE',{hour:'2-digit',minute:'2-digit'})}` };
+    }
+    function matchBadge(e) {
+      if (e.matchStatus === 'ambiguous') return '<span class="badge warn">Check customer match</span>';
+      if (e.matchStatus === 'matched_phone') return '<span class="badge ok">Matched by phone</span>';
+      if (e.matchStatus === 'matched_email') return '<span class="badge ok">Matched by email</span>';
+      if (e.matchStatus === 'manually_linked') return '<span class="badge ok">Manually linked</span>';
+      if (e.matchStatus === 'kept_as_prospect') return '<span class="badge neutral">Kept as prospect</span>';
+      return '<span class="badge neutral">New prospect</span>';
+    }
+    function sourceBadges(e) {
+      return `<span class="badge ${e.source==='website'?'website':'neutral'}">${e.source==='website'?'Website':e.source}</span><span class="badge ${e.brand==='seating_company'?'seating':'canvas'}">${brandLabel[e.brand]}</span>`;
+    }
+    function filtered() {
+      const q = state.search.trim().toLowerCase();
+      return enquiries.filter(e => (!state.stage || e.stage===state.stage) && (!state.source || e.source===state.source) && (!state.brand || e.brand===state.brand) && (!q || [e.num,e.name,e.company,e.phone,e.email,e.brief,e.category].join(' ').toLowerCase().includes(q)));
+    }
+    function detailHtml(e) {
+      if (e.source !== 'website') return `<div class="detail"><div class="detail-card">Email enquiry. Website submission and consent panels do not apply.</div></div>`;
+      const candidates = e.matchStatus==='ambiguous' ? `<div class="detail-card" style="grid-column:1/-1"><h4>Resolve customer match</h4><p class="small muted">The database deliberately did not merge this enquiry because more than one customer matched.</p>${e.candidates.map(c=>`<div class="candidate"><span><strong>${c.name}</strong><br><span class="small muted">${e.phone} · ${c.meta}</span></span><button class="btn" data-link="${e.id}" data-customer="${c.id}" data-name="${c.name}">Link customer</button></div>`).join('')}<button class="btn" style="margin-top:8px" data-prospect="${e.id}">Keep as new prospect</button></div>` : '';
+      return `<div class="detail"><div class="message">${e.brief}</div><div class="detail-grid">${candidates}<div class="detail-card"><h4>Contact</h4><dl class="kv"><dt>Name</dt><dd>${e.name}</dd><dt>Phone</dt><dd>${e.phone}</dd><dt>Email</dt><dd>${e.email||'—'}</dd><dt>Company</dt><dd>${e.company||'—'}</dd><dt>Location</dt><dd>${e.location||'—'}</dd></dl></div><div class="detail-card"><h4>Attribution</h4><dl class="kv"><dt>Source</dt><dd>${e.sourceDetail||'Direct'}</dd><dt>Landing page</dt><dd><code>${e.landing||'—'}</code></dd><dt>Product</dt><dd>${e.category||'—'}</dd><dt>Quantity</dt><dd>${e.qty||'—'}</dd></dl></div><div class="detail-card"><h4>Consent record</h4><dl class="kv"><dt>Agreed</dt><dd><span class="badge ok">Yes</span></dd><dt>Recorded at</dt><dd>${new Date(e.consentAt).toLocaleString('en-KE',{dateStyle:'medium',timeStyle:'short'})}</dd><dt>Wording</dt><dd><code>${e.consentVersion}</code></dd><dt>Submission</dt><dd><code>${e.submission.slice(0,8)}…</code></dd></dl></div></div></div>`;
+    }
+    function primaryAction(e) {
+      if (e.stage==='new') return `<button class="btn primary" data-contact="${e.id}">Log contact</button>`;
+      if (e.stage==='contacted') return `<button class="btn primary" data-quote="${e.id}">Create quote</button>`;
+      return '';
+    }
+    function desktopHtml(e) {
+      const r=responseState(e);
+      return `<article class="enquiry-wrap ${e.source==='website'&&e.stage==='new'?'website-new':''}" id="enquiry-${e.id}"><div class="enquiry-row"><div><div class="code">${e.num}</div><div class="badges">${sourceBadges(e)}</div></div><div><strong>${e.name}</strong><div class="small muted">${e.company||e.phone}</div><div class="badges">${matchBadge(e)}</div></div><div><div class="small muted">${[e.category,e.project,e.qty&&`Qty ${e.qty}`].filter(Boolean).join(' · ')}</div><div class="brief">${e.brief}</div></div><div><div class="clock ${r.tone}">${r.title}</div><div class="small muted">${r.note}</div></div><div class="actions">${primaryAction(e)}<button class="btn expand" data-expand="${e.id}" aria-expanded="${e.expanded}" aria-controls="detail-${e.id}" aria-label="${e.expanded?'Hide':'Show'} details">${e.expanded?'−':'+'}</button></div></div><div id="detail-${e.id}" ${e.expanded?'':'hidden'}>${detailHtml(e)}</div></article>`;
+    }
+    function mobileHtml(e) {
+      const r=responseState(e);
+      return `<article class="mobile-card ${e.source==='website'&&e.stage==='new'?'website-new':''}"><div class="mobile-top"><span class="code">${e.num}</span><span class="badge ${r.tone}">${r.title}</span></div><div class="badges">${sourceBadges(e)}${matchBadge(e)}</div><p style="margin-top:9px"><strong>${e.name}</strong>${e.company?` · ${e.company}`:''}</p><p class="brief" style="margin-top:6px">${e.brief}</p><div class="mobile-foot"><span class="small muted">${r.note}</span><span class="actions">${primaryAction(e)}<button class="btn expand" data-expand="${e.id}" aria-expanded="${e.expanded}" aria-controls="mobile-detail-${e.id}" aria-label="${e.expanded?'Hide':'Show'} details">${e.expanded?'−':'+'}</button></span></div><div id="mobile-detail-${e.id}" ${e.expanded?'':'hidden'}>${detailHtml(e)}</div></article>`;
+    }
+    function renderStats() {
+      const web=enquiries.filter(e=>e.source==='website'&&e.stage==='new');
+      const overdue=web.filter(e=>responseState(e).tone==='danger');
+      const ambiguous=enquiries.filter(e=>e.matchStatus==='ambiguous');
+      const open=enquiries.filter(e=>['new','contacted','quoted'].includes(e.stage));
+      document.getElementById('stats').innerHTML=`<div class="stat ${overdue.length?'alert':''}"><div class="stat-label">Website awaiting contact</div><div class="stat-value">${web.length}</div><div class="stat-note">${overdue.length} overdue</div></div><div class="stat"><div class="stat-label">Match review</div><div class="stat-value">${ambiguous.length}</div><div class="stat-note">ambiguous customers</div></div><div class="stat"><div class="stat-label">Follow-ups due</div><div class="stat-value">2</div><div class="stat-note">today or overdue</div></div><div class="stat"><div class="stat-label">Open enquiries</div><div class="stat-value">${open.length}</div><div class="stat-note">all sources</div></div>`;
+    }
+    function renderPriorities() {
+      const waiting=enquiries.filter(e=>e.source==='website'&&e.stage==='new').sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
+      const ambiguous=enquiries.filter(e=>e.matchStatus==='ambiguous');
+      const rows=[...waiting.map(e=>({e,label:responseState(e).tone==='danger'?`Website enquiry overdue: ${e.name}`:`New website enquiry: ${e.name}`,meta:`${e.num} · ${responseState(e).title}`})),...ambiguous.map(e=>({e,label:`Check customer match: ${e.name}`,meta:`${e.num} · several customers matched`}))];
+      document.getElementById('priorityList').innerHTML=`<div style="padding:11px 14px;border-bottom:1px solid var(--line);font-weight:750">Needs attention today</div>${rows.map(x=>`<button class="priority" data-open="${x.e.id}"><span class="priority-icon">!</span><span><strong>${x.label}</strong><small>${x.meta}</small></span><span aria-hidden="true">›</span></button>`).join('')||'<div class="empty">Nothing needs attention.</div>'}`;
+      document.getElementById('homeWaiting').textContent=waiting.length;
+      document.getElementById('homeOldest').textContent=waiting.length?`Oldest: ${responseState(waiting[0]).title}. Target is one business hour.`:'No website enquiries are waiting.';
+    }
+    function render() {
+      const list=filtered();
+      document.getElementById('desktopRows').innerHTML=list.map(desktopHtml).join('');
+      document.getElementById('mobileRows').innerHTML=list.map(mobileHtml).join('');
+      document.getElementById('emptyState').hidden=list.length>0;
+      renderStats(); renderPriorities(); bindActions();
+    }
+    function bindActions() {
+      document.querySelectorAll('[data-expand]').forEach(b=>b.onclick=()=>{const e=enquiries.find(x=>x.id===b.dataset.expand);e.expanded=!e.expanded;render();requestAnimationFrame(()=>document.querySelector(`[data-expand="${e.id}"]`)?.focus());});
+      document.querySelectorAll('[data-contact]').forEach(b=>b.onclick=()=>{state.contactId=b.dataset.contact;document.getElementById('contactMethod').value='';document.getElementById('contactNote').value='';document.getElementById('contactDialog').showModal();});
+      document.querySelectorAll('[data-quote]').forEach(b=>b.onclick=()=>toast(`Create quotation opened for ${enquiries.find(e=>e.id===b.dataset.quote).num}.`));
+      document.querySelectorAll('[data-link]').forEach(b=>b.onclick=()=>{const e=enquiries.find(x=>x.id===b.dataset.link);e.matchStatus='manually_linked';e.linkedCustomer=b.dataset.name;e.candidates=[];toast(`${e.num} linked to ${b.dataset.name}.`);render();});
+      document.querySelectorAll('[data-prospect]').forEach(b=>b.onclick=()=>{const e=enquiries.find(x=>x.id===b.dataset.prospect);e.matchStatus='kept_as_prospect';e.candidates=[];toast(`${e.num} kept as a new prospect.`);render();});
+      document.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>{const e=enquiries.find(x=>x.id===b.dataset.open);state.search=e.num;document.getElementById('search').value=e.num;e.expanded=true;render();document.getElementById(`enquiry-${e.id}`)?.scrollIntoView({behavior:'smooth',block:'center'});});
+    }
+    function toast(message) { const t=document.getElementById('toast');t.textContent=message;t.hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>t.hidden=true,2600); }
+    document.getElementById('search').addEventListener('input',e=>{state.search=e.target.value;render();});
+    document.getElementById('stageFilter').addEventListener('change',e=>{state.stage=e.target.value;render();});
+    document.getElementById('sourceFilter').addEventListener('change',e=>{state.source=e.target.value;render();});
+    document.getElementById('brandFilter').addEventListener('change',e=>{state.brand=e.target.value;render();});
+    document.getElementById('openWebsiteQueue').onclick=()=>{state.source='website';state.stage='new';document.getElementById('sourceFilter').value='website';document.getElementById('stageFilter').value='new';render();document.getElementById('crm-title').scrollIntoView({behavior:'smooth'});};
+    document.getElementById('contactForm').addEventListener('submit',e=>{e.preventDefault();const item=enquiries.find(x=>x.id===state.contactId);item.stage='contacted';item.firstContactAt=DEMO_NOW.toISOString();item.contactMethod=document.getElementById('contactMethod').value;item.contactNote=document.getElementById('contactNote').value;document.getElementById('contactDialog').close();toast(`${item.num} marked contacted by ${item.contactMethod}.`);render();});
+    document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>document.getElementById(b.dataset.close).close());
+    document.querySelectorAll('.switch:not([disabled])').forEach(b=>b.onclick=()=>{b.setAttribute('aria-checked',b.getAttribute('aria-checked')==='true'?'false':'true');toast('Prototype setting updated. Production must persist this server-side.');});
+    render();
+  </script>
+</body>
+</html>

@@ -419,3 +419,19 @@ Findings fixed, all in `TemporaryWorkersTab.js`, `TemporarySettlements.js` and `
 Not changed: small-button height (32 px) is below the 44 px touch guideline; this is a desktop admin screen, and the shared `Btn` is used elsewhere. Colour contrast was not measured. Layout was verified in a simulated DOM only, not in a real browser: please look at it once on Monday morning before the new users do.
 
 Tests: UI harness 79 checks (was 55). Each guidance feature was removed in turn (pop-up, label wiring, guide) and the tests failed.
+
+### 15.3 Stage 1d — assign from the engagement screen
+Feedback from first use: an active engagement with no Production assignment was a dead end ("assign the worker in Production first").
+`assign_engagement_worker(...)` (migration `temporary_workers_stage1d.sql`) adds ONE assignment for the engagement's worker on a chosen
+job/stage/operation and links it in the same transaction (a refusal anywhere rolls the new assignment back).
+
+- It deliberately does NOT call `assign_workers_to_stage()`: that function takes the whole group for an operation and marks every
+  worker not listed as Removed, so a one-worker call would silently remove colleagues already on the stage.
+- It respects the existing group: working-together groups need the same quantity; split groups must still add up to the job quantity.
+- Same preconditions as linking: engagement active, job in the same project and not cancelled/completed, stage enabled, operation active
+  for that stage, worker not already on that operation, dates not Sundays, hours 0–12. Admin and production manager only.
+- API: `PATCH /engagements/:id { action: 'assign_worker', job_id, stage_id, operation_id, quantity, start, end, hours_per_day }`;
+  `GET /engagements/:id/assignments` also returns `targets` (open jobs → enabled stages → active operations).
+- UI: "Assign and link" form in the engagement modal (open by default when the worker has no assignment; preselects the only job /
+  operation; dates never default to a Sunday). Projects with no production jobs still need the plan created in Production first.
+- Tests: `temporary_workers_assign.pglite.mjs` (41), plus route and UI harness additions.
