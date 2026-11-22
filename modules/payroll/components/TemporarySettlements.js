@@ -331,11 +331,13 @@ export function SheetsPanel({ role, userId, settings, refreshKey, onChanged, foc
 function NewSheetModal({ onClose, onCreated }) {
   const [rows, setRows] = useState(null);
   const [picked, setPicked] = useState([]);
+  const [drafts, setDrafts] = useState([]);       // prepared but not yet approved: they cannot go on this week's sheet
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   useEffect(() => { (async () => {
-    const r = await api('GET', '/api/payroll/temporary/settlements?status=approved');
-    if (r.ok) setRows(r.data.settlements.filter(s => !s.payout_sheet_id)); else setError(r.error);
+    const [r, d] = await Promise.all([api('GET', '/api/payroll/temporary/settlements?status=approved'), api('GET', '/api/payroll/temporary/settlements?status=draft')]);
+    if (r.ok) { const list = r.data.settlements.filter(s => !s.payout_sheet_id); setRows(list); setPicked(list.map(s => s.id)); } else setError(r.error);   // weekly run: everyone ticked by default
+    if (d.ok) setDrafts(d.data.settlements);
   })(); }, []);
   const chosen = (rows || []).filter(s => picked.includes(s.id));
   const total = chosen.reduce((a, s) => a + Number(s.net_amount), 0);
@@ -343,7 +345,9 @@ function NewSheetModal({ onClose, onCreated }) {
   return (
     <Modal title="New payout sheet" onClose={onClose} width={640}>
       <Banner message={error} />
-      <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>Tick every worker you want to pay in the same ChatPesa upload. Each worker needs an M-Pesa number on their employee record.</div>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>The weekly sheet: every approved settlement is ticked so all workers go in ONE ChatPesa upload. Untick anyone to leave them for later. Each worker needs an M-Pesa number on their employee record.</div>
+      {drafts.length > 0 && <Banner tone="warn" message={`${drafts.length} settlement${drafts.length > 1 ? 's are' : ' is'} prepared but not approved yet (${drafts.slice(0, 5).map(x => x.employees?.name).join(', ')}${drafts.length > 5 ? '…' : ''}) and will NOT be on this sheet. Approve ${drafts.length > 1 ? 'them' : 'it'} first if ${drafts.length > 1 ? 'they belong' : 'it belongs'} in this week's payment.`} />}
+      {rows && rows.length > 1 && <div style={{ marginBottom: 8 }}><Btn small variant="secondary" onClick={() => setPicked(picked.length === rows.length ? [] : rows.map(s => s.id))}>{picked.length === rows.length ? 'Untick all' : 'Tick all'}</Btn></div>}
       {!rows ? <Spinner /> : rows.length === 0 ? <Empty>No approved settlements are waiting for a sheet.</Empty> : (
         <>
           <Table>

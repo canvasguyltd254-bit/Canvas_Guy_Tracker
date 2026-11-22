@@ -70,7 +70,7 @@ const route = (method, url, body) => {
     }
     return { days: backend.days ?? [] };
   }
-  if (p.endsWith('/temporary/settlements') && method === 'GET') return { settlements: backend.settlements };
+  if (p.endsWith('/temporary/settlements') && method === 'GET') { const st = u.searchParams.get('status'); return { settlements: st ? backend.settlements.filter(x => x.status === st) : backend.settlements }; }
   if (/\/settlements\/[^/]+$/.test(p) && method === 'GET') { const id = p.split('/').pop(); const s = backend.settlements.find(x => x.id === id); return { settlement: s, lines: [{ id: 'l1', work_date: '2026-11-02', attendance_units: 1, base_amount: 4000, overtime_amount: 0, sunday_amount: 0, line_amount: 4000, active: true }], deductions: backend.deductions[id] || [] }; }
   if (p.endsWith('/payout-sheets') && method === 'GET') return { sheets: backend.sheets };
   if (/\/payout-sheets\/[^/]+$/.test(p) && method === 'GET') return { sheet: backend.sheets[0], settlements: backend.sheetSettlements, deductions: [], rows: backend.sheetRows || [] };
@@ -371,12 +371,23 @@ ok('a cancelled sheet is read-only and says it is never reused', /never reused/.
   const boxes = q('input[type=checkbox]', dialog());
   ok('new sheet form lists each approved settlement with a checkbox (several workers per sheet)', boxes.length === 2 && q('input[type=radio]', dialog()).length === 0);
   ok('it says each worker needs an M-Pesa number on their employee record', /M-Pesa number on their employee record/.test(dialog().textContent));
-  ok('Create sheet is disabled until at least one settlement is ticked', byText('button', 'Create sheet', dialog()).disabled);
-  await click(boxes[0]); await click(boxes[1]);
-  ok('ticking both shows the count and the combined amount', boxes.every(b => b.checked) && /2 workers · KES 6,000/.test(dialog().textContent), dialog().textContent.slice(0, 400));
+  ok('weekly run: every approved settlement is ticked by default, with the total shown', boxes.every(b => b.checked) && /2 workers · KES 6,000/.test(dialog().textContent), dialog().textContent.slice(0, 400));
+  await click(byText('button', 'Untick all', dialog()));
+  ok('Untick all clears them and Create sheet is disabled', boxes.every(b => !b.checked) && byText('button', 'Create sheet', dialog()).disabled);
+  await click(byText('button', 'Tick all', dialog()));
+  ok('Tick all brings everyone back', boxes.every(b => b.checked));
   await click(byText('button', 'Create sheet', dialog()));
   const post = calls.find(c => c.method === 'POST' && /payout-sheets$/.test(c.url));
-  ok('the request carries both settlement ids', post && post.body.settlement_ids.length === 2 && post.body.settlement_ids.includes('s1') && post.body.settlement_ids.includes('s2'), JSON.stringify(post));
+  ok('the one request carries both settlement ids (a single upload for the week)', post && post.body.settlement_ids.length === 2 && post.body.settlement_ids.includes('s1') && post.body.settlement_ids.includes('s2'), JSON.stringify(post));
+  await unmount();
+}
+
+// ── weekly sheet warns about drafts left out ──
+{
+  const ap = [approvedS({ id: 's1', settlement_num: 'TW-1', payout_sheet_id: null, employees: emp('Jane Worker') })];
+  await mount('head_of_sales', { settlements: [...ap, settlement({ id: 'sd', status: 'draft', employees: emp('Late Larry') })], sheets: [] });
+  await tab('Payout sheets'); await click(byText('button', '+ New payout sheet'));
+  ok('settlements still in draft are named in a warning and are not on the sheet', /not approved yet \(Late Larry\)/.test(dialog().textContent) && q('input[type=checkbox]', dialog()).length === 1);
   await unmount();
 }
 
