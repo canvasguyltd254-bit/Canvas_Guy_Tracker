@@ -55,12 +55,22 @@ const USER = 'u-me', OTHER = 'u-other';
 const SETTINGS = { admin_approval_limit_kes: 10000, settlement_threshold_units: 3, rolling_window_days: 7, deduction_single_limit_kes: 1000, deduction_total_pct: 25, damage_deductions_enabled: true };
 const emp = (n) => ({ name: n, employee_num: 'EMP-1' });
 const settlement = (o) => ({ id: 's1', settlement_num: 'TW-2026-0001', engagement_id: 'e1', employee_id: 'w1', period_start: '2026-11-02', period_end: '2026-11-04', cutoff_date: '2026-11-30', units_included: 3, base_amount: 12000, overtime_amount: 0, sunday_amount: 0, gross_amount: 12000, deductions_total: 0, net_amount: 12000, kind: 'threshold', reason: null, status: 'draft', prepared_by: OTHER, prepared_at: '2026-11-05T08:00:00Z', approved_by: null, approved_at: null, approved_by_role: null, approval_override: false, override_reason: null, payout_sheet_id: null, paid_by: null, paid_at: null, received_by_full_name: null, payment_note: null, voided_by: null, voided_at: null, void_reason: null, employees: emp('Jane Worker'), temporary_worker_engagements: { engagement_num: 'TE-2026-0001' }, ...o });
+const localIso = (n = 0) => { const d = new Date(); d.setDate(d.getDate() + n); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
+const START = localIso(-10);
 let backend, calls;
-const route = (method, url) => {
+const route = (method, url, body) => {
   const u = new URL(url, 'http://x'); const p = u.pathname;
   if (p.endsWith('/temporary/settings')) return { settings: backend.settings };
   if (p.endsWith('/temporary/engagements') && method === 'GET') return { engagements: backend.engagements };
-  if (/\/engagements\/[^/]+\/assignments$/.test(p)) return { assignments: backend.assignments ?? [{ id: 'a1', status: 'Assigned', job_num: 'JOB-1', description: 'Doors', linked: false, linked_elsewhere: false }], targets: backend.targets ?? [{ job_id: 'j1', job_num: 'JOB-1', description: 'Doors', planned_quantity: 10, stages: [{ stage_id: 'st1', stage_label: 'Cutting', operations: [{ id: 'op1', name: 'Cut' }] }] }] };
+  if (/\/engagements\/[^/]+\/attendance$/.test(p)) {
+    if (method === 'POST') {
+      if (backend.refuse) return { __status: 422, error: backend.refuse };
+      backend.days = backend.days || [];
+      for (const d of body.days) { backend.days = backend.days.filter(x => x.work_date !== d.date); if (d.units > 0) backend.days.push({ id: 'd-' + d.date, engagement_id: 'e1', work_date: d.date, units: d.units }); }
+      return { data: { marked: body.days.length } };
+    }
+    return { days: backend.days ?? [] };
+  }
   if (p.endsWith('/temporary/settlements') && method === 'GET') return { settlements: backend.settlements };
   if (/\/settlements\/[^/]+$/.test(p) && method === 'GET') { const id = p.split('/').pop(); const s = backend.settlements.find(x => x.id === id); return { settlement: s, lines: [{ id: 'l1', work_date: '2026-11-02', attendance_units: 1, base_amount: 4000, overtime_amount: 0, sunday_amount: 0, line_amount: 4000, active: true }], deductions: backend.deductions[id] || [] }; }
   if (p.endsWith('/payout-sheets') && method === 'GET') return { sheets: backend.sheets };
@@ -70,7 +80,8 @@ const route = (method, url) => {
 };
 globalThis.fetch = async (url, init = {}) => {
   const method = init.method || 'GET'; calls.push({ method, url: String(url), body: init.body ? JSON.parse(init.body) : undefined });
-  const body = route(method, String(url));
+  const body = route(method, String(url), init.body ? JSON.parse(init.body) : undefined);
+  if (body && body.__status) return { ok: false, status: body.__status, text: async () => JSON.stringify({ error: body.error }) };
   return { ok: true, status: 200, text: async () => JSON.stringify(body) };
 };
 window.fetch = globalThis.fetch;
@@ -89,7 +100,7 @@ const type = async (el, value) => {
 let root;
 const mount = async (role, over = {}) => {
   document.getElementById('root').innerHTML = ''; document.querySelectorAll('[role=dialog]').forEach(d => d.remove());
-  backend = { settings: SETTINGS, engagements: [{ id: 'e1', engagement_num: 'TE-2026-0001', status: 'active', version: 1, agreed_daily_rate: 4000, start_date: '2026-11-02', expected_end_date: null, employees: emp('Jane Worker'), orders: { order_num: 'ORD-9', client: 'Acme' }, due: { eligible_units: 3, eligible_gross: 12000, due: true, close_out_due: false, threshold_units: 3 } }],
+  backend = { settings: SETTINGS, engagements: [{ id: 'e1', engagement_num: 'TE-2026-0001', status: 'active', version: 1, agreed_daily_rate: 4000, start_date: START, expected_end_date: null, employees: emp('Jane Worker'), orders: { order_num: 'ORD-9', client: 'Acme' }, due: { eligible_units: 3, eligible_gross: 12000, due: true, close_out_due: false, threshold_units: 3 } }],
     settlements: [settlement({})], deductions: {}, sheets: [], sheetSettlements: [], ...over };
   calls = []; window.__auth = { user: { id: USER }, userRole: role, loaded: true }; window.__orders = [{ id: 'o1', order_num: 'ORD-9', client: 'Acme', status: 'In Production' }];
   root = createRoot(document.getElementById('root'));
@@ -218,7 +229,7 @@ ok('a cancelled sheet is read-only and says it is never reused', /never reused/.
   await mount('head_of_sales');
   const how = document.querySelector('details');
   ok('a "How temporary workers are paid" guide is on the page with six numbered steps', how && /6 steps/.test(how.textContent) && how.querySelectorAll('li').length === 6);
-  ok('the guide names the key rules: cash only, a different person approves, paid is final', /cash only/.test(how.textContent) && /different person approves/i.test(how.textContent) && /Paid is final/.test(how.textContent));
+  ok('the guide names the key rules: cash only, a different person approves, paid is final', /cash only/.test(how.textContent) && /other than the preparer/i.test(how.textContent) && /Paid is final/.test(how.textContent));
   ok('each tab has a one-sentence explanation (Engagements)', /An engagement is the deal with one worker on one project/.test(document.querySelector('[data-testid=tab-help]').textContent));
   await tab('Due for payment'); ok('...and it changes with the tab (Due for payment)', /ready to be paid/.test(document.querySelector('[data-testid=tab-help]').textContent));
   await tab('Settlements'); ok('...(Settlements)', /amount owed to one worker/.test(document.querySelector('[data-testid=tab-help]').textContent));
@@ -239,7 +250,7 @@ ok('a cancelled sheet is read-only and says it is never reused', /never reused/.
 
   // an active engagement with nothing linked warns that days will not count
   await mount('production_manager'); await click(byText('button', 'Open'));
-  ok('an active engagement with no linked assignment warns that Production days will not appear', /No assignment is linked yet/.test(dialog().textContent)); await unmount();
+  ok('an active engagement shows Days present (no Production assignment panel)', /Days present/.test(dialog().textContent) && !/Production assignment/.test(dialog().textContent)); await unmount();
 
   // removing a deduction: inline reason, never a browser pop-up
   const ded = { id: 'd1', settlement_id: 's1', deduction_type: 'cash_advance', amount: 500, reason: 'Advance', evidence_ref: 'ADV-1', active: true, recorded_by: OTHER, approved_by: null, approved_at: null, approved_by_role: null, worker_acknowledged_at: null, void_reason: null };
@@ -335,47 +346,61 @@ ok('a cancelled sheet is read-only and says it is never reused', /never reused/.
   await unmount();
 }
 
-// ── engagement: linking by role ──
-await mount('head_of_sales'); await click(byText('button', 'Open'));
-ok('head of sales cannot link a Production assignment (told to ask the production manager)', /Ask the production manager to link this/.test(dialog().textContent) && !byText('button', 'Link', dialog())); await unmount();
-await mount('production_manager'); await click(byText('button', 'Open'));
-ok('production manager can link an assignment', !!byText('button', 'Link', dialog())); await unmount();
-
-// ── engagement: assign a worker to a job stage without leaving the screen ──
+// ── engagement: days present ──
 {
-  await mount('production_manager'); await click(byText('button', 'Open'));
-  ok('assign form is offered (collapsed) when the worker already has an assignment', !!byText('button', 'Assign to a job stage') && !dialog().querySelector('[data-testid=assign-form]'));
-  await click(byText('button', 'Assign to a job stage'));
-  const form = () => dialog().querySelector('[data-testid=assign-form]');
-  ok('assign form opens, and the only job is preselected', !!form() && form().querySelectorAll('select')[0].value === 'j1');
-  ok('submit is disabled until a stage is chosen, and says why', exactBtn('Assign and link', form()).disabled && /Choose a stage/.test(form().textContent));
-  await pick(form().querySelectorAll('select')[1], 'st1');
-  ok('a stage with one operation preselects it and prefills quantity from the job', form().querySelectorAll('select')[2].value === 'op1' && form().querySelector('input[inputmode=numeric]').value === '10');
-  const dates = q('input[type=date]', form());
-  ok('default dates are never a Sunday', dates.length === 2 && dates.every(d => new Date(d.value + 'T00:00:00Z').getUTCDay() !== 0), dates.map(d => d.value).join(','));
-  ok('end defaults to no earlier than start', dates[1].value >= dates[0].value);
-  ok('hours per day defaults to 8', q('input', form()).some(i => i.value === '8'));
-  await click(exactBtn('Assign and link', form()));
-  const c = calls.find(x => x.method === 'PATCH' && x.body.action === 'assign_worker');
-  ok('submit sends assign_worker with job, stage, operation, quantity, dates and hours', !!c && c.body.job_id === 'j1' && c.body.stage_id === 'st1' && c.body.operation_id === 'op1' && c.body.quantity === 10 && c.body.hours_per_day === 8 && /^\d{4}-\d{2}-\d{2}$/.test(c.body.start) && /^\d{4}-\d{2}-\d{2}$/.test(c.body.end), JSON.stringify(c && c.body));
-  ok('identity is not sent from the page', !!c && !('role' in c.body) && !('actor' in c.body) && !('p_actor' in c.body));
-  ok('success message tells the user what happens next', /assigned and linked/i.test(dialog().textContent));
+  const dp = () => dialog().querySelector('[data-testid=days-present]');
+  const row = (date) => dp().querySelector(`[data-day="${date}"]`);
+  const pressed = (date) => q('button[aria-pressed="true"]', row(date)).map(b => b.textContent);
+  const markCalls = () => calls.filter(c => c.method === 'POST' && /\/attendance$/.test(c.url));
+  const today = localIso(0);
+
+  await mount('production_manager', { days: [] }); await click(byText('button', 'Open'));
+  ok('an active engagement shows a Days present section with a row for every day since the start', !!dp() && dp().querySelectorAll('[data-day]').length === 11, String(dp()?.querySelectorAll('[data-day]').length));
+  const dates = q('[data-day]', dp()).map(r => r.getAttribute('data-day'));
+  ok('rows are newest first, starting today, never in the future', dates[0] === today && dates[dates.length - 1] === START && dates.every(d => d <= today), dates.slice(0, 2).join(','));
+  ok('the paying side shows no job, stage, task or assignment wording', !/\bjob\b|\bstage\b|operation|assignment/i.test(dialog().textContent), dialog().textContent.slice(0, 300));
+  ok('every day starts as Absent', pressed(today).join() === 'Absent');
+  ok('the total starts at 0 marked', /0 marked/.test(dp().textContent));
+
+  await click(q('button', row(today)).find(b => b.textContent === 'Full'));
+  const c1 = markCalls().at(-1);
+  ok('tapping Full sends one day with units 1', markCalls().length === 1 && c1.body.days.length === 1 && c1.body.days[0].date === today && c1.body.days[0].units === 1, JSON.stringify(c1?.body));
+  ok('actor and role are never sent from the page', !('role' in c1.body) && !('actor' in c1.body) && !('p_actor' in c1.body));
+  ok('after saving, the day shows Full and the total is 1', pressed(today).join() === 'Full' && /1 marked/.test(dp().textContent), pressed(today).join());
+  await click(q('button', row(today)).find(b => b.textContent === 'Half'));
+  ok('tapping Half changes it to half a day (total 0.5)', markCalls().at(-1).body.days[0].units === 0.5 && pressed(today).join() === 'Half' && /0\.5 marked/.test(dp().textContent), dp().textContent.slice(0, 120));
+  const n = markCalls().length;
+  await click(q('button', row(today)).find(b => b.textContent === 'Half'));
+  ok('tapping the option that is already selected sends nothing', markCalls().length === n);
+  await click(q('button', row(today)).find(b => b.textContent === 'Absent'));
+  ok('tapping Absent clears the day (units 0, total back to 0)', markCalls().at(-1).body.days[0].units === 0 && pressed(today).join() === 'Absent' && /0 marked/.test(dp().textContent));
+  const fullOn = (d) => q('button', row(d)).find(b => b.textContent === 'Full').getAttribute('aria-pressed');
+  ok('each option is a real button with aria-pressed (screen readers hear which is selected)', fullOn(today) === 'false' && q('[role=group]', row(today)).length === 1 && !!row(today).querySelector('[role=group][aria-label^="Attendance for"]'));
   await unmount();
 
-  await mount('head_of_sales'); await click(byText('button', 'Open'));
-  ok('head of sales does not get the assign form (production manager / admin only, like linking)', !byText('button', 'Assign to a job stage') && !dialog().querySelector('[data-testid=assign-form]')); await unmount();
+  await mount('head_of_sales', { days: [] }); await click(byText('button', 'Open'));
+  ok('head of sales can mark days too', !!q('button', row(today)).find(b => b.textContent === 'Full')); await unmount();
 
-  await mount('production_manager', { assignments: [] }); await click(byText('button', 'Open'));
-  ok('with no assignment yet the form is open by default and the empty text points to it', !!dialog().querySelector('[data-testid=assign-form]') && /not assigned to any job on this project yet.*Assign them below/.test(dialog().textContent)); await unmount();
+  await mount('production_manager', { days: [], refuse: 'This day is in temporary-worker settlement TW-2026-0001 — void that settlement first' }); await click(byText('button', 'Open'));
+  await click(q('button', row(today)).find(b => b.textContent === 'Full'));
+  ok('a refusal from the server is shown in the dialog and the day is unchanged', /void that settlement first/.test(dialog().textContent) && pressed(today).join() === 'Absent'); await unmount();
 
-  await mount('production_manager', { assignments: [], targets: [] }); await click(byText('button', 'Open'));
-  ok('a project with no production jobs explains what to do instead of showing an empty form', /no production jobs yet/i.test(dialog().textContent) && !dialog().querySelector('[data-testid=assign-form]')); await unmount();
+  const closed = { id: 'e1', engagement_num: 'TE-2026-0001', status: 'completed', version: 1, agreed_daily_rate: 4000, start_date: START, expected_end_date: null, employees: emp('Jane Worker'), orders: { order_num: 'ORD-9', client: 'Acme' },
+    close_reason: 'Done', closed_at: '2026-11-10T00:00:00Z', due: { eligible_units: 0, eligible_gross: 0, threshold_units: 3, due: false, close_out_due: false, total_units: 1.5, max_days: null, max_days_reached: false } };
+  await mount('production_manager', { engagements: [closed], days: [{ id: 'x1', work_date: START, units: 1 }, { id: 'x2', work_date: localIso(-9), units: 0.5 }] }); await click(byText('button', 'Open'));
+  ok('a completed engagement lists its marked days read-only (no Full / Half / Absent buttons)', q('[data-day]', dp()).length === 2 && !q('button', dp()).some(b => ['Full', 'Half', 'Absent'].includes(b.textContent)) && /full day/.test(dp().textContent) && /half day/.test(dp().textContent)); await unmount();
 
-  await mount('admin', { assignments: [], targets: [{ job_id: 'j1', job_num: 'JOB-1', description: 'Doors', planned_quantity: 10, stages: [{ stage_id: 'st1', stage_label: 'Cutting', operations: [{ id: 'op1', name: 'Cut' }, { id: 'op2', name: 'Trim' }] }] }] }); await click(byText('button', 'Open'));
-  { const f = dialog().querySelector('[data-testid=assign-form]'); await pick(f.querySelectorAll('select')[1], 'st1');
-    ok('a stage with several operations makes the user choose (no silent default)', f.querySelectorAll('select')[2].value === '' && /Choose an operation/.test(f.textContent)); }
-  await unmount();
+  await mount('production_manager', { engagements: [{ ...closed, status: 'planned', close_reason: null, closed_at: null }], days: [] }); await click(byText('button', 'Open'));
+  ok('a planned engagement says to activate it first and offers no marking', /Activate the engagement to start marking days/.test(dialog().textContent) && !dp()); await unmount();
+
+  await mount('production_manager', { engagements: [{ ...closed, status: 'active', start_date: localIso(3), close_reason: null, closed_at: null }], days: [] }); await click(byText('button', 'Open'));
+  ok('an engagement that starts in the future says when the first day can be marked', new RegExp('first day can be marked on').test(dp().textContent)); await unmount();
 }
+
+// ── settlement lines: the paying side sees the day and the amount only ──
+await mount('head_of_sales'); await tab('Settlements'); await click(byText('button', 'Open'));
+ok('the settlement shows Date, Days and Amount per day, with no Base / Overtime / Sunday columns', /Days included/.test(dialog().textContent) && !/Overtime|Sunday/.test(dialog().textContent.replace(/Sunday work/g, '')) && /Amount/.test(dialog().textContent));
+await unmount();
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -45,7 +45,7 @@ export function SettlementsPanel({ role, userId, settings, refreshKey, onChanged
           <option value="">All statuses</option>
           {['draft', 'approved', 'paid', 'voided'].map(s => <option key={s} value={s}>{s}</option>)}
         </select>
-        <span style={{ fontSize: 12, color: C.muted }}>A settlement pays every approved, unsettled day up to its cutoff. Paid settlements are final.</span>
+        <span style={{ fontSize: 12, color: C.muted }}>A settlement pays every marked, unsettled day up to its cutoff. Paid settlements are final.</span>
       </div>
       {loading ? <Spinner /> : rows.length === 0 ? <Empty>No settlements yet. When a worker is due, open “Due for payment” and choose “Prepare settlement”.</Empty> : (
         <Table>
@@ -149,11 +149,10 @@ function SettlementModal({ id, role, userId, settings, onClose, onChanged, onOpe
 
       <h4 style={{ margin: '4px 0 6px', fontSize: 13 }}>Days included ({d.lines.filter(l => l.active).length})</h4>
       <Table>
-        <thead><tr><th style={th}>Date</th><th style={{ ...th, ...num }}>Days</th><th style={{ ...th, ...num }}>Base</th><th style={{ ...th, ...num }}>Overtime</th><th style={{ ...th, ...num }}>Sunday</th><th style={{ ...th, ...num }}>Amount</th></tr></thead>
+        <thead><tr><th style={th}>Date</th><th style={{ ...th, ...num }}>Days</th><th style={{ ...th, ...num }}>Amount</th></tr></thead>
         <tbody>{d.lines.map(l => (
           <tr key={l.id} style={{ opacity: l.active ? 1 : 0.45 }}>
-            <td style={td}>{fmtD(l.work_date)}</td><td style={{ ...td, ...num }}>{fmt(l.attendance_units)}</td><td style={{ ...td, ...num }}>{fmt(l.base_amount)}</td>
-            <td style={{ ...td, ...num }}>{Number(l.overtime_amount) ? fmt(l.overtime_amount) : '—'}</td><td style={{ ...td, ...num }}>{Number(l.sunday_amount) ? fmt(l.sunday_amount) : '—'}</td><td style={{ ...td, ...num }}>{fmt(l.line_amount)}</td>
+            <td style={td}>{fmtD(l.work_date)}</td><td style={{ ...td, ...num }}>{fmt(l.attendance_units)}</td><td style={{ ...td, ...num }}>{fmt(l.line_amount)}</td>
           </tr>))}</tbody>
       </Table>
 
@@ -199,7 +198,7 @@ function SettlementModal({ id, role, userId, settings, onClose, onChanged, onOpe
           {unapproved > 0 && <Banner tone="warn" message={`${unapproved} deduction${unapproved > 1 ? 's' : ''} still need approval before the settlement can be approved.`} />}
           {approveBlock && <Banner tone="warn" message={approveBlock} />}
           {isAdmin && (
-            <Field label="Admin override reason" hint="Only needed if you prepared this settlement or recorded any of its attendance. It is stored and logged.">
+            <Field label="Admin override reason" hint="Only needed if you prepared this settlement or marked any of its days. It is stored and logged.">
               <input style={inputStyle} value={override} onChange={(e) => setOverride(e.target.value)} placeholder="Why are you approving your own work?" />
             </Field>)}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

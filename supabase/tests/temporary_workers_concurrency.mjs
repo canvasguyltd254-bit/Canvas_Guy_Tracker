@@ -1,4 +1,4 @@
-// Two-connection concurrency tests for the temporary-workers Stage 1 migration, on REAL Postgres.
+// Two-connection concurrency tests for the temporary-workers migrations (stage 1, 1b, 1c, 2), on REAL Postgres.
 // pglite is single-connection and cannot prove any of this.
 //
 // Technique: connection A opens a transaction and calls a function WITHOUT committing, so it holds its
@@ -6,7 +6,7 @@
 // = 'Lock' in pg_stat_activity), then A commits and we assert B's outcome and the final database state.
 //
 // Run it against an EMPTY SCRATCH database (a local Postgres, or a throwaway Supabase branch). It builds its own
-// schema (payroll_module.sql, production v3a/v3b, the Stage 1 migration, and minimal Production parent-table stubs)
+// schema (payroll_module.sql, production v3a/v3b, the stage 1-2 migrations, and minimal Production parent-table stubs)
 // and REFUSES to run if an `employees` table already exists, so it can never touch real data.
 //
 //   mkdir -p /tmp/pgc && cd /tmp/pgc && npm init -y && npm i pg
@@ -58,7 +58,9 @@ await admin.query(`
 `);
 await admin.query(mig('payroll_module.sql'));
 await admin.query(`ALTER TABLE production_job_assignments ADD CONSTRAINT fk_emp FOREIGN KEY (employee_id) REFERENCES employees(id)`);
-for (const f of ['production_v3a_labour_costing.sql', 'production_v3b_time_entry_day_lock.sql', 'temporary_workers_stage1.sql', 'temporary_workers_stage1b.sql', 'temporary_workers_stage1c.sql']) await admin.query(mig(f));
+for (const f of ['production_v3a_labour_costing.sql', 'production_v3b_time_entry_day_lock.sql', 'temporary_workers_stage1.sql', 'temporary_workers_stage1b.sql', 'temporary_workers_stage1c.sql', 'temporary_workers_stage2.sql']) await admin.query(mig(f));
+// Fixtures use fixed November 2026 dates: pin "today" far ahead (scratch database only).
+await admin.query(`CREATE OR REPLACE FUNCTION public.tw_today() RETURNS date LANGUAGE sql STABLE AS $$ SELECT '2099-12-31'::date $$`);
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 const user = async () => (await one(admin, `INSERT INTO auth.users DEFAULT VALUES RETURNING id`)).id;
@@ -70,19 +72,13 @@ const OP = (await one(admin, `INSERT INTO production_operations (stage_key) VALU
 let n = 0;
 const DATES = ['2026-11-02', '2026-11-03', '2026-11-04'];
 
-// A worker with 3 approved days and a draft settlement (status per `upTo`).
+// A worker with 3 marked days and a draft settlement (status per `upTo`).
 async function scenario(upTo = 'draft') {
   const emp = (await one(admin, `INSERT INTO employees (employee_num, name, type, day_rate) VALUES ($1,$2,'casual',1000) RETURNING id`, [`C-${++n}`, `Conc ${n}`])).id;
   const eng = await call(admin, 'create_temporary_engagement', emp, ORDER, 1000, '2026-11-02', null, null, null, true, hos1, 'head_of_sales');
-  const asg = (await one(admin, `INSERT INTO production_job_assignments (job_id, stage_id, operation_id, employee_id) VALUES ($1,$2,$3,$4) RETURNING id`, [JOB, STAGE, OP, emp])).id;
-  await call(admin, 'link_assignment_to_engagement', asg, eng, pmRec, 'production_manager');
-  const entries = [];
-  for (const d of DATES) {
-    const r = await call(admin, 'record_time_entry', asg, d, 1, false, null, null, true, pmRec, '2026-12-31');
-    await call(admin, 'transition_time_entry', r.id, 'approve', pmApp, 'production_manager', null);
-    entries.push(r.id);
-  }
-  const s = { emp, eng, asg, entries };
+  await call(admin, 'mark_temporary_attendance', eng, JSON.stringify(DATES.map(d => ({ date: d, units: 1 }))), pmRec, 'production_manager');
+  const entries = (await admin.query(`SELECT id FROM temporary_worker_attendance WHERE engagement_id=$1 ORDER BY work_date`, [eng])).rows.map(r => r.id);
+  const s = { emp, eng, entries };
   if (upTo === 'engaged') return s;
   s.p = await call(admin, 'prepare_temporary_settlement', eng, '2026-11-30', 'threshold', null, hos1, 'head_of_sales'); s.id = s.p.id;
   if (upTo === 'draft') return s;
@@ -123,7 +119,7 @@ const st = id => val(admin, `SELECT status FROM temporary_worker_settlements WHE
   const r = await race('S1 prepare vs prepare',
     c => call(c, 'prepare_temporary_settlement', s.eng, '2026-11-30', 'threshold', null, hos1, 'head_of_sales'),
     c => call(c, 'prepare_temporary_settlement', s.eng, '2026-11-30', 'threshold', null, hos2, 'head_of_sales'));
-  ok('S1: the loser is refused (nothing left to settle)', r.b && /no approved, unsettled work/.test(r.b.message), r.b?.message);
+  ok('S1: the loser is refused (nothing left to settle)', r.b && /no marked, unsettled days/.test(r.b.message), r.b?.message);
   ok('S1: exactly one settlement and one active line per entry', Number(await val(admin, `SELECT count(*) FROM temporary_worker_settlements WHERE engagement_id=$1`, [s.eng])) === 1
     && Number(await val(admin, `SELECT count(*) FROM temporary_worker_settlement_lines l JOIN temporary_worker_settlements x ON x.id=l.settlement_id WHERE x.engagement_id=$1 AND l.active`, [s.eng])) === 3);
 }
@@ -159,23 +155,23 @@ const st = id => val(admin, `SELECT status FROM temporary_worker_settlements WHE
   ok('S4: paid exactly once, by the first payer', (await st(s.id)) === 'paid' && (await val(admin, `SELECT paid_by FROM temporary_worker_settlements WHERE id=$1`, [s.id])) === pmPay);
 }
 
-// ── S5: voiding a time entry while a settlement is being prepared ───────────
+// ── S5: clearing a day while a settlement is being prepared ─────────────────
 {
   const s = await scenario('engaged');
   const r = await race('S5 prepare first, entry void second',
     c => call(c, 'prepare_temporary_settlement', s.eng, '2026-11-30', 'threshold', null, hos1, 'head_of_sales'),
-    c => call(c, 'transition_time_entry', s.entries[0], 'void', adm, 'admin', 'wrong day'));
-  ok('S5: the entry void is refused once the line exists', r.b && /void that settlement first/.test(r.b.message), r.b?.message);
-  ok('S5: entry still approved and still in an active line', (await val(admin, `SELECT status FROM production_time_entries WHERE id=$1`, [s.entries[0]])) === 'approved'
-    && Number(await val(admin, `SELECT count(*) FROM temporary_worker_settlement_lines WHERE time_entry_id=$1 AND active`, [s.entries[0]])) === 1);
+    c => call(c, 'mark_temporary_attendance', s.eng, JSON.stringify([{ date: DATES[0], units: 0 }]), adm, 'admin'));
+  ok('S5: clearing the day is refused once the line exists', r.b && /void that settlement first/.test(r.b.message), r.b?.message);
+  ok('S5: the day is still active and still in an active line', (await val(admin, `SELECT active FROM temporary_worker_attendance WHERE id=$1`, [s.entries[0]])) === true
+    && Number(await val(admin, `SELECT count(*) FROM temporary_worker_settlement_lines WHERE attendance_id=$1 AND active`, [s.entries[0]])) === 1);
 }
 {
   const s = await scenario('engaged');
   const r = await race('S5b entry void first, prepare second',
-    c => call(c, 'transition_time_entry', s.entries[0], 'void', adm, 'admin', 'wrong day'),
+    c => call(c, 'mark_temporary_attendance', s.eng, JSON.stringify([{ date: DATES[0], units: 0 }]), adm, 'admin'),
     c => call(c, 'prepare_temporary_settlement', s.eng, '2026-11-30', 'early', 'two days left', hos1, 'head_of_sales'));
-  ok('S5b: prepare succeeds without the voided entry', !r.b && r.bRes && Number(r.bRes.units) === 2, r.b?.message);
-  ok('S5b: no active line references a voided entry', Number(await val(admin, `SELECT count(*) FROM temporary_worker_settlement_lines l JOIN production_time_entries e ON e.id=l.time_entry_id WHERE l.active AND e.status <> 'approved'`)) === 0);
+  ok('S5b: prepare succeeds without the cleared day', !r.b && r.bRes && Number(r.bRes.units) === 2, r.b?.message);
+  ok('S5b: no active line references a voided day', Number(await val(admin, `SELECT count(*) FROM temporary_worker_settlement_lines l JOIN temporary_worker_attendance a ON a.id=l.attendance_id WHERE l.active AND NOT a.active`)) === 0);
 }
 
 // ── S6: paying vs cancelling the sheet ──────────────────────────────────────
@@ -296,37 +292,43 @@ const overlapCount = emp => val(admin, `SELECT count(*) FROM payroll_entries pe 
     c => c.query(`UPDATE payroll_runs SET status='approved' WHERE id=$1`, [run]), c => mkEng(c, emp, '2026-11-02', '2026-11-30'));
   ok('R6: the engagement is refused after the run is approved', r.b && /TEMP_ENGAGEMENT_OVERLAP/.test(r.b.message), r.b?.message);
 }
-// R7: attendance vs payroll insertion (completed engagement: protected days are the days worked)
+// R7: marking a day (first) vs payroll insertion (second): a day after the expected end is still protected once marked
 {
-  const emp = await mkWorker(); const eng = await mkEng(admin, emp, '2026-11-02', null);
-  const asg = (await one(admin, `INSERT INTO production_job_assignments (job_id, stage_id, operation_id, employee_id) VALUES ($1,$2,$3,$4) RETURNING id`, [JOB, STAGE, OP, emp])).id;
-  await call(admin, 'link_assignment_to_engagement', asg, eng, pmRec, 'production_manager');
-  await call(admin, 'set_engagement_status', eng, 'completed', 'Done', hos1, 'head_of_sales');
-  const eng2 = await mkEng(admin, emp, '2026-11-02', null);                 // second engagement for the same worker
-  const asg2 = (await one(admin, `INSERT INTO production_job_assignments (job_id, stage_id, operation_id, employee_id) VALUES ($1,$2,$3,$4) RETURNING id`, [JOB, STAGE, OP, emp])).id;
-  await call(admin, 'link_assignment_to_engagement', asg2, eng2, pmRec, 'production_manager');
-  await call(admin, 'set_engagement_status', eng2, 'completed', 'Done', hos1, 'head_of_sales');
-  const run = await mkRun('2026-11-09', '2026-11-15');
-  // The worker has no attendance and no open engagement: a payroll entry is allowed, so test the race with ATTENDANCE on a live engagement instead.
   const emp3 = await mkWorker(); const eng3 = await mkEng(admin, emp3, '2026-11-02', '2026-11-06');
-  const asg3 = (await one(admin, `INSERT INTO production_job_assignments (job_id, stage_id, operation_id, employee_id) VALUES ($1,$2,$3,$4) RETURNING id`, [JOB, STAGE, OP, emp3])).id;
-  await call(admin, 'link_assignment_to_engagement', asg3, eng3, pmRec, 'production_manager');
-  const runLate = await mkRun('2026-11-09', '2026-11-15');                   // after the expected end: payroll insert would be allowed
-  const r = await race('R7 attendance (after expected end) first, payroll entry second',
-    c => call(c, 'record_time_entry', asg3, '2026-11-10', 1, false, null, null, true, pmRec, '2026-12-31'), c => addEntry(c, runLate, emp3));
+  const runLate = await mkRun('2026-11-09', '2026-11-15');                   // after the expected end: payroll insert would otherwise be allowed
+  const r = await race('R7 mark a day first, payroll entry second',
+    c => call(c, 'mark_temporary_attendance', eng3, JSON.stringify([{ date: '2026-11-10', units: 1 }]), pmRec, 'production_manager'), c => addEntry(c, runLate, emp3));
   ok('R7: payroll insert refused: that day now has temporary attendance', r.b && /TEMP_ENGAGEMENT_OVERLAP/.test(r.b.message), r.b?.message);
-  void run;
 }
-// R8: attendance vs engagement completion
+// R8: marking vs engagement completion
 {
   const emp = await mkWorker(); const eng = await mkEng(admin, emp, '2026-11-02', null);
-  const asg = (await one(admin, `INSERT INTO production_job_assignments (job_id, stage_id, operation_id, employee_id) VALUES ($1,$2,$3,$4) RETURNING id`, [JOB, STAGE, OP, emp])).id;
-  await call(admin, 'link_assignment_to_engagement', asg, eng, pmRec, 'production_manager');
-  const r = await race('R8 complete engagement first, attendance second',
+  const r = await race('R8 complete engagement first, marking second',
     c => call(c, 'set_engagement_status', eng, 'completed', 'Done', hos1, 'head_of_sales'),
-    c => call(c, 'record_time_entry', asg, '2026-11-03', 1, false, null, null, true, pmRec, '2026-12-31'));
-  ok('R8: attendance refused once the engagement is completed', r.b && /is completed, so no new attendance/.test(r.b.message), r.b?.message);
-  ok('R8: no entry was created', Number(await val(admin, `SELECT count(*) FROM production_time_entries WHERE assignment_id=$1`, [asg])) === 0);
+    c => call(c, 'mark_temporary_attendance', eng, JSON.stringify([{ date: '2026-11-03', units: 1 }]), pmRec, 'production_manager'));
+  ok('R8: marking refused once the engagement is completed', r.b && /is completed, so days can no longer be marked/.test(r.b.message), r.b?.message);
+  ok('R8: no day was created', Number(await val(admin, `SELECT count(*) FROM temporary_worker_attendance WHERE engagement_id=$1`, [eng])) === 0);
+}
+// R10: two people mark the same day at once (Full vs Half): the second sees the first and replaces it; exactly one active row remains
+{
+  const emp = await mkWorker(); const eng = await mkEng(admin, emp, '2026-11-02', null);
+  const r = await race('R10 mark Full first, mark Half second (same day)',
+    c => call(c, 'mark_temporary_attendance', eng, JSON.stringify([{ date: '2026-11-03', units: 1 }]), pmRec, 'production_manager'),
+    c => call(c, 'mark_temporary_attendance', eng, JSON.stringify([{ date: '2026-11-03', units: 0.5 }]), hos1, 'head_of_sales'));
+  ok('R10: the second marker replaces the first (changed = 1), no error', !r.b && r.bRes && r.bRes.changed === 1, r.b?.message);
+  ok('R10: exactly one ACTIVE row for the day, the Half; the Full is kept as voided history', Number(await val(admin, `SELECT count(*) FROM temporary_worker_attendance WHERE engagement_id=$1 AND work_date='2026-11-03' AND active`, [eng])) === 1
+    && Number(await val(admin, `SELECT units FROM temporary_worker_attendance WHERE engagement_id=$1 AND work_date='2026-11-03' AND active`, [eng])) === 0.5
+    && Number(await val(admin, `SELECT count(*) FROM temporary_worker_attendance WHERE engagement_id=$1 AND work_date='2026-11-03' AND NOT active`, [eng])) === 1);
+}
+// R11: preparing a settlement (first) vs marking a NEW day (second): the new day is not in the settlement and stays unsettled
+{
+  const s = await scenario('engaged');
+  const r = await race('R11 prepare first, mark a new day second',
+    c => call(c, 'prepare_temporary_settlement', s.eng, '2026-11-30', 'threshold', null, hos1, 'head_of_sales'),
+    c => call(c, 'mark_temporary_attendance', s.eng, JSON.stringify([{ date: '2026-11-05', units: 1 }]), pmRec, 'production_manager'));
+  ok('R11: marking waits for the settlement preparation, then succeeds', !r.b && r.bRes && r.bRes.marked === 1, r.b?.message);
+  ok('R11: the settlement has exactly the 3 earlier days; the new day is unsettled', Number(await val(admin, `SELECT count(*) FROM temporary_worker_settlement_lines l JOIN temporary_worker_settlements x ON x.id=l.settlement_id WHERE x.engagement_id=$1 AND l.active`, [s.eng])) === 3
+    && Number((await call(admin, 'temporary_engagement_due', s.eng)).eligible_units) === 1);
 }
 // R9a: DETERMINISTIC proof of sorted lock order. A holds the advisory lock of the HIGHER employee id. B edits a run that
 // contains both employees; B must already hold the lower id's lock (granted) while it waits for the higher one.
@@ -362,7 +364,7 @@ const overlapCount = emp => val(admin, `SELECT count(*) FROM payroll_entries pe 
 }
 
 // ── S9: nothing ever double-paid, across the whole run ──────────────────────
-ok('S9: no time entry is in more than one active line', Number(await val(admin, `SELECT count(*) FROM (SELECT time_entry_id FROM temporary_worker_settlement_lines WHERE active GROUP BY 1 HAVING count(*) > 1) x`)) === 0);
+ok('S9: no attendance day is in more than one active line', Number(await val(admin, `SELECT count(*) FROM (SELECT attendance_id FROM temporary_worker_settlement_lines WHERE active GROUP BY 1 HAVING count(*) > 1) x`)) === 0);
 ok('S9: no paid settlement has an inactive line', Number(await val(admin, `SELECT count(*) FROM temporary_worker_settlement_lines l JOIN temporary_worker_settlements s ON s.id=l.settlement_id WHERE s.status='paid' AND NOT l.active`)) === 0);
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -10,12 +10,11 @@
 --       EMP-TST-003  planned  KES 1,800/day, starts in 3 days
 --     EMP-TST-004 and EMP-TST-005 have NO engagement — use them to try "New engagement" in the UI.
 --
--- It does NOT create attendance, settlements or payout sheets. Those must go through the real screens
--- (Production → plan/job/assignment/attendance, then Payroll → Temporary workers) so the real rules,
--- rate snapshots and approvals are exercised. See the walkthrough at the bottom.
+-- It does NOT create days present, settlements or payout sheets. Do those through the real screens
+-- (Payroll → Temporary workers) so the real rules and approvals are exercised. See the walkthrough at the bottom.
 --
 -- Safe to re-run: existing dummy rows are reused, not duplicated.
--- Requires: stage1, stage1b, stage1c applied, and at least one row in auth.users.
+-- Requires: stage1, stage1b, stage1c and stage2 applied, and at least one row in auth.users.
 -- ════════════════════════════════════════════════════════════════════════════
 begin;
 
@@ -71,11 +70,12 @@ select e.engagement_num, emp.employee_num, emp.name, e.status, e.agreed_daily_ra
 commit;
 
 -- ── Walkthrough to stage the rest through the real screens ──────────────────
--- 1. Production → create a plan for order TST-TW-001 (add an item to the order first if the plan imports none).
--- 2. Payroll → Temporary workers → open the engagement → "Assign and link" (needs stage1d). This puts the worker on a job
---    stage and links it in one step; no trip back to Production. (Requires the job to exist, i.e. step 1.)
--- 4. Record attendance for 3+ days in the past (as one user), approve it as a different user.
--- 5. Payroll → Temporary workers → Settle → approve (different user) → payout sheet → pay (different user from preparer).
--- 6. Try the edge cases: add a deduction (damage is OFF by default), a settlement over KES 10,000 (needs admin),
---    attendance before the start date or on a planned engagement (must be refused), the max-days warning on EMP-TST-001.
+-- 1. Payroll → Temporary workers → Engagements → open DUMMY Mwangi (active) → "Days present": tap Full / Half on the days
+--    he came (as one user, e.g. head of sales). Nothing here involves Production.
+-- 2. Mark 3+ days → the worker appears under "Due". Prepare the settlement (as the same user).
+-- 3. Approve it as a DIFFERENT user (not the preparer, not whoever marked the days). Above KES 10,000 an admin approves.
+-- 4. Create the payout sheet, print, attach a photo of the signed copy, then mark paid (payer is not the preparer).
+-- 5. Try the edge cases: a deduction (damage is OFF by default), a day before the start date or in the future (refused),
+--    a day marked twice (changes it), clearing a day that is already in a settlement (refused), the max-days warning on
+--    EMP-TST-001 (20 days), marking days on the planned engagement EMP-TST-003 (refused until activated).
 -- When finished: run temporary_workers_dummy_cleanup.sql.

@@ -2,8 +2,8 @@
 -- Temporary Workers — DUMMY DATA CLEANUP  (STAGING ONLY)
 --
 -- Removes everything tied to the dummy workers (EMP-TST-%) and the dummy project (TST-TW-%), including
--- anything you created on them through the UI: attendance, assignments, settlements, deductions, payout sheets,
--- production plan/jobs/stages, and the activity-log rows.
+-- anything you created on them through the UI: days present, settlements, deductions, payout sheets, and the
+-- activity-log rows, plus any production plan/jobs/stages/assignments/time entries built on the dummy project.
 --
 -- The guard triggers deliberately block DELETE on paid/approved records, so this script switches USER triggers
 -- off for the affected tables inside ONE transaction and back on at the end. If anything fails (for example a
@@ -21,6 +21,7 @@ alter table temporary_worker_settlements          disable trigger user;
 alter table temporary_worker_settlement_lines     disable trigger user;
 alter table temporary_worker_settlement_deductions disable trigger user;
 alter table temporary_worker_payout_sheets        disable trigger user;
+alter table temporary_worker_attendance           disable trigger user;
 alter table production_time_entries               disable trigger user;
 alter table production_job_assignments            disable trigger user;
 
@@ -46,7 +47,9 @@ delete from temporary_worker_settlements           where id in (select id from _
 delete from temporary_worker_payout_sheets
  where id in (select payout_sheet_id from _tw_set where payout_sheet_id is not null);
 
--- Attendance, assignments, production chain
+-- Days present (stage 2), then anything built in Production for the dummy project
+delete from temporary_worker_attendance where engagement_id in (select id from _tw_eng) or employee_id in (select id from _tw_emp);
+
 delete from production_time_entries    where assignment_id in (select id from _tw_asg)
                                           or employee_id in (select id from _tw_emp)
                                           or job_id in (select id from _tw_job);
@@ -75,6 +78,7 @@ alter table temporary_worker_settlements          enable trigger user;
 alter table temporary_worker_settlement_lines     enable trigger user;
 alter table temporary_worker_settlement_deductions enable trigger user;
 alter table temporary_worker_payout_sheets        enable trigger user;
+alter table temporary_worker_attendance           enable trigger user;
 alter table production_time_entries               enable trigger user;
 alter table production_job_assignments            enable trigger user;
 
@@ -87,7 +91,7 @@ select
   (select count(*) from pg_trigger t join pg_class c on c.oid = t.tgrelid
      where c.relname in ('temporary_worker_engagements','temporary_worker_settlements','temporary_worker_settlement_lines',
                          'temporary_worker_settlement_deductions','temporary_worker_payout_sheets',
-                         'production_time_entries','production_job_assignments')
+                         'production_time_entries','production_job_assignments','temporary_worker_attendance')
        and not t.tgisinternal and t.tgenabled = 'D')                                             as triggers_still_disabled;
 
 commit;

@@ -30,7 +30,7 @@ writeFileSync('/tmp/rt/shaStub.js', `export const resolveShaDeduction = async ()
 
 const T = 'app/api/payroll/temporary';
 const routes = {
-  engagements: `${T}/engagements/route.js`, engagement: `${T}/engagements/[id]/route.js`, assignments: `${T}/engagements/[id]/assignments/route.js`,
+  engagements: `${T}/engagements/route.js`, engagement: `${T}/engagements/[id]/route.js`, attendance: `${T}/engagements/[id]/attendance/route.js`,
   settlements: `${T}/settlements/route.js`, settlement: `${T}/settlements/[id]/route.js`, sdeductions: `${T}/settlements/[id]/deductions/route.js`,
   deduction: `${T}/deductions/[id]/route.js`, sheets: `${T}/payout-sheets/route.js`, sheet: `${T}/payout-sheets/[id]/route.js`,
   settings: `${T}/settings/route.js`, entries: 'app/api/payroll/runs/[id]/entries/route.js',
@@ -93,7 +93,8 @@ const CALLS = {
   'POST engagements':         () => R.engagements.POST(req('POST', VALID_ENG)),
   'GET engagement':           () => R.engagement.GET(req('GET'), P()),
   'PATCH engagement':         () => R.engagement.PATCH(req('PATCH', { action: 'activate' }), P()),
-  'GET assignments':          () => R.assignments.GET(req('GET'), P()),
+  'GET attendance':           () => R.attendance.GET(req('GET'), P()),
+  'POST attendance':          () => R.attendance.POST(req('POST', { days: [{ date: '2026-11-10', units: 1 }] }), P()),
   'GET settlements':          () => R.settlements.GET(req('GET', undefined, 'http://x/api?status=draft')),
   'POST settlements':         () => R.settlements.POST(req('POST', { engagement_id: ID, cutoff_date: '2026-11-30', kind: 'threshold' })),
   'GET settlement':           () => R.settlement.GET(req('GET'), P()),
@@ -151,7 +152,15 @@ await invalid('engagement list with unknown status', () => R.engagements.GET(req
 await invalid('engagement unknown action', () => R.engagement.PATCH(req('PATCH', { action: 'delete' }), P()), /action/);
 await invalid('engagement bad id', () => R.engagement.PATCH(req('PATCH', { action: 'activate' }), P('not-a-uuid')), /id/);
 await invalid('revise rate needs a positive rate', () => R.engagement.PATCH(req('PATCH', { action: 'revise_rate', new_rate: -5, reason: 'x' }), P()), /rate/);
-await invalid('link needs an assignment', () => R.engagement.PATCH(req('PATCH', { action: 'link_assignment' }), P()), /assignment/);
+await invalid('the Production link action no longer exists', () => R.engagement.PATCH(req('PATCH', { action: 'link_assignment', assignment_id: ID2 }), P()), /action/);
+await invalid('the assign-worker action no longer exists', () => R.engagement.PATCH(req('PATCH', { action: 'assign_worker', job_id: ID2 }), P()), /action/);
+for (const [label, days, re] of [
+  ['no days', [], /at least one day/], ['not a list', 'x', /at least one day/], ['a bad date', [{ date: '10/11/2026', units: 1 }], /valid date/],
+  ['Feb 30', [{ date: '2026-02-30', units: 1 }], /valid date/], ['units 0.75', [{ date: '2026-11-10', units: 0.75 }], /Full, Half or cleared/],
+  ['units as text', [{ date: '2026-11-10', units: '1' }], /Full, Half or cleared/], ['a repeated day', [{ date: '2026-11-10', units: 1 }, { date: '2026-11-10', units: 0.5 }], /listed twice/],
+  ['63 days', Array.from({ length: 63 }, () => ({ date: '2026-11-10', units: 1 })), /at most 62/]])
+  await invalid(`attendance: ${label}`, () => R.attendance.POST(req('POST', { days }), P()), re);
+await invalid('attendance: bad engagement id', () => R.attendance.POST(req('POST', { days: [{ date: '2026-11-10', units: 1 }] }), P('nope')), /id/);
 await invalid('settlement kind', () => R.settlements.POST(req('POST', { engagement_id: ID, cutoff_date: '2026-11-30', kind: 'whenever' })), /kind/);
 await invalid('settlement cutoff', () => R.settlements.POST(req('POST', { engagement_id: ID, cutoff_date: 'soon', kind: 'threshold' })), /cutoff/);
 await invalid('pay with a one-word receiver', () => R.settlement.PATCH(req('PATCH', { action: 'pay', received_by_full_name: 'Jane' }), P()), /full name/);
@@ -178,22 +187,21 @@ await invalid('malformed JSON body is treated as empty', () => R.settlement.PATC
   reset(); await run(() => R.engagements.POST(req('POST', { ...VALID_ENG, activate: false }))); ok('create engagement can be planned', calls.rpc[0].args.p_activate === false);
   reset(); await run(() => R.engagement.PATCH(req('PATCH', { action: 'complete', reason: 'Job finished' }), P()));
   ok('complete -> set_engagement_status completed with reason', calls.rpc[0].name === 'set_engagement_status' && calls.rpc[0].args.p_status === 'completed' && calls.rpc[0].args.p_reason === 'Job finished');
-  reset(); await run(() => R.engagement.PATCH(req('PATCH', { action: 'link_assignment', assignment_id: ID2 }), P()));
-  ok('link -> link_assignment_to_engagement', calls.rpc[0].name === 'link_assignment_to_engagement' && calls.rpc[0].args.p_assignment === ID2 && calls.rpc[0].args.p_engagement === ID);
-  { const body = { action: 'assign_worker', job_id: ID2, stage_id: ID, operation_id: ID2, quantity: 6, start: '2026-11-09', end: '2026-11-13', hours_per_day: 8 };
-    reset('production_manager'); await run(() => R.engagement.PATCH(req('PATCH', { ...body, p_actor: 'evil', p_role: 'admin', role: 'admin' }), P()));
+  { reset('production_manager'); await run(() => R.attendance.POST(req('POST', { days: [{ date: '2026-11-10', units: 1, marked_by: 'evil' }, { date: '2026-11-11', units: 0.5 }], p_actor: 'evil', p_role: 'admin', role: 'admin' }), P()));
     const c = calls.rpc[0];
-    ok('assign_worker -> assign_engagement_worker with the typed arguments', c && c.name === 'assign_engagement_worker' && c.args.p_engagement === ID && c.args.p_job === ID2 && c.args.p_stage === ID && c.args.p_operation === ID2 && c.args.p_quantity === 6 && c.args.p_start === '2026-11-09' && c.args.p_end === '2026-11-13' && c.args.p_hours === 8, JSON.stringify(c));
-    ok('assign_worker: actor and role come from the session, never the body', c && c.args.p_role === 'production_manager' && c.args.p_actor !== 'evil');
-    for (const [label, patch] of [['job id', { job_id: 'x' }], ['stage id', { stage_id: null }], ['operation id', { operation_id: '' }]])
-      await invalid(`assign_worker: bad ${label}`, () => R.engagement.PATCH(req('PATCH', { ...body, ...patch }), P()), /job, a stage and an operation/);
-    for (const q of [0, -1, 1.5, 'abc', null, undefined])
-      await invalid(`assign_worker: quantity ${JSON.stringify(q)} rejected`, () => R.engagement.PATCH(req('PATCH', { ...body, quantity: q }), P()), /whole-number quantity/);
-    await invalid('assign_worker: impossible date (Feb 30) rejected', () => R.engagement.PATCH(req('PATCH', { ...body, start: '2026-02-30' }), P()), /valid start and end dates/);
-    await invalid('assign_worker: missing end date rejected', () => R.engagement.PATCH(req('PATCH', { ...body, end: undefined }), P()), /valid start and end dates/);
-    await invalid('assign_worker: zero hours rejected', () => R.engagement.PATCH(req('PATCH', { ...body, hours_per_day: 0 }), P()), /hours per day/);
-    reset('production_staff'); const r2 = await run(() => R.engagement.PATCH(req('PATCH', body), P()));
-    ok('assign_worker: production_staff gets 403 and nothing is called', r2.status === 403 && calls.rpc.length === 0);
+    ok('mark attendance -> mark_temporary_attendance with exactly date and units per day', c && c.name === 'mark_temporary_attendance' && c.args.p_engagement === ID
+      && JSON.stringify(c.args.p_days) === JSON.stringify([{ date: '2026-11-10', units: 1 }, { date: '2026-11-11', units: 0.5 }]), JSON.stringify(c));
+    ok('mark attendance: actor and role come from the session, never the body', c && c.args.p_role === 'production_manager' && c.args.p_actor !== 'evil');
+    reset('production_staff'); const r2 = await run(() => R.attendance.POST(req('POST', { days: [{ date: '2026-11-10', units: 1 }] }), P()));
+    ok('mark attendance: production_staff gets 403 and nothing is called', r2.status === 403 && calls.rpc.length === 0);
+    reset('head_of_sales'); const r3 = await run(() => R.attendance.POST(req('POST', { days: [{ date: '2026-11-10', units: 0 }] }), P()));
+    ok('head of sales can mark and clear days (units 0 is allowed)', r3.status === 200 && calls.rpc[0].args.p_days[0].units === 0);
+    reset('admin'); rpcResult = { data: null, error: { code: 'P0001', message: 'Engagement TE-2026-0001 is completed, so days can no longer be marked' } };
+    const r4 = await run(() => R.attendance.POST(req('POST', { days: [{ date: '2026-11-10', units: 1 }] }), P()));
+    ok('a database rule refusal is shown as 422 with its readable message', r4.status === 422 && /completed, so days can no longer be marked/.test(r4.body.error), JSON.stringify(r4));
+    reset('admin'); rpcResult = { data: null, error: { code: 'P0001', message: 'TEMP_ENGAGEMENT_OVERLAP: 2026-11-03 falls inside payroll run PR-1 for this worker — the same day cannot be paid twice' } };
+    const r5 = await run(() => R.attendance.POST(req('POST', { days: [{ date: '2026-11-10', units: 1 }] }), P()));
+    ok('the payroll-overlap refusal keeps its code and a clean message', r5.status === 422 && r5.body.code === 'TEMP_ENGAGEMENT_OVERLAP' && !/^TEMP_ENGAGEMENT_OVERLAP/.test(r5.body.error), JSON.stringify(r5));
   }
   reset(); await run(() => R.settlements.POST(req('POST', { engagement_id: ID, cutoff_date: '2026-11-30', kind: 'early', reason: 'client asked' })));
   ok('prepare -> prepare_temporary_settlement (no entry list accepted: the database takes every eligible entry)', calls.rpc[0].name === 'prepare_temporary_settlement' && !Object.keys(calls.rpc[0].args).some(k => /entr/.test(k)));
@@ -246,7 +254,7 @@ await invalid('malformed JSON body is treated as empty', () => R.settlement.PATC
     ['engagement', 'temporary_worker_engagements', () => R.engagement.GET(req('GET'), P())],
     ['settlement', 'temporary_worker_settlements', () => R.settlement.GET(req('GET'), P())],
     ['sheet',      'temporary_worker_payout_sheets', () => R.sheet.GET(req('GET'), P())],
-    ['assignments (engagement lookup)', 'temporary_worker_engagements', () => R.assignments.GET(req('GET'), P())],
+    ['attendance (engagement lookup)', 'temporary_worker_engagements', () => R.attendance.GET(req('GET'), P())],
   ];
   for (const [label, table, fn] of detail) {
     reset('admin'); tableResult = { [`${table}:one`]: { data: null, error: { code: 'XX000', message: 'connection terminated' } } };
@@ -292,7 +300,7 @@ await invalid('malformed JSON body is treated as empty', () => R.settlement.PATC
     'temporary_worker_settlements:one': { data: { id: ID, status: 'draft' }, error: null },
     'temporary_worker_payout_sheets:one': { data: { id: ID, status: 'printed', signed_receipt_path: null }, error: null },
     'production_jobs': { data: [{ id: ID, job_num: 'JOB-1' }], error: null } };
-  for (const fn of [CALLS['GET engagements'], CALLS['GET engagement'], CALLS['GET assignments'], CALLS['GET settlements'], CALLS['GET settlement'], CALLS['GET sheets'], CALLS['GET sheet'], CALLS['GET settings']]) await run(fn);
+  for (const fn of [CALLS['GET engagements'], CALLS['GET engagement'], CALLS['GET attendance'], CALLS['GET settlements'], CALLS['GET settlement'], CALLS['GET sheets'], CALLS['GET sheet'], CALLS['GET settings']]) await run(fn);
   const bad = calls.selects.filter(s => /\*/.test(s.cols) || BANNED.some(b => s.cols.includes(b)));
   ok(`every select() is an explicit allow-list with no private or storage columns (${calls.selects.length} selects checked)`, calls.selects.length >= 8 && bad.length === 0, JSON.stringify(bad));
   ok('no route wrote to a table directly (all writes go through database functions)', calls.mutations === 0);

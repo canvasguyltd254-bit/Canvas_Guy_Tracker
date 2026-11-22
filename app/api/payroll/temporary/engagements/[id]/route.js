@@ -1,10 +1,10 @@
 /**
  * GET   /api/payroll/temporary/engagements/:id   engagement + unsettled summary
- * PATCH /api/payroll/temporary/engagements/:id   { action: activate | complete | cancel | revise_rate | link_assignment, ... }
+ * PATCH /api/payroll/temporary/engagements/:id   { action: activate | complete | cancel | revise_rate, ... }
  */
 import { NextResponse } from 'next/server';
 import { guard, rpc, bad, readJson, serviceClient, dbError } from '@/shared/lib/payroll/temporaryServer';
-import { ENGAGEMENT_COLUMNS, ENGAGEMENT_JOINS, isUuid, isIsoDate, positiveNumber } from '@/shared/lib/payroll/temporaryAccess';
+import { ENGAGEMENT_COLUMNS, ENGAGEMENT_JOINS, isUuid, positiveNumber } from '@/shared/lib/payroll/temporaryAccess';
 
 export async function GET(request, props) {
   const { id } = await props.params;
@@ -32,21 +32,6 @@ export async function PATCH(request, props) {
     case 'revise_rate':
       if (!positiveNumber(b.new_rate)) return bad('Enter the new daily rate (above 0).');
       return rpc('revise_engagement_rate', { p_id: id, p_new_rate: Number(b.new_rate), p_reason: String(b.reason || ''), ...who });
-    case 'link_assignment':
-      if (!isUuid(b.assignment_id)) return bad('Choose an assignment.');
-      return rpc('link_assignment_to_engagement', { p_assignment: b.assignment_id, p_engagement: id, ...who });
-    case 'assign_worker': {
-      // Put this worker on a job stage and link it, in one transaction.
-      if (!isUuid(b.job_id) || !isUuid(b.stage_id) || !isUuid(b.operation_id)) return bad('Choose a job, a stage and an operation.');
-      const qty = Number(b.quantity);
-      if (!Number.isInteger(qty) || qty <= 0) return bad('Enter a whole-number quantity above 0.');
-      if (!isIsoDate(b.start) || !isIsoDate(b.end)) return bad('Enter valid start and end dates.');
-      if (!positiveNumber(b.hours_per_day)) return bad('Enter the hours per day (above 0).');
-      return rpc('assign_engagement_worker', {
-        p_engagement: id, p_job: b.job_id, p_stage: b.stage_id, p_operation: b.operation_id, p_quantity: qty,
-        p_start: b.start, p_end: b.end, p_hours: Number(b.hours_per_day), ...who,
-      });
-    }
     default: return bad('Unknown action');
   }
 }

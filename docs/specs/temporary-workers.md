@@ -420,18 +420,34 @@ Not changed: small-button height (32 px) is below the 44 px touch guideline; thi
 
 Tests: UI harness 79 checks (was 55). Each guidance feature was removed in turn (pop-up, label wiring, guide) and the tests failed.
 
-### 15.3 Stage 1d — assign from the engagement screen
-Feedback from first use: an active engagement with no Production assignment was a dead end ("assign the worker in Production first").
-`assign_engagement_worker(...)` (migration `temporary_workers_stage1d.sql`) adds ONE assignment for the engagement's worker on a chosen
-job/stage/operation and links it in the same transaction (a refusal anywhere rolls the new assignment back).
+### 15.3 Stage 1d — withdrawn
+An "assign from the engagement screen" function (stage1d) was built and then removed before it was applied: the model changed (§16), so
+no Production assignment is needed to pay a temporary worker.
 
-- It deliberately does NOT call `assign_workers_to_stage()`: that function takes the whole group for an operation and marks every
-  worker not listed as Removed, so a one-worker call would silently remove colleagues already on the stage.
-- It respects the existing group: working-together groups need the same quantity; split groups must still add up to the job quantity.
-- Same preconditions as linking: engagement active, job in the same project and not cancelled/completed, stage enabled, operation active
-  for that stage, worker not already on that operation, dates not Sundays, hours 0–12. Admin and production manager only.
-- API: `PATCH /engagements/:id { action: 'assign_worker', job_id, stage_id, operation_id, quantity, start, end, hours_per_day }`;
-  `GET /engagements/:id/assignments` also returns `targets` (open jobs → enabled stages → active operations).
-- UI: "Assign and link" form in the engagement modal (open by default when the worker has no assignment; preselects the only job /
-  operation; dates never default to a Sunday). Projects with no production jobs still need the plan created in Production first.
-- Tests: `temporary_workers_assign.pglite.mjs` (41), plus route and UI harness additions.
+## 16. Stage 2 — days are marked on the engagement (simplification)
+
+**Decision.** A temporary worker is engaged for ONE project at an agreed daily rate. Production assigns their tasks however it likes;
+paying never depends on it. The person paying sees only the project, the days present and the amount.
+
+- **Days present** are marked in Payroll → Temporary workers (open an engagement → *Days present*): Full (1) or Half (0.5), like the
+  Payroll attendance grid. Table `temporary_worker_attendance`, one ACTIVE row per worker per day across all versions of their engagements.
+  Admin, production manager and head of sales can mark. Clearing a day (units 0) or changing Full↔Half voids the old row (who, when, why kept);
+  nothing is deleted. A day in an active settlement cannot be voided; a paid settlement cannot be voided at all.
+- **Rules (database).** Engagement must be active; day not before the start date; not in the future (Nairobi calendar day, `tw_today()`);
+  not inside the worker's own payroll run; the expected end date stays a guide only. Employee advisory lock first, then the engagement row.
+- **Money.** Flat agreed daily rate: a Half day is half the rate, a Sunday earns the same rate; no overtime/Sunday parts (columns kept at 0).
+  Threshold (3 days), early/close-out, max-days warning, deductions, admin approval above the limit, one settlement per sheet, paid is final: unchanged.
+- **Separation of duties (kept).** The approver cannot be the preparer or anyone who MARKED a day in the settlement; an admin may override with
+  a written reason that is stored on the settlement. The payer must differ from the preparer.
+- **Payroll overlap.** `tw_engagement_overlap` now protects, for completed/cancelled/revised engagements, the days with an active marked day.
+- **Retired.** `link_assignment_to_engagement`, the time-entry triggers, `assign_engagement_worker`. The column
+  `production_job_assignments.temporary_engagement_id` and settlement lines' `time_entry_id/job_id/stage_id` stay (nullable) for history.
+- **Consequence.** Cost lands on the project through the engagement, not per job/stage: Production's job costing does not show actual
+  temporary labour (planned figures only). A per-job split can be added later.
+- **Migration order.** stage1 → 1b → 1c → **stage2**. Do not re-run 1/1b/1c after stage 2 without re-running stage 2 afterwards (they recreate
+  the retired Production link); the tests do exactly that to prove the final state is stable.
+- **API.** `GET/POST /engagements/:id/attendance` (`{ days: [{ date, units }] }`); actor and role from the session. Payroll screens never select
+  job, stage, operation or assignment columns (`LINE_COLUMNS` / `ATTENDANCE_COLUMNS` are tested for that).
+- **Tests.** `temporary_workers_stage2.pglite.mjs` (271), `temporary_workers_concurrency.mjs` on real Postgres (69, incl. R10 two people marking
+  the same day, R11 prepare vs mark; mutation: removing the employee lock from marking fails R7/R10), route harness (108), UI harness (95),
+  `temporary_workers_seed.pglite.mjs` (13: seed, use, cleanup, real data survives), `npm test` (502).

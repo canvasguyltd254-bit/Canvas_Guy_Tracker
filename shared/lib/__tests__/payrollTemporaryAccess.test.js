@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  TEMP_ROLES, canUseTemporaryWorkers, canManageTemporarySettings, canVoidApprovedSettlement, canLinkAssignment,
+  TEMP_ROLES, canUseTemporaryWorkers, canManageTemporarySettings, canVoidApprovedSettlement, canMarkAttendance, validateAttendanceDays, ATTENDANCE_COLUMNS,
   validateDeductionInput, validateReceiverName, mapTemporaryDbError, isUuid, isIsoDate, isFullName,
   ENGAGEMENT_COLUMNS, SETTLEMENT_COLUMNS, LINE_COLUMNS, DEDUCTION_COLUMNS, SHEET_COLUMNS, SETTINGS_COLUMNS,
   ENGAGEMENT_JOINS, SETTLEMENT_JOINS, OTHER_REASON_MIN_CHARS, overApprovalLimit, deductionNeedsAdmin,
@@ -13,12 +13,12 @@ test('only admin, production manager and head of sales may use temporary workers
   for (const r of ['production_staff', 'sales', 'viewer', null, undefined]) assert.equal(canUseTemporaryWorkers(r), false);
 });
 
-test('settings and voiding approved settlements are admin-only; linking is admin or production manager', () => {
+test('settings and voiding approved settlements are admin-only; marking days is admin, production manager or head of sales', () => {
   assert.equal(canManageTemporarySettings('admin'), true);
   assert.equal(canManageTemporarySettings('head_of_sales'), false);
   assert.equal(canVoidApprovedSettlement('production_manager'), false);
-  assert.equal(canLinkAssignment('production_manager'), true);
-  assert.equal(canLinkAssignment('head_of_sales'), false);
+  for (const r of ['admin', 'production_manager', 'head_of_sales']) assert.equal(canMarkAttendance(r), true, r);
+  for (const r of ['production_staff', 'sales', '', null, undefined]) assert.equal(canMarkAttendance(r), false, String(r));
 });
 
 test('column allow-lists are explicit and never carry private or storage fields', () => {
@@ -69,7 +69,7 @@ test('a missing migration names every migration to run, in order', () => {
   const m = mapTemporaryDbError({ code: '42883', message: 'function temporary_engagements_due does not exist' });
   assert.equal(m.status, 503);
   assert.equal(m.body.code, 'SETUP_INCOMPLETE');
-  for (const f of ['temporary_workers_stage1,', 'temporary_workers_stage1b', 'temporary_workers_stage1c', 'temporary_workers_stage1d']) assert.ok(m.body.error.includes(f), f);
+  for (const f of ['temporary_workers_stage1,', 'temporary_workers_stage1b', 'temporary_workers_stage1c', 'temporary_workers_stage2']) assert.ok(m.body.error.includes(f), f);
   assert.ok(m.body.error.indexOf('stage1b') < m.body.error.indexOf('stage1c'));
 });
 
@@ -114,4 +114,21 @@ test('a missing table or function is reported as an incomplete setup, not a gene
     assert.match(m.body.error, /temporary_workers_stage1/);
     assert.ok(!/relation|public\./.test(m.body.error));
   }
+});
+
+test('the paying side never selects job, stage or task columns', () => {
+  for (const c of [LINE_COLUMNS, ATTENDANCE_COLUMNS, ENGAGEMENT_COLUMNS, SETTLEMENT_COLUMNS]) assert.doesNotMatch(c, /job|stage|operation|assignment|time_entry/);
+});
+
+test('validateAttendanceDays: Full, Half and clear are accepted; everything else is explained', () => {
+  assert.equal(validateAttendanceDays([{ date: '2026-11-10', units: 1 }, { date: '2026-11-11', units: 0.5 }, { date: '2026-11-12', units: 0 }]), null);
+  assert.match(validateAttendanceDays([]), /at least one day/);
+  assert.match(validateAttendanceDays('x'), /at least one day/);
+  assert.match(validateAttendanceDays(Array.from({ length: 63 }, (_, i) => ({ date: '2026-11-10', units: 1 }))), /at most 62/);
+  assert.match(validateAttendanceDays([{ date: '2026-02-30', units: 1 }]), /valid date/);
+  assert.match(validateAttendanceDays([{ date: '10/11/2026', units: 1 }]), /valid date/);
+  assert.match(validateAttendanceDays([{ units: 1 }]), /valid date/);
+  assert.match(validateAttendanceDays([null]), /valid date/);
+  for (const u of [0.75, 2, -1, '1', null, undefined]) assert.match(validateAttendanceDays([{ date: '2026-11-10', units: u }]), /Full, Half or cleared/, String(u));
+  assert.match(validateAttendanceDays([{ date: '2026-11-10', units: 1 }, { date: '2026-11-10', units: 0.5 }]), /listed twice/);
 });

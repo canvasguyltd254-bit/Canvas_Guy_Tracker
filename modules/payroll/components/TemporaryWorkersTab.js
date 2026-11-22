@@ -2,16 +2,16 @@
 
 /**
  * Payroll → Temporary Workers (admin, production manager, head of sales).
- * Cash-paid short-term labour, settled after approved Production attendance. Spec: docs/specs/temporary-workers.md
+ * Cash-paid short-term labour: the worker is engaged for ONE project, days present are marked here, and the days are settled. Spec: docs/specs/temporary-workers.md
  *
- * Attendance is recorded and approved in the existing Production Time tab; nothing here creates labour cost.
+ * Production assigns the worker's tasks separately; paying does not depend on Production assignments.
  */
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/shared/context/AuthContext';
 import { C, TabBar } from '@/shared/ui/ds';
 import { createClient } from '@/shared/supabase/client';
 import {
-  canUseTemporaryWorkers, canManageTemporarySettings, canLinkAssignment,
+  canUseTemporaryWorkers, canManageTemporarySettings, canMarkAttendance,
 } from '@/shared/lib/payroll/temporaryAccess';
 import {
   api, fmt, fmtD, todayISO, inputStyle, Badge, Spinner, Banner, Empty, Card, Modal, Field, Btn, th, td, num, Table,
@@ -67,9 +67,9 @@ export default function TemporaryWorkersTab() {
 
 // One plain sentence per tab, so a first-time user always knows what they are looking at and what comes next.
 const TAB_HELP = {
-  engagements: 'An engagement is the deal with one worker on one project: the agreed daily rate and the dates. Create one first; nothing can be paid without it.',
-  due: 'Workers whose approved days are ready to be paid. Choose “Prepare settlement” on a row to start paying them.',
-  settlements: 'A settlement is the amount owed to one worker for their approved days. Check it, add any deductions, then have a second person approve it.',
+  engagements: 'An engagement is the deal with one worker on one project: the agreed daily rate and the dates. Create one, then mark the days they were present.',
+  due: 'Workers whose marked days are ready to be paid. Choose “Prepare settlement” on a row to start paying them.',
+  settlements: 'A settlement is the amount owed to one worker for their marked days. Check it, add any deductions, then have a second person approve it.',
   sheets: 'A payout sheet is the paper the worker signs when they receive their cash. One sheet covers one settlement.',
   settings: 'Admin only: the amounts above which an admin must approve, and the deduction rules.',
 };
@@ -77,10 +77,10 @@ const TAB_HELP = {
 // Always visible, collapsed to one line once understood. <details> keeps it keyboard accessible with no state to manage.
 function HowItWorks() {
   const steps = [
-    ['Record days', 'In Production → Time, record each day the worker attended and get it approved.'],
-    ['Create the engagement', 'Here, under Engagements: the worker, the project and the agreed daily rate. Then link their Production assignment to it so their days count.'],
-    ['Prepare the settlement', 'When days are due (3 approved days, or the job ends), prepare a settlement. Add any deductions.'],
-    ['Approve it', 'A different person approves. Above the approval limit, an admin does.'],
+    ['Create the engagement', 'Under Engagements: the worker, the project and the agreed daily rate. Production decides their tasks; you only need the project.'],
+    ['Mark the days present', 'Open the engagement and mark each day they came: Full or Half. Mistakes are cleared, never deleted.'],
+    ['Prepare the settlement', 'When days are due (3 days marked, or the job ends), prepare a settlement. Add any deductions.'],
+    ['Approve it', 'Someone other than the preparer, and other than whoever marked the days, approves. Above the approval limit, an admin does.'],
     ['Create a payout sheet', 'Print it, the worker signs next to their cash, upload a photo of the signed copy.'],
     ['Mark it paid', 'Enter the receiver’s full name. A different person from the one who prepared it pays. Paid is final.'],
   ];
@@ -210,68 +210,62 @@ function NewEngagementModal({ onClose, onCreated, role }) {
   );
 }
 
-// Statuses that can hold approved, unsettled work. A cancelled engagement still owes the days already worked.
+// Statuses that can hold marked, unsettled days. A cancelled engagement still owes the days already worked.
 const SETTLEABLE = ['active', 'completed', 'cancelled'];
 // Warning only (nothing is blocked). Counts ALL non-voided attendance, so it stays visible after payment.
 const maxDaysMessage = (d) => `Maximum days reached: ${fmt(d.total_units)} day(s) recorded against a guide of ${fmt(d.max_days)}. Check whether the agreed work has grown before more is booked.`;
 
-// Assignment dates cannot fall on a Sunday: move to the nearest working day in the given direction.
-const nonSunday = (iso, step = 1) => {
-  const d = new Date(`${iso}T00:00:00Z`);
-  if (d.getUTCDay() === 0) d.setUTCDate(d.getUTCDate() + step);
-  return d.toISOString().slice(0, 10);
+const FULL = 1, HALF = 0.5;
+const dayLabel = (iso) => new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-KE', { weekday: 'short', day: '2-digit', month: 'short', timeZone: 'UTC' });
+// Every date from `from` to `to` inclusive, newest first (bounded so a bad date can never loop for long).
+const datesBetween = (from, to) => {
+  const out = []; const d = new Date(`${from}T00:00:00Z`); const end = new Date(`${to}T00:00:00Z`);
+  while (d <= end && out.length < 800) { out.push(d.toISOString().slice(0, 10)); d.setUTCDate(d.getUTCDate() + 1); }
+  return out.reverse();
 };
+const SHOW_RECENT = 31;
 
-/** Put this worker on a job stage and link it to the engagement in one step (no trip to Production). */
-function AssignForm({ e, targets, busy, onSubmit, defaultOpen }) {
-  const today = todayISO();
-  const start0 = nonSunday(e.start_date > today ? e.start_date : today, 1);
-  const end0 = e.expected_end_date && e.expected_end_date >= start0 ? nonSunday(e.expected_end_date, -1) : start0;
-  const [open, setOpen] = useState(!!defaultOpen);
-  const [jobId, setJobId] = useState(targets.length === 1 ? targets[0].job_id : '');
-  const job = targets.find(t => t.job_id === jobId);
-  const [stageId, setStageId] = useState('');
-  const stage = job?.stages.find(s => s.stage_id === stageId);
-  const [opId, setOpId] = useState('');
-  const [qty, setQty] = useState(targets.length === 1 ? String(targets[0].planned_quantity ?? '') : '');
-  const [start, setStart] = useState(start0);
-  const [end, setEnd] = useState(end0 < start0 ? start0 : end0);
-  const [hours, setHours] = useState('8');
-
-  if (!targets.length) return <Empty>This project has no production jobs yet. Create its production plan in Production first, then come back to assign this worker.</Empty>;
-  if (!open) return <Btn small variant="secondary" onClick={() => setOpen(true)}>Assign to a job stage…</Btn>;
-
-  const pickJob = (v) => { setJobId(v); setStageId(''); setOpId(''); const j = targets.find(t => t.job_id === v); setQty(j ? String(j.planned_quantity ?? '') : ''); };
-  const pickStage = (v) => { setStageId(v); const s = job?.stages.find(x => x.stage_id === v); setOpId(s?.operations.length === 1 ? s.operations[0].id : ''); };
-  const missing = !jobId ? 'Choose a job' : !stageId ? 'Choose a stage' : !opId ? 'Choose an operation' : !(Number(qty) > 0) ? 'Enter a quantity' : !start || !end ? 'Enter the dates' : end < start ? 'End is before start' : !(Number(hours) > 0) ? 'Enter hours per day' : '';
+/** The days the worker was present on this project: one row per day, Absent / Half / Full. Nothing about jobs or tasks. */
+function DaysPresent({ e, role, days, busy, onMark }) {
+  const [showAll, setShowAll] = useState(false);
+  const editable = e.status === 'active' && canMarkAttendance(role);
+  const byDate = Object.fromEntries((days || []).map(d => [d.work_date, Number(d.units)]));
+  const total = (days || []).reduce((n, d) => n + Number(d.units), 0);
+  const rows = editable ? datesBetween(e.start_date, todayISO()) : [...(days || [])].map(d => d.work_date).sort().reverse();
+  const shown = showAll ? rows : rows.slice(0, SHOW_RECENT);
+  const btn = (on) => ({ padding: '6px 12px', minHeight: 36, minWidth: 64, border: `1px solid ${on ? C.coral : C.line}`, background: on ? C.coral : C.card, color: on ? '#fff' : C.ink, borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' });
 
   return (
-    <div style={{ background: C.bg, borderRadius: 9, padding: 12, marginTop: 8 }} data-testid="assign-form">
-      <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>Adds {e.employees?.name} to the stage and links it at KES {fmt(e.agreed_daily_rate)}/day. Other workers already on that stage are not changed.</div>
-      <Field label="Job" required><select style={inputStyle} value={jobId} onChange={(x) => pickJob(x.target.value)}>
-        <option value="">Select a job…</option>{targets.map(t => <option key={t.job_id} value={t.job_id}>{t.job_num}{t.description ? ` — ${t.description}` : ''}</option>)}</select></Field>
-      {job && <Field label="Stage" required><select style={inputStyle} value={stageId} onChange={(x) => pickStage(x.target.value)}>
-        <option value="">Select a stage…</option>{job.stages.map(s => <option key={s.stage_id} value={s.stage_id}>{s.stage_label}</option>)}</select></Field>}
-      {stage && <Field label="Operation" required><select style={inputStyle} value={opId} onChange={(x) => setOpId(x.target.value)}>
-        <option value="">Select an operation…</option>{stage.operations.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}</select></Field>}
-      {opId && (
-        <>
-          <Field label={`Quantity (job has ${job.planned_quantity})`} required hint="Whole units this worker is responsible for."><input style={inputStyle} inputMode="numeric" value={qty} onChange={(x) => setQty(x.target.value)} /></Field>
-          <div style={{ display: 'flex', gap: 10 }}>
-            <div style={{ flex: 1 }}><Field label="Planned start" required><input type="date" style={inputStyle} value={start} onChange={(x) => setStart(x.target.value)} /></Field></div>
-            <div style={{ flex: 1 }}><Field label="Planned end" required hint="Not a Sunday."><input type="date" style={inputStyle} value={end} onChange={(x) => setEnd(x.target.value)} /></Field></div>
-            <div style={{ width: 110 }}><Field label="Hours/day" required><input style={inputStyle} inputMode="decimal" value={hours} onChange={(x) => setHours(x.target.value)} /></Field></div>
-          </div>
-        </>)}
-      <Btn loading={busy === 'assign'} disabled={!!missing} title={missing} onClick={() => onSubmit({ action: 'assign_worker', job_id: jobId, stage_id: stageId, operation_id: opId, quantity: Number(qty), start, end, hours_per_day: Number(hours) })}>Assign and link</Btn>
-      {missing && <span style={{ fontSize: 11, color: C.muted, marginLeft: 10 }}>{missing}</span>}
+    <div data-testid="days-present">
+      <h4 style={{ margin: '8px 0 4px', fontSize: 13 }}>Days present · <span data-testid="days-total">{fmt(total)}</span> marked</h4>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>
+        {editable ? 'Mark each day the worker came to work on this project. Full = a whole day, Half = half a day. Tap Absent to clear a day marked by mistake.' : 'The days marked present on this engagement.'}
+      </div>
+      {!days ? <Spinner /> : rows.length === 0 ? (
+        <Empty>{editable ? `The first day can be marked on ${fmtD(e.start_date)}.` : 'No days were marked.'}</Empty>
+      ) : (
+        <div style={{ maxHeight: 300, overflowY: 'auto', border: `1px solid ${C.line}`, borderRadius: 9 }}>
+          {shown.map(date => {
+            const u = byDate[date] || 0;
+            return (
+              <div key={date} data-day={date} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '6px 10px', borderBottom: `1px solid ${C.line}`, background: u ? C.greenBg : 'transparent' }}>
+                <span style={{ fontSize: 13, fontWeight: u ? 700 : 400 }}>{dayLabel(date)}</span>
+                {editable ? (
+                  <span role="group" aria-label={`Attendance for ${dayLabel(date)}`} style={{ display: 'inline-flex', gap: 6 }}>
+                    {[['Absent', 0], ['Half', HALF], ['Full', FULL]].map(([label, v]) => (
+                      <button key={label} type="button" aria-pressed={u === v} disabled={busy === date} style={btn(u === v)} onClick={() => { if (u !== v) onMark(date, v); }}>{label}</button>))}
+                  </span>
+                ) : <Badge label={u === HALF ? 'half day' : 'full day'} tone={['#dcfce7', '#166534']} />}
+              </div>);
+          })}
+        </div>)}
+      {rows.length > SHOW_RECENT && <div style={{ marginTop: 6 }}><Btn small variant="secondary" onClick={() => setShowAll(!showAll)}>{showAll ? `Show only the last ${SHOW_RECENT} days` : `Show all ${rows.length} days`}</Btn></div>}
     </div>
   );
 }
 
 function EngagementModal({ e, role, onClose, onChanged, onSettle }) {
-  const [asg, setAsg] = useState(null);
-  const [targets, setTargets] = useState([]);
+  const [days, setDays] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
   const [mode, setMode] = useState('');          // '', 'close', 'cancel', 'rate'
@@ -279,19 +273,26 @@ function EngagementModal({ e, role, onClose, onChanged, onSettle }) {
   const [rate, setRate] = useState('');
   const [msg, setMsg] = useState('');
 
-  const loadAsg = useCallback(async () => {
-    if (e.status !== 'active') { setAsg([]); return; }
-    const r = await api('GET', `/api/payroll/temporary/engagements/${e.id}/assignments`);
-    if (r.ok) { setAsg(r.data.assignments); setTargets(r.data.targets || []); } else { setAsg([]); setTargets([]); setError(r.error); }
-  }, [e.id, e.status]);
-  useEffect(() => { loadAsg(); }, [loadAsg]);
+  const loadDays = useCallback(async () => {
+    const r = await api('GET', `/api/payroll/temporary/engagements/${e.id}/attendance`);
+    if (r.ok) setDays(r.data.days); else { setDays([]); setError(r.error); }
+  }, [e.id]);
+  useEffect(() => { loadDays(); }, [loadDays]);
+
+  const markDay = async (date, units) => {
+    setBusy(date); setError(''); setMsg('');
+    const r = await api('POST', `/api/payroll/temporary/engagements/${e.id}/attendance`, { days: [{ date, units }] });
+    setBusy('');
+    if (!r.ok) { setError(r.error); return; }
+    await loadDays(); onChanged();
+  };
 
   const patch = async (key, body, after) => {
     setBusy(key); setError(''); setMsg('');
     const r = await api('PATCH', `/api/payroll/temporary/engagements/${e.id}`, body);
     setBusy('');
     if (!r.ok) { setError(r.error); return; }
-    onChanged(); await loadAsg(); after?.(r.data.data);
+    onChanged(); await loadDays(); after?.(r.data.data);
   };
 
   return (
@@ -304,25 +305,10 @@ function EngagementModal({ e, role, onClose, onChanged, onSettle }) {
       </div>
       {e.close_reason && <Banner tone="info" message={`Closed ${fmtD(e.closed_at)}: ${e.close_reason}`} />}
       {e.due?.max_days_reached && <Banner tone="warn" message={maxDaysMessage(e.due)} />}
-      {e.due && <div style={{ fontSize: 13, marginBottom: 12 }}>Approved, unsettled: <strong>{fmt(e.due.eligible_units)}</strong> day(s) · KES <strong>{fmt(e.due.eligible_gross)}</strong>{e.due.due ? ' — due for payment' : ''}</div>}
+      {e.due && <div style={{ fontSize: 13, marginBottom: 12 }}>Marked, unsettled: <strong>{fmt(e.due.eligible_units)}</strong> day(s) · KES <strong>{fmt(e.due.eligible_gross)}</strong>{e.due.due ? ' — due for payment' : ''}</div>}
 
-      {e.status === 'active' && (
-        <>
-          <h4 style={{ margin: '8px 0 6px', fontSize: 13 }}>Production assignments</h4>
-          {asg && asg.length > 0 && !asg.some(a => a.linked) && (
-            <Banner tone="warn" message="No assignment is linked yet. Days recorded in Production will not appear or be paid here until you link this worker’s assignment below." />)}
-          <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>Attendance only counts once the worker’s Production assignment is linked to this engagement. Linking sets the assignment’s rate to the agreed rate and is refused once time has been recorded on it.</div>
-          {!asg ? <Spinner /> : asg.length === 0 ? <Empty>This worker is not assigned to any job on this project yet.{canLinkAssignment(role) ? ' Assign them below.' : ' Ask the production manager to assign them.'}</Empty> : (
-            <Table><tbody>{asg.map(a => (
-              <tr key={a.id}><td style={td}><strong>{a.job_num}</strong><div style={{ fontSize: 11, color: C.muted }}>{a.description}</div></td>
-                <td style={td}>{a.linked ? <Badge label="linked" tone={['#dcfce7', '#166534']} /> : a.linked_elsewhere ? <Badge label="linked to another engagement" /> : <Badge label="not linked" tone={['#fef9c3', '#854d0e']} />}</td>
-                <td style={td}>{!a.linked && !a.linked_elsewhere && (canLinkAssignment(role)
-                  ? <Btn small loading={busy === a.id} onClick={() => patch(a.id, { action: 'link_assignment', assignment_id: a.id }, () => setMsg('Assignment linked.'))}>Link</Btn>
-                  : <span style={{ fontSize: 11, color: C.muted }}>Ask the production manager to link this</span>)}</td></tr>))}</tbody></Table>)}
-          {asg && canLinkAssignment(role) && (
-            <AssignForm key={`${asg.length}-${targets.length}`} e={e} targets={targets} busy={busy} defaultOpen={asg.length === 0}
-              onSubmit={(body) => patch('assign', body, () => setMsg('Worker assigned and linked. Attendance can now be recorded in Production.'))} />)}
-        </>)}
+      {e.status !== 'planned' && <DaysPresent e={e} role={role} days={days} busy={busy} onMark={markDay} />}
+      {e.status === 'planned' && <div style={{ fontSize: 12, color: C.muted }}>Activate the engagement to start marking days.</div>}
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
         {e.status === 'planned' && <Btn variant="success" loading={busy === 'activate'} onClick={() => patch('activate', { action: 'activate' })}>Activate</Btn>}
@@ -334,7 +320,7 @@ function EngagementModal({ e, role, onClose, onChanged, onSettle }) {
 
       {mode === 'rate' && (
         <div style={{ marginTop: 12, background: C.bg, borderRadius: 9, padding: 12 }}>
-          <Field label="New daily rate (KES)" required hint="Closes this version and opens a new one. Existing assignments keep the old rate; link a new assignment for the new rate."><input style={inputStyle} inputMode="decimal" value={rate} onChange={(x) => setRate(x.target.value)} /></Field>
+          <Field label="New daily rate (KES)" required hint="Closes this version and opens a new one. Days already marked keep the old rate; the new version starts today."><input style={inputStyle} inputMode="decimal" value={rate} onChange={(x) => setRate(x.target.value)} /></Field>
           <Field label="Reason" required><input style={inputStyle} value={reason} onChange={(x) => setReason(x.target.value)} /></Field>
           <Btn loading={busy === 'rate'} disabled={!(Number(rate) > 0) || !reason.trim()} onClick={() => patch('rate', { action: 'revise_rate', new_rate: Number(rate), reason }, () => { onClose(); })}>Create new version</Btn>
         </div>)}
@@ -358,18 +344,18 @@ function PrepareModal({ e, onClose, onPrepared }) {
   const [reason, setReason] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
-  const kinds = closed ? [['close_out', 'Close-out — pay all remaining approved days']]
-    : [['threshold', `Standard — ${threshold} or more approved days`], ['early', 'Early — fewer days, with a reason']];
+  const kinds = closed ? [['close_out', 'Close-out — pay all remaining marked days']]
+    : [['threshold', `Standard — ${threshold} or more days marked`], ['early', 'Early — fewer days, with a reason']];
   const ok = kind !== 'early' || reason.trim();
   return (
     <Modal title={`Prepare settlement · ${e.employees?.name}`} onClose={onClose} width={500}>
       <Banner message={error} onDismiss={() => setError('')} />
-      <div style={{ fontSize: 13, marginBottom: 12 }}>Approved, unsettled: <strong>{fmt(units)}</strong> day(s) · KES <strong>{fmt(e.due?.eligible_gross)}</strong></div>
+      <div style={{ fontSize: 13, marginBottom: 12 }}>Marked, unsettled: <strong>{fmt(units)}</strong> day(s) · KES <strong>{fmt(e.due?.eligible_gross)}</strong></div>
       <Field label="Type">
         {kinds.map(([k, l]) => <label key={k} style={{ display: 'flex', gap: 8, fontSize: 13, marginBottom: 6, opacity: k === 'threshold' && units < threshold ? 0.5 : 1 }}>
           <input type="radio" name="kind" checked={kind === k} disabled={k === 'threshold' && units < threshold} onChange={() => setKind(k)} /> {l}</label>)}
       </Field>
-      <Field label="Cutoff date" hint="Includes EVERY approved, unsettled day up to and including this date, oldest first. A day cannot be skipped or split."><input type="date" style={inputStyle} value={cutoff} onChange={(x) => setCutoff(x.target.value)} /></Field>
+      <Field label="Cutoff date" hint="Includes EVERY marked, unsettled day up to and including this date, oldest first. A day cannot be skipped or split."><input type="date" style={inputStyle} value={cutoff} onChange={(x) => setCutoff(x.target.value)} /></Field>
       {kind === 'early' && <Field label="Reason for paying early" required><input style={inputStyle} value={reason} onChange={(x) => setReason(x.target.value)} /></Field>}
       <div style={{ display: 'flex', gap: 8 }}>
         <Btn loading={saving} disabled={!ok} onClick={async () => {
@@ -399,9 +385,9 @@ function DuePanel({ refreshKey, onChanged, onPrepared }) {
   return (
     <div>
       <Banner message={error} onDismiss={() => setError('')} />
-      {!rows ? <Spinner /> : rows.length === 0 ? <Empty>Nothing is due yet. A worker appears here once they have 3 approved days, or when their engagement ends with days still unpaid. Days are approved in Production → Time.</Empty> : (
+      {!rows ? <Spinner /> : rows.length === 0 ? <Empty>Nothing is due yet. A worker appears here once they have 3 days marked, or when their engagement ends with days still unpaid. Mark days by opening an engagement.</Empty> : (
         <Table>
-          <thead><tr><th style={th}>Worker</th><th style={th}>Project</th><th style={{ ...th, ...num }}>Approved days</th><th style={{ ...th, ...num }}>Amount (KES)</th><th style={th}>Why</th><th style={th} /></tr></thead>
+          <thead><tr><th style={th}>Worker</th><th style={th}>Project</th><th style={{ ...th, ...num }}>Days present</th><th style={{ ...th, ...num }}>Amount (KES)</th><th style={th}>Why</th><th style={th} /></tr></thead>
           <tbody>{rows.map(e => (
             <tr key={e.id}><td style={td}>{e.employees?.name}<div style={{ fontSize: 11, color: C.muted }}>{e.engagement_num}</div></td><td style={td}>{e.orders?.order_num}</td>
               <td style={{ ...td, ...num }}>{fmt(e.due.eligible_units)}</td><td style={{ ...td, ...num }}><strong>{fmt(e.due.eligible_gross)}</strong></td>
@@ -435,7 +421,7 @@ function LimitsPanel({ settings, onSaved }) {
       <Banner tone="info" message={msg} />
       {field('admin_approval_limit_kes', 'Admin approval limit (KES)', 'Settlements (and payout sheets, by cash amount) above this need an admin. Leave empty to require an admin for everything.')}
       {settings && settings.admin_approval_limit_kes === null && <Banner tone="warn" message="No limit is set: only an admin can approve right now." />}
-      {field('settlement_threshold_units', 'Settlement threshold (approved days)')}
+      {field('settlement_threshold_units', 'Settlement threshold (days marked)')}
       {field('rolling_window_days', 'Split-payment window (days)', 'A worker’s other approved settlements in this window count towards the limit.')}
       {field('deduction_single_limit_kes', 'Single deduction needing an admin (KES)')}
       {field('deduction_total_pct', 'Total deductions needing an admin (% of gross)')}

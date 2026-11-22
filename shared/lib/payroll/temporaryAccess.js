@@ -5,8 +5,8 @@
  * Spec: docs/specs/temporary-workers.md
  *
  *   admin               everything, including settings, approvals above the limit, voiding approved settlements
- *   production_manager  prepare/approve/pay within limits, link assignments
- *   head_of_sales       prepare/approve/pay within limits (no linking of Production assignments)
+ *   production_manager  mark days present, prepare/approve/pay within limits
+ *   head_of_sales       mark days present, prepare/approve/pay within limits
  *   anyone else         no access to rates, amounts, deductions or settlements
  */
 
@@ -16,7 +16,8 @@ export const TEMP_ROLES = Object.freeze(['admin', 'production_manager', 'head_of
 export const canUseTemporaryWorkers = (role) => TEMP_ROLES.includes(role);
 export const canManageTemporarySettings = (role) => role === 'admin';
 export const canVoidApprovedSettlement = (role) => role === 'admin';
-export const canLinkAssignment = (role) => role === 'admin' || role === 'production_manager';
+// Marking days present: the same three roles (the separation of duties is on approval, not on marking).
+export const canMarkAttendance = (role) => TEMP_ROLES.includes(role);
 export const canApprovePayoutSheet = (role) => role === 'admin';
 
 export const OTHER_REASON_MIN_CHARS = 20;
@@ -42,8 +43,9 @@ export const SETTLEMENT_COLUMNS =
   'approved_by_role, approval_override, override_reason, payout_sheet_id, paid_by, paid_at, received_by_full_name, payment_note, ' +
   'voided_by, voided_at, void_reason';
 export const SETTLEMENT_JOINS = 'employees(name, employee_num), temporary_worker_engagements(engagement_num)';
-export const LINE_COLUMNS =
-  'id, settlement_id, time_entry_id, work_date, job_id, stage_id, attendance_units, base_amount, overtime_amount, sunday_amount, line_amount, active';
+// The paying side sees the day, how much of a day, and the amount. No job, stage or task (that is Production's business).
+export const LINE_COLUMNS = 'id, settlement_id, attendance_id, work_date, attendance_units, line_amount, active';
+export const ATTENDANCE_COLUMNS = 'id, engagement_id, work_date, units, marked_by, marked_at';
 export const DEDUCTION_COLUMNS =
   'id, settlement_id, deduction_type, amount, reason, evidence_ref, recorded_by, recorded_at, approved_by, approved_at, ' +
   'approved_by_role, worker_acknowledged_at, active, voided_by, voided_at, void_reason';
@@ -91,7 +93,7 @@ export function mapTemporaryDbError(error) {
   }
   // The migration has not been applied (or Supabase has not reloaded its schema cache since): say so plainly.
   if (['42P01', '42883', '42703', 'PGRST200', 'PGRST202', 'PGRST205'].includes(code)) {
-    return { status: 503, body: { error: 'Temporary workers is not set up on this database yet. An administrator must run the temporary_workers_stage1, temporary_workers_stage1b, temporary_workers_stage1c and temporary_workers_stage1d migrations (in that order), then reload the Supabase schema cache.', code: 'SETUP_INCOMPLETE' } };
+    return { status: 503, body: { error: 'Temporary workers is not set up on this database yet. An administrator must run the temporary_workers_stage1, temporary_workers_stage1b, temporary_workers_stage1c and temporary_workers_stage2 migrations (in that order), then reload the Supabase schema cache.', code: 'SETUP_INCOMPLETE' } };
   }
   if (code === '23505') return { status: 409, body: { error: 'That already exists or was changed by someone else. Refresh and try again.', code: 'CONFLICT' } };
   if (code.startsWith('23')) return { status: 409, body: { error: 'That change is not allowed in the current state.', code: 'NOT_ALLOWED' } };
@@ -114,4 +116,22 @@ export function deductionNeedsAdmin(settings, deduction, activeTotal, gross) {
   if (!settings) return true;
   return Number(deduction.amount) > Number(settings.deduction_single_limit_kes)
     || Number(activeTotal) > Number(gross) * Number(settings.deduction_total_pct) / 100;
+}
+
+// ── Attendance input ──────────────────────────────────────────────────────────
+export const ATTENDANCE_UNITS = Object.freeze([1, 0.5, 0]);   // Full, Half, cleared
+export const MAX_ATTENDANCE_DAYS_PER_CALL = 62;
+
+/** Returns an error message, or null when the list of days to mark is acceptable. */
+export function validateAttendanceDays(days) {
+  if (!Array.isArray(days) || days.length === 0) return 'Choose at least one day.';
+  if (days.length > MAX_ATTENDANCE_DAYS_PER_CALL) return `Mark at most ${MAX_ATTENDANCE_DAYS_PER_CALL} days at a time.`;
+  const seen = new Set();
+  for (const d of days) {
+    if (!d || !isIsoDate(d.date)) return 'Every day needs a valid date.';
+    if (!ATTENDANCE_UNITS.includes(d.units)) return 'Each day must be Full, Half or cleared.';
+    if (seen.has(d.date)) return `The day ${d.date} is listed twice.`;
+    seen.add(d.date);
+  }
+  return null;
 }
