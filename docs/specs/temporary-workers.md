@@ -494,3 +494,8 @@ payment appears in the imported ChatPesa statement. This replaces the printed, s
   export vs void, export vs export, one statement line contested by two sheets; mutation: removing the row lock on the statement line fails S10 via the
   unique-index backstop), route harness (121), UI harness (106), seed/cleanup (18), unit tests. The real-Postgres run found a defect pglite missed
   (`void_temporary_settlement` failed for a settlement on no sheet; fixed and covered).
+
+**Weekly run (UI only, no database change).** The payout sheet form opens with every approved, unsheeted settlement ticked (one ChatPesa upload for the week) and
+names any drafts left out. The Due tab has "Prepare all N due settlements": one call per worker with the same rule as the single button (close-out if the engagement
+ended, otherwise threshold), cutoff today; a refusal for one worker is reported by name and never stops the rest. Workers below the threshold are never swept in
+(an early settlement needs a reason). If weekly pay is the norm, an admin can set the threshold to 1 day under Limits. Approval stays a separate person's step.

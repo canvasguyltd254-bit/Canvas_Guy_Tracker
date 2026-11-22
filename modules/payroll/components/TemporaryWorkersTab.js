@@ -376,15 +376,33 @@ function DuePanel({ refreshKey, onChanged, onPrepared }) {
   const [rows, setRows] = useState(null);
   const [error, setError] = useState('');
   const [prepare, setPrepare] = useState(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkInfo, setBulkInfo] = useState('');
   const load = useCallback(async () => {
     const r = await api('GET', '/api/payroll/temporary/engagements');
     if (!r.ok) { setError(r.error); setRows([]); return; }
     setRows(r.data.engagements.filter(e => e.due && (e.due.due || e.due.close_out_due)));
   }, []);
   useEffect(() => { load(); }, [load, refreshKey]);
+  // Weekly run: prepare every due worker with the same rule the single button uses (close-out when the engagement has ended, otherwise
+  // the threshold), cutoff today. One at a time, so one refusal never hides the others. Approval is still a separate person's step.
+  const prepareAll = async () => {
+    setBulkBusy(true); setError(''); setBulkInfo('');
+    const done = [], failed = [];
+    for (const e of rows) {
+      const r = await api('POST', '/api/payroll/temporary/settlements', { engagement_id: e.id, cutoff_date: todayISO(), kind: e.due.close_out_due ? 'close_out' : 'threshold' });
+      (r.ok ? done : failed).push(r.ok ? e.employees?.name : `${e.employees?.name} (${r.error})`);
+    }
+    setBulkBusy(false);
+    setBulkInfo(`${done.length} settlement${done.length === 1 ? '' : 's'} prepared${done.length ? ` (${done.join(', ')})` : ''}.${failed.length ? ` Not prepared: ${failed.join('; ')}.` : ''} Now have someone else approve them under Settlements, then build the weekly payout sheet.`);
+    await load(); onChanged();
+  };
   return (
     <div>
       <Banner message={error} onDismiss={() => setError('')} />
+      {bulkInfo && <Banner tone="info" message={bulkInfo} onDismiss={() => setBulkInfo('')} />}
+      {rows && rows.length > 1 && <div style={{ marginBottom: 10 }}><Btn loading={bulkBusy} onClick={prepareAll}>Prepare all {rows.length} due settlements (cutoff today)</Btn>
+        <span style={{ fontSize: 12, color: C.muted, marginLeft: 10 }}>Workers below the threshold are not included: prepare those one by one with a reason.</span></div>}
       {!rows ? <Spinner /> : rows.length === 0 ? <Empty>Nothing is due yet. A worker appears here once they have 3 days marked, or when their engagement ends with days still unpaid. Mark days by opening an engagement.</Empty> : (
         <Table>
           <thead><tr><th style={th}>Worker</th><th style={th}>Project</th><th style={{ ...th, ...num }}>Days present</th><th style={{ ...th, ...num }}>Amount (KES)</th><th style={th}>Why</th><th style={th} /></tr></thead>

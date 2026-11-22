@@ -70,6 +70,7 @@ const route = (method, url, body) => {
     }
     return { days: backend.days ?? [] };
   }
+  if (p.endsWith('/temporary/settlements') && method === 'POST' && backend.refuseEng && body.engagement_id === backend.refuseEng) return { __status: 422, error: 'Your approver is blocked' };
   if (p.endsWith('/temporary/settlements') && method === 'GET') { const st = u.searchParams.get('status'); return { settlements: st ? backend.settlements.filter(x => x.status === st) : backend.settlements }; }
   if (/\/settlements\/[^/]+$/.test(p) && method === 'GET') { const id = p.split('/').pop(); const s = backend.settlements.find(x => x.id === id); return { settlement: s, lines: [{ id: 'l1', work_date: '2026-11-02', attendance_units: 1, base_amount: 4000, overtime_amount: 0, sunday_amount: 0, line_amount: 4000, active: true }], deductions: backend.deductions[id] || [] }; }
   if (p.endsWith('/payout-sheets') && method === 'GET') return { sheets: backend.sheets };
@@ -388,6 +389,21 @@ ok('a cancelled sheet is read-only and says it is never reused', /never reused/.
   await mount('head_of_sales', { settlements: [...ap, settlement({ id: 'sd', status: 'draft', employees: emp('Late Larry') })], sheets: [] });
   await tab('Payout sheets'); await click(byText('button', '+ New payout sheet'));
   ok('settlements still in draft are named in a warning and are not on the sheet', /not approved yet \(Late Larry\)/.test(dialog().textContent) && q('input[type=checkbox]', dialog()).length === 1);
+  await unmount();
+}
+
+// ── weekly run: prepare every due worker at once ──
+{
+  const due = (id, name, o = {}) => ({ id, engagement_num: 'TE-' + id, status: 'active', version: 1, agreed_daily_rate: 1000, start_date: START, expected_end_date: null, employees: emp(name), orders: { order_num: 'ORD-9', client: 'Acme' }, due: { eligible_units: 3, eligible_gross: 3000, due: true, close_out_due: false, threshold_units: 3 }, ...o });
+  await mount('head_of_sales', { engagements: [due('e1', 'Jane Worker'), due('e2', 'Peter Mine'), due('e3', 'Ended Ed', { status: 'completed', due: { eligible_units: 2, eligible_gross: 2000, due: false, close_out_due: true, threshold_units: 3 } }), due('e4', 'Short Sam', { due: { eligible_units: 1, eligible_gross: 1000, due: false, close_out_due: false, threshold_units: 3 } })], refuseEng: 'e2' });
+  await tab('Due for payment');
+  const bulk = byText('button', 'Prepare all 3 due settlements');
+  ok('Due tab offers one button for every due worker (not the one below the threshold)', !!bulk && /below the threshold are not included/.test(text()));
+  await click(bulk);
+  const posts = calls.filter(c => c.method === 'POST' && /\/settlements$/.test(c.url));
+  ok('it prepares each due worker separately: close-out for the ended job, threshold for the rest, cutoff today', posts.length === 3 && posts.find(c => c.body.engagement_id === 'e3').body.kind === 'close_out' && posts.find(c => c.body.engagement_id === 'e1').body.kind === 'threshold' && posts.every(c => c.body.cutoff_date === localIso(0)), JSON.stringify(posts.map(c => c.body)));
+  ok('one refusal does not stop the others, and the screen names who failed and why', /2 settlements prepared/.test(text()) && /Not prepared: Peter Mine \(Your approver is blocked\)/.test(text()) && !posts.some(c => c.body.engagement_id === 'e4'));
+  ok('it reminds that someone else must approve, then the weekly sheet', /have someone else approve/.test(text()));
   await unmount();
 }
 
