@@ -149,6 +149,15 @@ export async function POST(request, props) {
         const msg = rpcErr.message || '';
         if (msg.includes('ORDER_NOT_FOUND'))  return NextResponse.json({ error: 'Order not found' }, { status: 404 });
         if (msg.includes('SAME_STATUS'))      return NextResponse.json({ error: 'Order is already in that status' }, { status: 422 });
+        if (msg.includes('DEPOSIT_REQUIRED')) {
+          return NextResponse.json(
+            { error: 'This order is not on credit terms (30 day, 60 day or custom), so it cannot skip Deposit Paid. Record the deposit and advance to Deposit Paid, or change the order\'s payment terms.' },
+            { status: 422 },
+          );
+        }
+        if (msg.includes('CREDIT_APPROVAL_REQUIRED')) {
+          return NextResponse.json({ error: 'A credit approval reference is required to skip Deposit Paid.' }, { status: 422 });
+        }
         console.error('advance_order_status RPC failed:', orderId, msg);
         return NextResponse.json({ error: `Failed to advance status: ${msg}` }, { status: 500 });
       }

@@ -5,9 +5,10 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/shared/supabase/client';
 import { lineTypeForCategory } from '@/shared/lib/orderLineTypes';
+import { isCreditOrder } from '@/shared/lib/isCreditOrder';
 import {
   CATEGORIES, CHARGE_TYPES, FINISH_TYPES, WOOD_TYPES,
-  CUSTOMER_TYPES, PAYMENT_TERMS, CREDIT_TERMS,
+  CUSTOMER_TYPES, PAYMENT_TERMS,
   ROLES_CAN_CREATE, HEAD_OF_SALES_CREDIT_LIMIT,
 } from '@/modules/orders/components/constants';
 
@@ -315,8 +316,7 @@ function NewOrderContent() {
   const chargesTotal = charges.reduce((s, c) => s + (parseFloat(c.amount) || 0), 0);
   const contractTotal = itemsSubtotal + chargesTotal;
 
-  const isCredit = ['reseller', 'commercial'].includes(form.customer_type)
-    && CREDIT_TERMS.includes(form.payment_terms);
+  const isCredit = isCreditOrder(form);
 
   const canCreate = ROLES_CAN_CREATE.includes(userRole);
   const canSubmit = form.client.trim() && items.length > 0 && !saving;
@@ -554,8 +554,8 @@ function NewOrderContent() {
                       marginTop: '8px', padding: '8px 12px', background: '#EDE7F6',
                       borderRadius: '6px', fontSize: '11px', color: '#512DA8', fontWeight: 600,
                     }}>
-                      🔒 Credit client — deposit gate bypassed. Credit approval required when advancing from Quote Approved.
-                      {form.customer_type === 'reseller' && ` Head of Sales can approve up to KES ${HEAD_OF_SALES_CREDIT_LIMIT.toLocaleString()}.`}
+                      🔒 Credit terms — deposit gate bypassed. Credit approval required when advancing from Quote Approved.
+                      {` Head of Sales can approve up to KES ${HEAD_OF_SALES_CREDIT_LIMIT.toLocaleString()}.`}
                     </div>
                   )}
                 </div>

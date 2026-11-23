@@ -8,6 +8,7 @@ import { createClient } from '@/shared/supabase/client';
 import { DrawingsUpload } from '@/modules/orders/components/DrawingsUpload';
 import { operationalCustomerName, customerNameDrifted } from '@/shared/lib/customerDisplay';
 import { buildOrderSavePayload } from '@/shared/lib/orderSavePayload';
+import { isCreditOrder } from '@/shared/lib/isCreditOrder';
 import DeliveryTab from '@/modules/orders/components/DeliveryTab';
 import DangerZoneTab from '@/modules/orders/components/DangerZoneTab';
 import OrderCostingPanel from '@/modules/production/components/OrderCosting';
@@ -15,7 +16,7 @@ import {
   STATUSES, REPAIR_STATUSES, ALL_STATUS_COLORS,
   ROLES_CAN_ADVANCE, ROLES_CAN_REWORK, ROLES_CAN_REFUND,
   REWORK_TARGETS, REWORK_REASONS, REPAIR_REASONS,
-  SALES_MAX_ADVANCE_TO, CREDIT_TERMS,
+  SALES_MAX_ADVANCE_TO, PAYMENT_TERMS,
   HEAD_OF_SALES_CREDIT_LIMIT,
   CATEGORIES, FINISH_TYPES, WOOD_TYPES, CHARGE_TYPES,
   getStatusList,
@@ -1708,8 +1709,8 @@ export default function OrderFormPage() {
     ? itemsSubtotal + chargesSubtotal
     : parseFloat(order.total_value) || 0;
 
-  const isCredit = ['reseller', 'commercial'].includes(order.customer_type)
-    && CREDIT_TERMS.includes(order.payment_terms);
+  // Credit = credit payment terms (30_day / 60_day / custom), any customer type.
+  const isCredit = isCreditOrder(order);
 
   const BATCH_ROLES    = ['admin', 'head_of_sales', 'production_manager'];
   const canToggleBatch = BATCH_ROLES.includes(userRole);
@@ -1937,7 +1938,8 @@ export default function OrderFormPage() {
     if (nextSt === 'Deposit Paid') {
       const { data: pmts } = await supabase.from('order_payments').select('id').eq('order_id', id).limit(1);
       if (!pmts || pmts.length === 0) {
-        setActionError('A deposit payment must be recorded before advancing to Deposit Paid. Use the Financial Summary section below.');
+        const termsLabel = PAYMENT_TERMS.find(p => p.id === order.payment_terms)?.label || order.payment_terms || 'not set';
+        setActionError(`A deposit payment must be recorded before advancing to Deposit Paid. Use the Financial Summary section below. (Payment terms on this order: ${termsLabel}. Only 30 Day Credit, 60 Day Credit or Custom terms skip this step.)`);
         return;
       }
     }
