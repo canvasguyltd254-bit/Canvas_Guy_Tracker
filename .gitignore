@@ -3,3 +3,14 @@ node_modules/
 .env.local
 .vercel
 .DS_Store
+
+# Local build/test outputs
+.build*.log
+esbuild_out.txt
+test_*.pdf
+quote_preview.pdf
+Canvas_Guy_Cashflow_Feature_Brief.pdf
+
+# Generated deployment bundles and Supabase CLI state
+shopify/*.zip
+supabase/.temp/
