@@ -11,55 +11,144 @@
 --   order given 30-day / 60-day / custom terms for a retail-typed customer could
 --   never skip Deposit Paid, and the invoice GL fired at the wrong stage.
 --
---   While fixing it, review found the surrounding controls were also bypassable:
+--   Review of the fix found the surrounding controls were also bypassable:
 --     - advance_order_status accepted ANY status -> ANY status
---     - credit exposure was added on every call that carried an approval ref
---     - RLS lets Sales / Production Staff UPDATE orders directly from the browser
---       (status, payment_terms, credit_approval_ref ...), skipping the API entirely
+--     - credit exposure was a counter that only ever grew, and an approval for a
+--       client with no credit profile (or limit 0) passed unchecked
+--     - RLS lets browser sessions write orders, client_profiles and order_payments
+--       directly (status, payment_terms, credit limit, fake payments ...)
 --
 -- CHANGE
 --   1. Credit order = payment_terms IN ('30_day','60_day','custom'). Customer type
 --      is not part of the rule. (Mirrors shared/lib/isCreditOrder.js.)
---   2. Legal transitions only. A forward move must be one of the listed edges;
---      anything else raises INVALID_TRANSITION. (Send-back stays a separate,
---      role-checked path in the API route.)
+--   2. Legal forward transitions only (INVALID_TRANSITION).
 --   3. Quote Approved -> Material Check (skips Deposit Paid) needs a credit order,
---      an approval reference and room under the client's credit limit:
---        DEPOSIT_REQUIRED / CREDIT_APPROVAL_REQUIRED / CREDIT_LIMIT_EXCEEDED
+--      an approval reference, and a credit profile with a limit above 0 that has
+--      room. It FAILS CLOSED:
+--        DEPOSIT_REQUIRED / CREDIT_APPROVAL_REQUIRED /
+--        CREDIT_PROFILE_REQUIRED / CREDIT_LIMIT_NOT_SET / CREDIT_LIMIT_EXCEEDED
 --   4. Deposit Paid needs at least one unreversed payment on the order, for every
---      order (DEPOSIT_PAYMENT_REQUIRED). Before, an order that already had an
---      invoice journal could reach Deposit Paid with no payment at all.
---   5. Credit exposure is counted once per order (orders.credit_exposure_counted)
---      and released on send-back to Quote Approved or on cancellation. An approval
---      ref on any other transition is ignored.
+--      order (DEPOSIT_PAYMENT_REQUIRED).
+--   5. Credit exposure is OUTSTANDING credit, not a lifetime counter:
+--      sum over the client's credit-approved orders of (order total - unreversed
+--      payments), cancelled orders excluded. It is recomputed whenever a payment,
+--      an order total, an approval or a send-back/cancel changes it, so paying
+--      reduces exposure and nothing can be counted twice.
+--      orders.credit_exposure_counted is now just the "credit-approved" marker.
 --   6. The credit invoice journal is posted at Quote Approved (as before) AND, if it
 --      was never posted, when the order leaves Quote Approved.
---   7. Guard trigger: browser sessions (role authenticated / anon) can no longer
---      write status, payment_terms, credit_approval_ref, refund_reference,
---      credit_exposure_counted or invoice_journal_entry_id on orders. The API
---      (service role) and the SECURITY DEFINER functions are unaffected.
+--   7. Guard triggers. Browser sessions (role authenticated / anon):
+--        orders          may change ONLY quote_number and batch_delivery; may insert
+--                        only a fresh 'Inquiry' with no credit/refund/invoice links
+--        client_profiles may not change credit_limit / current_exposure / name /
+--                        type; may insert only with limit 0 and exposure 0
+--        order_payments  may not insert, update or delete
+--      The API (service role) and the SECURITY DEFINER functions are unaffected.
 --
--- NOT changed here: who may approve credit. That is a role rule and lives in
--- app/api/orders/[id]/status/route.js (admin, or head_of_sales up to the cap).
+-- EXISTING DATA: client_profiles.current_exposure is overwritten with the live
+-- outstanding figure (previously a lifetime sum). Clients with no profile, or a
+-- limit of 0, cannot get credit approved until an admin sets a limit
+-- (Admin -> Clients, or PATCH /api/admin/clients/:name/credit-limit).
 -- ============================================================
 
--- 1. Per-order record of the exposure already added to client_profiles.
+ALTER TABLE client_profiles
+  ADD COLUMN IF NOT EXISTS current_exposure numeric(14,2) NOT NULL DEFAULT 0;
+
+-- 1. "Credit-approved" marker (amount at approval; live amounts come from total_value).
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                  WHERE table_schema = 'public' AND table_name = 'orders'
                    AND column_name = 'credit_exposure_counted') THEN
     ALTER TABLE orders ADD COLUMN credit_exposure_counted numeric(14,2) NOT NULL DEFAULT 0;
-    -- Orders approved before this migration were counted once at approval time.
+    -- Orders credit-approved before this migration and still past Quote Approved.
     UPDATE orders SET credit_exposure_counted = COALESCE(total_value, 0)
-    WHERE  credit_approval_ref IS NOT NULL;
+    WHERE  credit_approval_ref IS NOT NULL
+      AND  status NOT IN ('Inquiry', 'Quote Approved', 'Cancelled / Refunded');
   END IF;
 END $$;
 
 COMMENT ON COLUMN orders.credit_exposure_counted IS
-  'Amount already added to client_profiles.current_exposure for this order. Makes approval idempotent; released on send-back or cancel.';
+  'Non-zero = this order was credit-approved and counts toward the client''s outstanding credit exposure. Cleared on send-back to Quote Approved or cancellation.';
 
--- 2. Release a counted exposure (send-back to Quote Approved, cancellation).
+-- 2. Live outstanding credit for a client (optionally excluding one order).
+CREATE OR REPLACE FUNCTION client_credit_outstanding(p_client text, p_exclude uuid DEFAULT NULL)
+RETURNS numeric
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  SELECT COALESCE(SUM(GREATEST(0, COALESCE(o.total_value, 0) - COALESCE(p.paid, 0))), 0)
+  FROM   orders o
+  LEFT   JOIN LATERAL (
+           SELECT SUM(amount) AS paid
+           FROM   order_payments
+           WHERE  order_id = o.id AND reversed_at IS NULL
+         ) p ON true
+  WHERE  o.client = p_client
+    AND  o.credit_exposure_counted > 0
+    AND  o.status <> 'Cancelled / Refunded'
+    AND  (p_exclude IS NULL OR o.id <> p_exclude);
+$$;
+
+REVOKE EXECUTE ON FUNCTION client_credit_outstanding(text, uuid) FROM PUBLIC;
+GRANT  EXECUTE ON FUNCTION client_credit_outstanding(text, uuid) TO service_role;
+
+CREATE OR REPLACE FUNCTION refresh_client_exposure(p_client text)
+RETURNS void
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  UPDATE client_profiles
+  SET    current_exposure = client_credit_outstanding(p_client)
+  WHERE  client_name = p_client;
+$$;
+
+REVOKE EXECUTE ON FUNCTION refresh_client_exposure(text) FROM PUBLIC;
+GRANT  EXECUTE ON FUNCTION refresh_client_exposure(text) TO service_role;
+
+-- Keep the stored figure in step with orders and payments.
+CREATE OR REPLACE FUNCTION orders_refresh_exposure()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  PERFORM refresh_client_exposure(NEW.client);
+  IF OLD.client IS DISTINCT FROM NEW.client THEN PERFORM refresh_client_exposure(OLD.client); END IF;
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_orders_refresh_exposure ON orders;
+CREATE TRIGGER trg_orders_refresh_exposure
+  AFTER UPDATE OF total_value, status, client, credit_exposure_counted ON orders
+  FOR EACH ROW EXECUTE FUNCTION orders_refresh_exposure();
+
+CREATE OR REPLACE FUNCTION order_payments_refresh_exposure()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_client text;
+BEGIN
+  SELECT client INTO v_client FROM orders WHERE id = COALESCE(NEW.order_id, OLD.order_id);
+  IF v_client IS NOT NULL THEN PERFORM refresh_client_exposure(v_client); END IF;
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_order_payments_refresh_exposure ON order_payments;
+CREATE TRIGGER trg_order_payments_refresh_exposure
+  AFTER INSERT OR UPDATE OR DELETE ON order_payments
+  FOR EACH ROW EXECUTE FUNCTION order_payments_refresh_exposure();
+
+-- 3. Withdraw an order's credit approval (send-back to Quote Approved, cancellation).
 CREATE OR REPLACE FUNCTION release_order_credit_exposure(p_order_id uuid)
 RETURNS numeric
 LANGUAGE plpgsql
@@ -73,10 +162,7 @@ BEGIN
   IF NOT FOUND THEN RAISE EXCEPTION 'ORDER_NOT_FOUND'; END IF;
   IF COALESCE(v_order.credit_exposure_counted, 0) <= 0 THEN RETURN 0; END IF;
 
-  UPDATE client_profiles
-  SET    current_exposure = GREATEST(0, COALESCE(current_exposure, 0) - v_order.credit_exposure_counted)
-  WHERE  client_name = v_order.client;
-
+  -- The orders trigger recomputes the client's exposure.
   UPDATE orders SET credit_exposure_counted = 0 WHERE id = p_order_id;
   RETURN v_order.credit_exposure_counted;
 END;
@@ -85,7 +171,7 @@ $$;
 REVOKE EXECUTE ON FUNCTION release_order_credit_exposure(uuid) FROM PUBLIC;
 GRANT  EXECUTE ON FUNCTION release_order_credit_exposure(uuid) TO service_role;
 
--- 3. The status function.
+-- 4. The status function.
 CREATE OR REPLACE FUNCTION advance_order_status(
   p_order_id    uuid,
   p_new_status  text,
@@ -108,8 +194,8 @@ DECLARE
   v_refund_ref         text;
   v_allowed            boolean;
   v_limit              numeric;
-  v_exposure           numeric;
-  v_delta              numeric := 0;
+  v_others             numeric;
+  v_this_paid          numeric;
 BEGIN
   -- Lock the row for the duration of this transaction
   SELECT * INTO v_order
@@ -161,7 +247,7 @@ BEGIN
   v_is_credit_skip := (v_old_status = 'Quote Approved' AND p_new_status = 'Material Check');
   v_credit_approval := CASE WHEN v_is_credit_skip THEN NULLIF(btrim(p_extra->>'credit_approval_ref'), '') END;
 
-  -- ── Credit skip guard ──────────────────────────────────────────────────────
+  -- ── Credit skip guard (fails closed) ───────────────────────────────────────
   IF v_is_credit_skip THEN
     IF NOT v_is_credit THEN
       RAISE EXCEPTION 'DEPOSIT_REQUIRED';
@@ -170,18 +256,26 @@ BEGIN
       RAISE EXCEPTION 'CREDIT_APPROVAL_REQUIRED';
     END IF;
 
-    -- Count this order's exposure once. delta = what is not yet counted.
-    v_delta := COALESCE(v_order.total_value, 0) - COALESCE(v_order.credit_exposure_counted, 0);
-
-    SELECT credit_limit, COALESCE(current_exposure, 0)
-    INTO   v_limit, v_exposure
+    -- Lock the client's profile so concurrent approvals for one client queue up.
+    SELECT credit_limit INTO v_limit
     FROM   client_profiles
     WHERE  client_name = v_order.client
     FOR UPDATE;
 
-    IF FOUND AND COALESCE(v_limit, 0) > 0 AND v_exposure + v_delta > v_limit THEN
-      RAISE EXCEPTION 'CREDIT_LIMIT_EXCEEDED: exposure % + order % exceeds limit %',
-        v_exposure, v_delta, v_limit;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'CREDIT_PROFILE_REQUIRED';
+    END IF;
+    IF COALESCE(v_limit, 0) <= 0 THEN
+      RAISE EXCEPTION 'CREDIT_LIMIT_NOT_SET';
+    END IF;
+
+    v_others := client_credit_outstanding(v_order.client, p_order_id);
+    SELECT COALESCE(SUM(amount), 0) INTO v_this_paid
+    FROM   order_payments WHERE order_id = p_order_id AND reversed_at IS NULL;
+
+    IF v_others + GREATEST(0, COALESCE(v_order.total_value, 0) - v_this_paid) > v_limit THEN
+      RAISE EXCEPTION 'CREDIT_LIMIT_EXCEEDED: outstanding % + this order % exceeds limit %',
+        v_others, GREATEST(0, COALESCE(v_order.total_value, 0) - v_this_paid), v_limit;
     END IF;
   END IF;
 
@@ -215,27 +309,17 @@ BEGIN
   END IF;
 
   -- ── Status update ──────────────────────────────────────────────────────────
+  -- The orders trigger recomputes the client's outstanding exposure from this.
 
   UPDATE orders
   SET    status                  = p_new_status,
          credit_approval_ref     = COALESCE(v_credit_approval, credit_approval_ref),
          refund_reference        = COALESCE(v_refund_ref,      refund_reference),
          credit_exposure_counted = CASE WHEN v_is_credit_skip THEN COALESCE(v_order.total_value, 0)
+                                        WHEN p_new_status = 'Cancelled / Refunded' THEN 0
                                         ELSE credit_exposure_counted END,
          updated_at              = NOW()
   WHERE  id = p_order_id;
-
-  -- ── Credit exposure (once per order) ───────────────────────────────────────
-  IF v_is_credit_skip AND v_delta <> 0 THEN
-    UPDATE client_profiles
-    SET    current_exposure = GREATEST(0, COALESCE(current_exposure, 0) + v_delta)
-    WHERE  client_name = v_order.client;
-  END IF;
-
-  -- A cancelled order no longer carries credit exposure.
-  IF p_new_status = 'Cancelled / Refunded' THEN
-    PERFORM release_order_credit_exposure(p_order_id);
-  END IF;
 
   RETURN jsonb_build_object(
     'old_status', v_old_status,
@@ -250,37 +334,95 @@ GRANT  EXECUTE ON FUNCTION advance_order_status(uuid, text, uuid, jsonb) TO serv
 
 COMMENT ON FUNCTION advance_order_status(uuid, text, uuid, jsonb) IS
   'Atomically advance order status and post GL journals. Enforces legal transitions, the credit skip '
-  '(credit terms + approval ref + credit limit), deposit proof, and once-only credit exposure.';
+  '(credit terms + approval ref + credit profile with a limit + room under it), deposit proof, and live outstanding exposure.';
 
--- 4. Browsers may not write financial/workflow columns on orders directly.
---    RLS lets Sales and Production Staff UPDATE orders from the browser; without this
---    they could set status or payment_terms and skip every check above.
+-- 5. Guard triggers: browsers may not write workflow / credit / payment data directly.
+--    They are named aaa_* so they fire before any other BEFORE trigger on the table
+--    and see exactly what the browser sent.
+--    current_user is 'authenticated' / 'anon' for browser (PostgREST) sessions; inside the
+--    SECURITY DEFINER functions it is the function owner; for the API it is service_role.
+
 CREATE OR REPLACE FUNCTION orders_guard_workflow_columns()
 RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = public, pg_temp
 AS $$
+DECLARE
+  v_browser_may_change text[] := ARRAY['quote_number', 'batch_delivery', 'updated_at'];
 BEGIN
-  -- current_user is 'authenticated' / 'anon' for browser (PostgREST) sessions. Inside the
-  -- SECURITY DEFINER functions it is the function owner, and for the API's service-role
-  -- client it is service_role; both pass.
-  IF current_user IN ('authenticated', 'anon') THEN
-    IF NEW.status                  IS DISTINCT FROM OLD.status
-    OR NEW.payment_terms           IS DISTINCT FROM OLD.payment_terms
-    OR NEW.credit_approval_ref     IS DISTINCT FROM OLD.credit_approval_ref
-    OR NEW.refund_reference        IS DISTINCT FROM OLD.refund_reference
-    OR NEW.credit_exposure_counted IS DISTINCT FROM OLD.credit_exposure_counted
-    OR NEW.invoice_journal_entry_id IS DISTINCT FROM OLD.invoice_journal_entry_id THEN
-      RAISE EXCEPTION 'ORDER_COLUMN_LOCKED: status, payment terms and credit fields are changed through the order workflow, not directly';
+  IF current_user NOT IN ('authenticated', 'anon') THEN
+    RETURN NEW;
+  END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.status IS DISTINCT FROM 'Inquiry'
+       OR NEW.credit_approval_ref IS NOT NULL
+       OR NEW.refund_reference IS NOT NULL
+       OR COALESCE(NEW.credit_exposure_counted, 0) <> 0
+       OR NEW.invoice_journal_entry_id IS NOT NULL THEN
+      RAISE EXCEPTION 'ORDER_COLUMN_LOCKED: a new order starts as Inquiry with no credit, refund or invoice links';
     END IF;
+  ELSIF (to_jsonb(NEW) - v_browser_may_change) IS DISTINCT FROM (to_jsonb(OLD) - v_browser_may_change) THEN
+    RAISE EXCEPTION 'ORDER_COLUMN_LOCKED: only the quote number and batch delivery can be saved directly; everything else goes through the order workflow';
   END IF;
   RETURN NEW;
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_orders_guard_workflow_columns ON orders;
-CREATE TRIGGER trg_orders_guard_workflow_columns
-  BEFORE UPDATE ON orders
+DROP TRIGGER IF EXISTS trg_orders_guard_workflow_columns ON orders;      -- earlier name
+DROP TRIGGER IF EXISTS aaa_orders_guard_workflow_columns ON orders;
+CREATE TRIGGER aaa_orders_guard_workflow_columns
+  BEFORE INSERT OR UPDATE ON orders
   FOR EACH ROW EXECUTE FUNCTION orders_guard_workflow_columns();
+
+CREATE OR REPLACE FUNCTION client_profiles_guard_credit_columns()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_browser_may_change text[] := ARRAY['notes', 'updated_at'];
+BEGIN
+  IF current_user NOT IN ('authenticated', 'anon') THEN
+    RETURN NEW;
+  END IF;
+
+  IF TG_OP = 'INSERT' THEN
+    IF COALESCE(NEW.credit_limit, 0) <> 0 OR COALESCE(NEW.current_exposure, 0) <> 0 THEN
+      RAISE EXCEPTION 'CREDIT_COLUMN_LOCKED: credit limits are set by an admin, and exposure is calculated';
+    END IF;
+  ELSIF (to_jsonb(NEW) - v_browser_may_change) IS DISTINCT FROM (to_jsonb(OLD) - v_browser_may_change) THEN
+    RAISE EXCEPTION 'CREDIT_COLUMN_LOCKED: credit limits are set by an admin, and exposure is calculated';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS aaa_client_profiles_guard_credit_columns ON client_profiles;
+CREATE TRIGGER aaa_client_profiles_guard_credit_columns
+  BEFORE INSERT OR UPDATE ON client_profiles
+  FOR EACH ROW EXECUTE FUNCTION client_profiles_guard_credit_columns();
+
+CREATE OR REPLACE FUNCTION order_payments_guard_browser_writes()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF current_user IN ('authenticated', 'anon') THEN
+    RAISE EXCEPTION 'PAYMENT_WRITE_LOCKED: payments are recorded through the payments workflow, not directly';
+  END IF;
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS aaa_order_payments_guard_browser_writes ON order_payments;
+CREATE TRIGGER aaa_order_payments_guard_browser_writes
+  BEFORE INSERT OR UPDATE OR DELETE ON order_payments
+  FOR EACH ROW EXECUTE FUNCTION order_payments_guard_browser_writes();
+
+-- 6. Recompute every client's exposure from live data (replaces the old lifetime counter).
+UPDATE client_profiles SET current_exposure = client_credit_outstanding(client_name);
 
 NOTIFY pgrst, 'reload schema';

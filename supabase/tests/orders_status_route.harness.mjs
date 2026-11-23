@@ -24,9 +24,9 @@ export const serviceClient = new Proxy({}, { get: (_, k) => globalThis.__svc[k] 
 `);
 writeFileSync('/tmp/rt/suspendStub.js', `export const checkOrderSuspended = async () => null;`);
 
-await esbuild.build({
-  entryPoints: [path.join(REPO, 'app/api/orders/[id]/status/route.js')], bundle: true, platform: 'node', format: 'cjs',
-  outfile: '/tmp/rt/out/orders_status.cjs', logLevel: 'error', nodePaths: [path.join(REPO, 'node_modules')],
+const bundle = (rel, out) => esbuild.build({
+  entryPoints: [path.join(REPO, rel)], bundle: true, platform: 'node', format: 'cjs',
+  outfile: `/tmp/rt/out/${out}.cjs`, logLevel: 'error', nodePaths: [path.join(REPO, 'node_modules')],
   plugins: [{
     name: 'alias',
     setup(b) {
@@ -41,7 +41,10 @@ await esbuild.build({
     },
   }],
 });
+await bundle('app/api/orders/[id]/status/route.js', 'orders_status');
+await bundle('app/api/orders/[id]/route.js', 'orders_patch');
 const { POST } = require('/tmp/rt/out/orders_status.cjs');
+const { PATCH } = require('/tmp/rt/out/orders_patch.cjs');
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => { cond ? pass++ : fail++; console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '  ' + extra}`); };
@@ -53,7 +56,7 @@ function setup(order, { rpcError = null } = {}) {
     from(t) {
       let op = 'select', patch = null;
       const api = {
-        select() { return api; }, eq() { return api; }, is() { return api; },
+        select() { return api; }, eq() { return api; }, is() { return api; }, order() { return api; },
         update(v) { op = 'update'; patch = v; return api; },
         insert() { op = 'insert'; return api; },
         single() { return Promise.resolve({ data: order, error: null }); },
@@ -167,6 +170,61 @@ for (const [msg, code, re] of mapped) {
   const log = setup(order('Material Check'));
   const r = await call('sales', { newStatus: 'Quote Approved' });
   ok('sales cannot send back (403)', r.status === 403 && log.updates.length === 0, JSON.stringify(r));
+}
+
+
+// ── Sales ceiling also covers repair / return statuses (not in STATUSES, so indexOf() would let them through) ──
+for (const to of ['Reported', 'Assessed', 'In Repair', 'QC', 'Redelivered']) {
+  const log = setup(order('Reported', { order_type: 'repair' }));
+  const r = await call('sales', { newStatus: to });
+  ok(`sales cannot move a repair order to ${to} (403)`, r.status === 403 && adv(log).length === 0, JSON.stringify(r));
+}
+{
+  const log = setup(order('Reported', { order_type: 'repair' }));
+  const r = await call('production_manager', { newStatus: 'Assessed' });
+  ok('production_manager can still advance a repair order', r.status === 200 && adv(log).length === 1, JSON.stringify(r));
+}
+{
+  setup(order('Quote Approved'));
+  const r1 = await call('sales', { newStatus: 'Quote Approved' });
+  ok('sales may still reach Quote Approved (inside the ceiling)', r1.status !== 403, JSON.stringify(r1));
+}
+
+// ── New credit-profile errors are clear 422s ──
+for (const msg of ['CREDIT_PROFILE_REQUIRED', 'CREDIT_LIMIT_NOT_SET']) {
+  setup(order('Quote Approved'), { rpcError: { message: msg } });
+  const r = await call('admin', { newStatus: 'Material Check', creditApprovalRef: 'APR-1' });
+  ok(`${msg} → 422 telling the user to ask an admin to set a limit`, r.status === 422 && /no credit limit set/.test(r.json.error) && /admin/.test(r.json.error), JSON.stringify(r));
+}
+
+// ── General PATCH cannot set workflow / credit fields ──
+const patch = async (role, body) => {
+  globalThis.__ctx = { user: { id: 'u1' }, role };
+  const res = await PATCH(new Request('http://x', { method: 'PATCH', body: JSON.stringify(body) }), { params: Promise.resolve({ id: 'o1' }) });
+  return { status: res.status, json: await res.json() };
+};
+for (const role of ['sales', 'head_of_sales', 'admin']) {
+  const log = setup(order('Quote Approved'));
+  const r = await patch(role, {
+    notes: 'hello', due_date: '2026-12-01',
+    status: 'Production', credit_approval_ref: 'SNEAK', refund_reference: 'SNEAK', payment_terms: '30_day',
+    invoice_number: 'INV-FAKE', total_value: 1, subtotal_amount: 1, vat_amount: 1, customer_id: null,
+  });
+  const u = log.updates.find(x => x.t === 'orders');
+  ok(`PATCH (${role}) saves ordinary fields`, r.status === 200 && u && u.patch.notes === 'hello' && u.patch.due_date === '2026-12-01', JSON.stringify({ r, u }));
+  const banned = ['status', 'credit_approval_ref', 'refund_reference', 'payment_terms', 'invoice_number', 'total_value', 'subtotal_amount', 'vat_amount'];
+  ok(`PATCH (${role}) ignores status, credit/refund refs, payment terms, invoice number and money fields`,
+    u && banned.every(k => !(k in u.patch)), JSON.stringify(u?.patch));
+}
+{
+  const log = setup(order('Quote Approved'));
+  const r = await patch('sales', { credit_approval_ref: 'SNEAK', payment_terms: '30_day', status: 'Production' });
+  ok('PATCH with only protected fields writes nothing', r.status === 200 && !log.updates.some(x => x.t === 'orders'), JSON.stringify({ r, u: log.updates }));
+}
+{
+  setup(order('Quote Approved'));
+  const r = await patch('production_staff', { notes: 'x' });
+  ok('production_staff still cannot PATCH orders (403)', r.status === 403, JSON.stringify(r));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

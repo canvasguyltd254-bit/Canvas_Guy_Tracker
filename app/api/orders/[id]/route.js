@@ -38,7 +38,14 @@ import { pick, ALLOWED_FIELDS } from '@/shared/lib/whitelist';
 import { checkOrderSuspended } from '@/shared/lib/suspendGuard';
 
 // status is workflow-only; money fields are server-derived from the items.
-const SERVER_OWNED_FIELDS = new Set(['status', 'total_value', 'subtotal_amount', 'vat_amount']);
+// Credit / refund references, payment terms and the invoice number are owned by their own
+// workflows (credit approval, refund, invoicing); a general save never sets them. The order
+// form does not send them, and accepting them here would let a Sales user approve credit or
+// switch terms with a plain PATCH.
+const SERVER_OWNED_FIELDS = new Set([
+  'status', 'total_value', 'subtotal_amount', 'vat_amount',
+  'credit_approval_ref', 'refund_reference', 'payment_terms', 'invoice_number',
+]);
 const ORDER_UPDATE_FIELDS = ALLOWED_FIELDS.orders.update.filter(f => !SERVER_OWNED_FIELDS.has(f));
 
 const PRE_PRODUCTION_STATUSES = ['Inquiry', 'Quote Approved', 'Deposit Paid', 'Material Check'];

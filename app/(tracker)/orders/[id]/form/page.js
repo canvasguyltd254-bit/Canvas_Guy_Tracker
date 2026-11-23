@@ -1931,7 +1931,12 @@ export default function OrderFormPage() {
       }
       // Load credit exposure
       const { data: cp } = await supabase.from('client_profiles').select('credit_limit, current_exposure').eq('client_name', order.client).maybeSingle();
-      setCreditLimit(cp?.credit_limit || 0);
+      if (!cp || !(parseFloat(cp.credit_limit) > 0)) {
+        // Fail closed (the server enforces the same rule): no limit, no credit.
+        setActionError(`${order.client} has no credit limit set, so credit cannot be approved. Ask an admin to set one (Admin → Clients), then try again.`);
+        return;
+      }
+      setCreditLimit(parseFloat(cp.credit_limit));
       setCreditExposure(cp?.current_exposure || 0);
       setCreditRef('');
       setModal('credit');

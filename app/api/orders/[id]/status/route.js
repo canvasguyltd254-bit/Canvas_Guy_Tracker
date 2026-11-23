@@ -106,9 +106,11 @@ export async function POST(request, props) {
         const refundErr = requireRole(user, role, ROLES_CAN_REFUND);
         if (refundErr) return refundErr;
       } else if (role === 'sales') {
-        // Sales may advance only up to SALES_MAX_ADVANCE_TO (Deposit Paid).
-        const idx = STATUSES.indexOf(newStatus);
-        if (idx > STATUSES.indexOf(SALES_MAX_ADVANCE_TO)) {
+        // Sales may move an order only to a status up to SALES_MAX_ADVANCE_TO (Deposit Paid).
+        // Explicit allow-list: repair/return statuses (Assessed, In Repair, QC ...) are not in
+        // STATUSES, so a ceiling test with indexOf() would let them through.
+        const salesMayReach = STATUSES.slice(0, STATUSES.indexOf(SALES_MAX_ADVANCE_TO) + 1);
+        if (!salesMayReach.includes(newStatus)) {
           return NextResponse.json(
             { error: `Sales can advance orders only up to ${SALES_MAX_ADVANCE_TO}.` },
             { status: 403 },
@@ -192,8 +194,14 @@ export async function POST(request, props) {
             { status: 422 },
           );
         }
+        if (msg.includes('CREDIT_PROFILE_REQUIRED') || msg.includes('CREDIT_LIMIT_NOT_SET')) {
+          return NextResponse.json(
+            { error: 'This client has no credit limit set, so credit cannot be approved. Ask an admin to set one (Admin → Clients), then try again.' },
+            { status: 422 },
+          );
+        }
         if (msg.includes('CREDIT_LIMIT_EXCEEDED')) {
-          return NextResponse.json({ error: 'This order would take the client over their credit limit. An admin must raise the limit first.' }, { status: 422 });
+          return NextResponse.json({ error: 'This order would take the client over their credit limit (outstanding credit plus this order). An admin must raise the limit or the client must pay down first.' }, { status: 422 });
         }
         if (msg.includes('REFUND_REFERENCE_REQUIRED')) {
           return NextResponse.json({ error: 'A refund reference is required.' }, { status: 422 });
