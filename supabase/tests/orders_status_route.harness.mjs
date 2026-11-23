@@ -43,34 +43,44 @@ const bundle = (rel, out) => esbuild.build({
 });
 await bundle('app/api/orders/[id]/status/route.js', 'orders_status');
 await bundle('app/api/orders/[id]/route.js', 'orders_patch');
+await bundle('app/api/orders/[id]/credit-position/route.js', 'orders_credit_position');
+await bundle('app/api/customers/route.js', 'customers_collection');
+await bundle('app/api/customers/[id]/route.js', 'customers_item');
 const { POST } = require('/tmp/rt/out/orders_status.cjs');
 const { PATCH } = require('/tmp/rt/out/orders_patch.cjs');
+const { GET: creditPositionGET } = require('/tmp/rt/out/orders_credit_position.cjs');
+const { POST: customersPOST } = require('/tmp/rt/out/customers_collection.cjs');
+const { PATCH: customerPATCH } = require('/tmp/rt/out/customers_item.cjs');
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => { cond ? pass++ : fail++; console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '  ' + extra}`); };
 
 // ── fake service client ──
-function setup(order, { rpcError = null } = {}) {
-  const log = { rpc: [], updates: [], activities: 0 };
+function setup(order, { rpcError = null, rpcData = {}, payments = [], single = {} } = {}) {
+  const log = { rpc: [], updates: [], inserts: [], activities: 0 };
   globalThis.__svc = {
     from(t) {
       let op = 'select', patch = null;
       const api = {
         select() { return api; }, eq() { return api; }, is() { return api; }, order() { return api; },
         update(v) { op = 'update'; patch = v; return api; },
-        insert() { op = 'insert'; return api; },
-        single() { return Promise.resolve({ data: order, error: null }); },
+        insert(v) { op = 'insert'; patch = v; return api; },
+        single() {
+          if (op === 'update') log.updates.push({ t, patch });
+          if (op === 'insert') log.inserts.push({ t, patch });
+          return Promise.resolve({ data: (t in single) ? single[t] : (t === 'orders' ? order : null), error: null });
+        },
         then(res, rej) {
           if (op === 'update') log.updates.push({ t, patch });
-          if (op === 'insert' && t === 'order_activities') log.activities++;
-          return Promise.resolve({ data: t === 'order_payments' ? [] : null, error: null }).then(res, rej);
+          if (op === 'insert') { log.inserts.push({ t, patch }); if (t === 'order_activities') log.activities++; }
+          return Promise.resolve({ data: t === 'order_payments' ? payments : null, error: null }).then(res, rej);
         },
       };
       return api;
     },
     rpc(name, args) {
       log.rpc.push({ name, args });
-      return Promise.resolve({ error: name === 'advance_order_status' ? rpcError : null });
+      return Promise.resolve({ data: rpcData[name] ?? null, error: name === 'advance_order_status' ? rpcError : null });
     },
   };
   return log;
@@ -80,7 +90,7 @@ const call = async (role, body) => {
   const res = await POST(new Request('http://x', { method: 'POST', body: JSON.stringify(body) }), { params: Promise.resolve({ id: 'o1' }) });
   return { status: res.status, json: await res.json() };
 };
-const order = (status, extra = {}) => ({ id: 'o1', status, order_num: 'ORD-1', client: 'Acme', total_value: 100000, customer_type: 'retail', payment_terms: '30_day', invoice_journal_entry_id: null, ...extra });
+const order = (status, extra = {}) => ({ id: 'o1', status, order_num: 'ORD-1', client: 'Acme', total_value: 100000, customer_id: 'c1', customer_type: 'retail', payment_terms: '30_day', invoice_journal_entry_id: null, ...extra });
 const adv = log => log.rpc.filter(r => r.name === 'advance_order_status');
 
 // ── credit approval is admin / head_of_sales only ──
@@ -140,7 +150,9 @@ const mapped = [
   ['INVALID_TRANSITION: Inquiry -> Production', 422, /Cannot move an order from Quote Approved to Material Check/],
   ['NO_UNPOSTED_PAYMENTS: order x has no unposted deposit payments to post', 422, /Record a deposit payment/],
   ['DEPOSIT_PAYMENT_REQUIRED', 422, /Record a deposit payment/],
-  ['CREDIT_LIMIT_EXCEEDED: exposure 1 + order 2 exceeds limit 3', 422, /credit limit/],
+  ['CREDIT_LIMIT_EXCEEDED: owed 1 + this order 2 exceeds limit 3', 422, /credit limit/],
+  ['CUSTOMER_REQUIRED', 422, /Link this order to a customer/],
+  ['CREDIT_LIMIT_NOT_SET', 422, /customer has no credit limit set/],
   ['DEPOSIT_REQUIRED', 422, /not on credit terms/],
   ['CREDIT_APPROVAL_REQUIRED', 422, /approval reference/],
   ['REFUND_REFERENCE_REQUIRED', 422, /refund reference/],
@@ -158,13 +170,12 @@ for (const [msg, code, re] of mapped) {
   ok('send-back Material Check → Quote Approved succeeds for head_of_sales', r.status === 200, JSON.stringify(r));
   const u = log.updates.find(x => x.t === 'orders');
   ok('  …changes the status only (refund / credit refs are never set here)', u && Object.keys(u.patch).join() === 'status' && u.patch.status === 'Quote Approved', JSON.stringify(u));
-  ok('  …releases the credit exposure', log.rpc.some(x => x.name === 'release_order_credit_exposure'));
-  ok('  …without calling advance_order_status', adv(log).length === 0);
+  ok('  …calls no database function at all (exposure is derived from status, nothing to release)', log.rpc.length === 0, JSON.stringify(log.rpc));
 }
 {
   const log = setup(order('Production'));
   const r = await call('head_of_sales', { newStatus: 'Material Check' });
-  ok('send-back Production → Material Check does not release exposure', r.status === 200 && !log.rpc.some(x => x.name === 'release_order_credit_exposure'), JSON.stringify(r));
+  ok('send-back Production → Material Check succeeds', r.status === 200 && log.rpc.length === 0, JSON.stringify(r));
 }
 {
   const log = setup(order('Material Check'));
@@ -191,10 +202,10 @@ for (const to of ['Reported', 'Assessed', 'In Repair', 'QC', 'Redelivered']) {
 }
 
 // ── New credit-profile errors are clear 422s ──
-for (const msg of ['CREDIT_PROFILE_REQUIRED', 'CREDIT_LIMIT_NOT_SET']) {
-  setup(order('Quote Approved'), { rpcError: { message: msg } });
+{
+  setup(order('Quote Approved'), { rpcError: { message: 'CREDIT_LIMIT_NOT_SET' } });
   const r = await call('admin', { newStatus: 'Material Check', creditApprovalRef: 'APR-1' });
-  ok(`${msg} → 422 telling the user to ask an admin to set a limit`, r.status === 422 && /no credit limit set/.test(r.json.error) && /admin/.test(r.json.error), JSON.stringify(r));
+  ok('CREDIT_LIMIT_NOT_SET → 422 telling the user an admin sets it on the customer page', r.status === 422 && /customer's page/.test(r.json.error), JSON.stringify(r));
 }
 
 // ── General PATCH cannot set workflow / credit fields ──
@@ -225,6 +236,117 @@ for (const role of ['sales', 'head_of_sales', 'admin']) {
   setup(order('Quote Approved'));
   const r = await patch('production_staff', { notes: 'x' });
   ok('production_staff still cannot PATCH orders (403)', r.status === 403, JSON.stringify(r));
+}
+
+
+// ── Order cannot be re-linked to another customer once past Quote Approved ──
+for (const status of ['Deposit Paid', 'Material Check', 'Production', 'Delivered']) {
+  const log = setup(order(status));
+  const r = await patch('sales', { customer_id: 'c2', notes: 'x' });
+  ok(`re-linking the customer at ${status} is refused (409)`, r.status === 409 && r.json.code === 'CUSTOMER_LOCKED' && !log.updates.some(x => x.t === 'orders'), JSON.stringify(r));
+}
+for (const status of ['Inquiry', 'Quote Approved']) {
+  const log = setup(order(status));
+  const r = await patch('sales', { customer_id: 'c2' });
+  const u = log.updates.find(x => x.t === 'orders');
+  ok(`re-linking the customer at ${status} is allowed`, r.status === 200 && u && u.patch.customer_id === 'c2', JSON.stringify({ r, u }));
+}
+{
+  const log = setup(order('Production'));
+  const r = await patch('sales', { customer_id: 'c1', notes: 'same customer' });
+  ok('saving the SAME customer_id at Production is not a re-link (200)', r.status === 200, JSON.stringify(r));
+}
+
+// ── Credit position endpoint (what the approval modal shows) ──
+const position = async (role) => {
+  globalThis.__ctx = { user: { id: 'u1' }, role };
+  const res = await creditPositionGET(new Request('http://x'), { params: Promise.resolve({ id: 'o1' }) });
+  return { status: res.status, json: await res.json() };
+};
+for (const role of ['sales', 'production_manager', 'production_staff']) {
+  setup(order('Quote Approved'));
+  const r = await position(role);
+  ok(`${role} cannot read the credit position (403)`, r.status === 403, JSON.stringify(r));
+}
+for (const role of ['admin', 'head_of_sales']) {
+  const log = setup(order('Quote Approved'), {
+    rpcData: { customer_credit_position: { customer_name: 'KNP', limit: 500000, outstanding: 200000 } },
+    payments: [{ amount: 30000 }],
+  });
+  const r = await position(role);
+  ok(`${role}: owed, this order (unpaid), after approval and available are calculated`,
+    r.status === 200 && r.json.limit === 500000 && r.json.owed === 200000 && r.json.thisOrder === 70000
+    && r.json.afterApproval === 270000 && r.json.available === 300000 && r.json.withinLimit === true, JSON.stringify(r));
+  const c = log.rpc.find(x => x.name === 'customer_credit_position');
+  ok(`${role}: asks the database function for the order's customer, excluding this order`, c && c.args.p_customer_id === 'c1' && c.args.p_exclude_order === 'o1', JSON.stringify(c));
+}
+{
+  setup(order('Quote Approved'), { rpcData: { customer_credit_position: { customer_name: 'KNP', limit: 500000, outstanding: 480000 } } });
+  const r = await position('admin');
+  ok('over the limit: reported as not within limit (the modal turns red)', r.status === 200 && r.json.withinLimit === false && r.json.afterApproval === 580000 && r.json.available === 20000, JSON.stringify(r));
+}
+{
+  const log = setup(order('Quote Approved', { customer_id: null }));
+  const r = await position('admin');
+  ok('order with no linked customer → 422 CUSTOMER_REQUIRED, database not asked', r.status === 422 && r.json.code === 'CUSTOMER_REQUIRED' && log.rpc.length === 0, JSON.stringify(r));
+}
+{
+  setup(order('Quote Approved'), { rpcData: { customer_credit_position: { customer_name: 'KNP Tower', limit: 0, outstanding: 0 } } });
+  const r = await position('admin');
+  ok('customer with limit 0 → 422 CREDIT_LIMIT_NOT_SET naming the customer', r.status === 422 && r.json.code === 'CREDIT_LIMIT_NOT_SET' && /KNP Tower/.test(r.json.error), JSON.stringify(r));
+}
+
+// ── Customers: credit limit / opening balance are admin-only ──
+const custCurrent = { credit_limit: 500000, opening_balance: 0, opening_balance_date: null };
+const patchCustomer = async (role, body) => {
+  globalThis.__ctx = { user: { id: 'u1' }, role };
+  const res = await customerPATCH(new Request('http://x', { method: 'PATCH', body: JSON.stringify(body) }), { params: Promise.resolve({ id: 'c1' }) });
+  return { status: res.status, json: await res.json() };
+};
+for (const role of ['sales', 'head_of_sales', 'production_manager']) {
+  for (const body of [{ credit_limit: 900000 }, { opening_balance: 1 }, { opening_balance_date: '2026-01-01' }, { credit_limit: 900000, phone: '0700' }]) {
+    const log = setup(order('Inquiry'), { single: { customers: { ...custCurrent } } });
+    const r = await patchCustomer(role, body);
+    ok(`${role} cannot change ${Object.keys(body).filter(k => k !== 'phone').join()} (403)`, r.status === 403 && !log.updates.some(x => x.t === 'customers'), JSON.stringify(r));
+  }
+  const log = setup(order('Inquiry'), { single: { customers: { ...custCurrent } } });
+  const r = await patchCustomer(role, { phone: '0700', credit_limit: '500000', opening_balance: '', opening_balance_date: '' });
+  const u = log.updates.find(x => x.t === 'customers');
+  ok(`${role} can save ordinary fields; the unchanged credit fields the form re-sends are dropped`,
+    r.status === 200 && u && u.patch.phone === '0700' && !('credit_limit' in u.patch) && !('opening_balance' in u.patch) && !('opening_balance_date' in u.patch), JSON.stringify({ r, u }));
+}
+{
+  const log = setup(order('Inquiry'), { single: { customers: { ...custCurrent } } });
+  const r = await patchCustomer('sales', { credit_limit: 500000 });
+  ok('only unchanged credit fields: succeeds with no write', r.status === 200 && !log.updates.some(x => x.t === 'customers'), JSON.stringify(r));
+}
+{
+  const log = setup(order('Inquiry'), { single: { customers: { ...custCurrent } } });
+  const r = await patchCustomer('admin', { credit_limit: 900000, opening_balance: 25000, opening_balance_date: '2026-01-01' });
+  const u = log.updates.find(x => x.t === 'customers');
+  ok('admin can set the credit limit and opening balance', r.status === 200 && u && u.patch.credit_limit === 900000 && u.patch.opening_balance === 25000 && u.patch.opening_balance_date === '2026-01-01', JSON.stringify({ r, u }));
+}
+const postCustomer = async (role, body) => {
+  globalThis.__ctx = { user: { id: 'u1' }, role };
+  const res = await customersPOST(new Request('http://x', { method: 'POST', body: JSON.stringify(body) }));
+  return { status: res.status, json: await res.json() };
+};
+for (const role of ['sales', 'head_of_sales', 'production_manager']) {
+  for (const extra of [{ credit_limit: 100000 }, { opening_balance: 5000 }, { opening_balance_date: '2026-01-01' }]) {
+    const log = setup(order('Inquiry'), { single: { customers: { id: 'new' } } });
+    const r = await postCustomer(role, { name: 'New Customer', ...extra });
+    ok(`${role} cannot create a customer with ${Object.keys(extra)[0]} (403)`, r.status === 403 && !log.inserts.some(x => x.t === 'customers'), JSON.stringify(r));
+  }
+  const log = setup(order('Inquiry'), { single: { customers: { id: 'new' } } });
+  const r = await postCustomer(role, { name: 'New Customer', credit_limit: '', opening_balance: 0, phone: '0700' });
+  const i = log.inserts.find(x => x.t === 'customers');
+  ok(`${role} can create a customer with no credit settings (limit stored as 0)`, r.status === 201 && i && i.patch.credit_limit === 0 && i.patch.opening_balance === 0, JSON.stringify({ r, i }));
+}
+{
+  const log = setup(order('Inquiry'), { single: { customers: { id: 'new' } } });
+  const r = await postCustomer('admin', { name: 'Credit Customer', credit_limit: 250000, opening_balance: 1000 });
+  const i = log.inserts.find(x => x.t === 'customers');
+  ok('admin can create a customer with a credit limit and opening balance', r.status === 201 && i && i.patch.credit_limit === 250000 && i.patch.opening_balance === 1000, JSON.stringify({ r, i }));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

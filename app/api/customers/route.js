@@ -137,6 +137,20 @@ export async function POST(request) {
       return NextResponse.json({ error: `credit_terms must be one of: ${VALID_TERMS.join(', ')}` }, { status: 400 });
     }
 
+    // Credit limit and opening balance are credit-risk settings: only an admin may set them.
+    // Everyone else creates customers with 0 (an admin sets the limit afterwards).
+    if (role !== 'admin') {
+      const wantsCredit = (parseFloat(body.credit_limit) || 0) !== 0
+        || (parseFloat(body.opening_balance) || 0) !== 0
+        || !!body.opening_balance_date;
+      if (wantsCredit) {
+        return NextResponse.json(
+          { error: 'Only an admin can set a credit limit or opening balance. Save the customer without them; an admin sets them afterwards.' },
+          { status: 403 },
+        );
+      }
+    }
+
     const safe = {
       name:                 body.name.trim(),
       contact_person:       body.contact_person?.trim()  || null,

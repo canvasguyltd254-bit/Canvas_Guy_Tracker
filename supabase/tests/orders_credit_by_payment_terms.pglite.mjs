@@ -7,8 +7,9 @@
 //   mkdir -p /tmp/pg && cd /tmp/pg && npm init -y && npm i @electric-sql/pglite
 //   PGLITE_DIR=/tmp/pg node supabase/tests/orders_credit_by_payment_terms.pglite.mjs
 //
-// NOT covered: concurrent connections, the real GL journals, who may approve credit (a ROLE rule,
-// tested in orders_status_route.harness.mjs), PostgREST's own role switching (simulated with SET ROLE).
+// NOT covered: concurrent connections, the real GL journals, who may approve credit or edit
+// customers (ROLE rules, tested in orders_status_route.harness.mjs), PostgREST's own role
+// switching (simulated with SET ROLE).
 
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
@@ -31,25 +32,27 @@ const one = async (sql, p) => (await db.query(sql, p)).rows[0];
 
 await db.exec(`
   CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role;
+  CREATE TABLE customers (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name text NOT NULL, phone text, notes text,
+    credit_limit numeric(12,2) NOT NULL DEFAULT 0,
+    opening_balance numeric(12,2) NOT NULL DEFAULT 0,
+    opening_balance_date date
+  );
   CREATE TABLE orders (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     order_num text, invoice_number text, quote_number text, notes text, batch_delivery boolean DEFAULT false,
     order_type text NOT NULL DEFAULT 'standard',
     status text NOT NULL DEFAULT 'Inquiry',
-    client text, total_value numeric(14,2),
+    client text, customer_id uuid REFERENCES customers(id), total_value numeric(14,2),
     customer_type text, payment_terms text,
     invoice_journal_entry_id uuid,
     credit_approval_ref text, refund_reference text,
     updated_at timestamptz
   );
   CREATE TABLE order_payments (id serial PRIMARY KEY, order_id uuid, amount numeric, reversed_at timestamptz);
-  CREATE TABLE client_profiles (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    client_name text NOT NULL UNIQUE, customer_type text NOT NULL DEFAULT 'retail',
-    credit_limit numeric(12,2) DEFAULT 0, current_exposure numeric(14,2) DEFAULT 0, notes text, updated_at timestamptz
-  );
   CREATE TABLE gl_calls (id serial PRIMARY KEY, order_id uuid, kind text);
-  GRANT ALL ON orders, order_payments, client_profiles, gl_calls TO anon, authenticated, service_role;
+  GRANT ALL ON customers, orders, order_payments, gl_calls TO anon, authenticated, service_role;
   GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
 
   CREATE FUNCTION post_deposit_paid_journals(p_order_id uuid, p_by uuid) RETURNS jsonb
@@ -64,12 +67,17 @@ await db.exec(`
     RETURN '{}'::jsonb; END $$;
 `);
 
+const customer = async (name, limit = 0, opening = 0, openingDate = null) =>
+  (await one(`INSERT INTO customers (name, credit_limit, opening_balance, opening_balance_date) VALUES ($1,$2,$3,$4) RETURNING id`, [name, limit, opening, openingDate])).id;
+const setLimit = (id, limit) => db.query(`UPDATE customers SET credit_limit=$2 WHERE id=$1`, [id, limit]);
+
+let acme;   // default customer with a huge limit; assigned after the migration
 const mk = async (customer_type, payment_terms, status = 'Quote Approved', opts = {}) => {
-  const { invoiced = false, client = 'Acme', total = 100000, order_type = 'standard', approvalRef = null } = opts;
+  const { invoiced = false, total = 100000, order_type = 'standard', approvalRef = null, cust = acme } = opts;
   return (await one(
-    `INSERT INTO orders (order_num, status, client, total_value, customer_type, payment_terms, invoice_journal_entry_id, order_type, credit_approval_ref)
-     VALUES ('ORD-' || nextval(pg_get_serial_sequence('gl_calls','id')), $1, $2, $3, $4, $5, CASE WHEN $6 THEN gen_random_uuid() END, $7, $8)
-     RETURNING id`, [status, client, total, customer_type, payment_terms, invoiced, order_type, approvalRef])).id;
+    `INSERT INTO orders (order_num, status, client, customer_id, total_value, customer_type, payment_terms, invoice_journal_entry_id, order_type, credit_approval_ref)
+     VALUES ('ORD-' || nextval(pg_get_serial_sequence('gl_calls','id')), $1, 'Client', $2, $3, $4, $5, CASE WHEN $6 THEN gen_random_uuid() END, $7, $8)
+     RETURNING id`, [status, cust, total, customer_type, payment_terms, invoiced, order_type, approvalRef])).id;
 };
 const pay = async (id, amount = 50000, reversed = false) =>
   (await one(`INSERT INTO order_payments (order_id, amount, reversed_at) VALUES ($1, $2, CASE WHEN $3 THEN now() END) RETURNING id`, [id, amount, reversed])).id;
@@ -77,47 +85,37 @@ const adv = (id, to, extra = {}) =>
   db.query(`SELECT advance_order_status($1, $2, gen_random_uuid(), $3::jsonb) r`, [id, to, JSON.stringify(extra)]);
 const st = async id => (await one(`SELECT status FROM orders WHERE id=$1`, [id])).status;
 const calls = async id => (await db.query(`SELECT kind FROM gl_calls WHERE order_id=$1 ORDER BY id`, [id])).rows.map(r => r.kind);
-const counted = async id => Number((await one(`SELECT credit_exposure_counted c FROM orders WHERE id=$1`, [id])).c);
-const exposure = async name => Number((await one(`SELECT current_exposure e FROM client_profiles WHERE client_name=$1`, [name])).e);
-const profile = (name, limit, exp = 0) => db.query(
-  `INSERT INTO client_profiles (client_name, credit_limit, current_exposure) VALUES ($1,$2,$3)
-   ON CONFLICT (client_name) DO UPDATE SET credit_limit=$2, current_exposure=$3`, [name, limit, exp]);
+const position = async (cust, exclude = null) => (await one(`SELECT customer_credit_position($1,$2) p`, [cust, exclude])).p;
 const asRole = async (role, fn) => { await db.exec(`SET ROLE ${role}`); try { return await fn(); } finally { await db.exec(`RESET ROLE`); } };
-// Simulates the API route's send-back: a direct status update as the service role, then the release call.
-const sendBack = (id, to, release = true) => asRole('service_role', async () => {
-  await db.query(`UPDATE orders SET status=$2 WHERE id=$1`, [id, to]);
-  if (release) await db.query(`SELECT release_order_credit_exposure($1)`, [id]);
-});
+const setStatus = (id, to) => asRole('service_role', () => db.query(`UPDATE orders SET status=$2 WHERE id=$1`, [id, to]));   // the API's send-back
 const approve = (id, ref = 'APR') => adv(id, 'Material Check', { credit_approval_ref: ref });
 
-// ── 0. Old function: the bug, and the pre-migration data that must be handled ──
+// ── 0. Old function: the bug. Plus leftovers from an earlier draft that must be cleaned up ──
 await db.exec(mig('quotes_crm_migration_d.sql'));
 {
-  const id = await mk('retail', '30_day');
+  const id = await mk('retail', '30_day', 'Quote Approved', { cust: null });
   await adv(id, 'Deposit Paid');
   ok('BEFORE fix: retail + 30_day is treated as a cash order (deposit invoice posted at Deposit Paid)',
     (await calls(id)).join() === 'deposit');
 }
-await profile('Legacy Ltd', 500000, 999999);   // old lifetime counter, far above anything outstanding
-const preApproved = await mk('commercial', '30_day', 'Material Check', { client: 'Legacy Ltd', approvalRef: 'OLD-1', total: 70000 });
-const preReworked = await mk('commercial', '30_day', 'Quote Approved', { client: 'Legacy Ltd', approvalRef: 'OLD-2', total: 40000 });
-const prePaid = await mk('commercial', '30_day', 'Closed', { client: 'Legacy Ltd', approvalRef: 'OLD-3', total: 30000 });
-await pay(prePaid, 30000);
+await db.exec(`
+  ALTER TABLE orders ADD COLUMN credit_exposure_counted numeric DEFAULT 0;
+  CREATE FUNCTION release_order_credit_exposure(p uuid) RETURNS numeric LANGUAGE sql AS $$ SELECT 0::numeric $$;
+  CREATE FUNCTION refresh_client_exposure(p text) RETURNS void LANGUAGE sql AS $$ SELECT $$;
+`);
 
-// ── Apply the fix ───────────────────────────────────────────────────────────
 await db.exec(mig('orders_credit_by_payment_terms.sql'));
 ok('fix migration applies', true);
-ok('backfill: order approved before the migration and still past Quote Approved is credit-approved', (await counted(preApproved)) === 70000);
-ok('backfill: order sent back to Quote Approved is NOT counted', (await counted(preReworked)) === 0);
-ok('exposure is recomputed from live data (70,000 outstanding + 0 for the fully paid order), not the old 999,999 counter',
-  (await exposure('Legacy Ltd')) === 70000, String(await exposure('Legacy Ltd')));
-await db.query(`UPDATE orders SET credit_exposure_counted = 0 WHERE id=$1`, [preApproved]);
 await db.exec(mig('orders_credit_by_payment_terms.sql'));
 ok('fix migration is re-runnable', true);
-ok('re-running does not re-backfill a released order', (await counted(preApproved)) === 0);
-ok('re-running refreshes the stored exposure (now 0)', (await exposure('Legacy Ltd')) === 0);
+{
+  const r = await one(`SELECT
+      (SELECT count(*) FROM information_schema.columns WHERE table_name='orders' AND column_name='credit_exposure_counted') col,
+      (SELECT count(*) FROM pg_proc WHERE proname IN ('release_order_credit_exposure','refresh_client_exposure')) fn`);
+  ok('objects from the earlier draft (per-order exposure column and helpers) are removed', Number(r.col) === 0 && Number(r.fn) === 0, JSON.stringify(r));
+}
 
-await profile('Acme', 100000000);
+acme = await customer('Acme', 100000000);
 
 // ── 1. Credit by payment terms, any customer type ───────────────────────────
 for (const [ct, terms] of [['retail', '30_day'], ['retail', '60_day'], ['retail', 'custom'],
@@ -140,8 +138,7 @@ for (const [ct, terms] of [['retail', 'cash_before'], ['retail', '50_deposit'], 
                            ['reseller', '50_deposit'], ['retail', null]]) {
   const id = await mk(ct, terms);
   await throws(`${ct} + ${terms}: cannot skip Deposit Paid (even with an approval ref)`, () => approve(id), /DEPOSIT_REQUIRED/);
-  ok('  …and the status did not change', (await st(id)) === 'Quote Approved');
-  ok('  …and no GL / credit side effects', (await calls(id)).length === 0 && (await counted(id)) === 0);
+  ok('  …and the status did not change, nothing posted', (await st(id)) === 'Quote Approved' && (await calls(id)).length === 0);
 }
 
 // ── 3. Legal transitions only (no status jumping) ───────────────────────────
@@ -224,113 +221,124 @@ for (const [from, to] of illegal) {
 
 // ── 6. Credit fails closed ──────────────────────────────────────────────────
 {
-  const id = await mk('retail', '30_day', 'Quote Approved', { client: 'No Profile Ltd' });
-  await throws('client with NO credit profile cannot be approved', () => approve(id), /CREDIT_PROFILE_REQUIRED/);
-  ok('  …status unchanged, nothing posted, no profile created', (await st(id)) === 'Quote Approved' && (await calls(id)).length === 0
-    && Number((await one(`SELECT count(*) c FROM client_profiles WHERE client_name='No Profile Ltd'`)).c) === 0);
+  const id = await mk('retail', '30_day', 'Quote Approved', { cust: null });
+  await throws('order not linked to a customer cannot be approved', () => approve(id), /CUSTOMER_REQUIRED/);
+  ok('  …status unchanged, nothing posted', (await st(id)) === 'Quote Approved' && (await calls(id)).length === 0);
+  const c = await customer('Late Link Ltd', 150000);
+  await db.query(`UPDATE orders SET customer_id=$2 WHERE id=$1`, [id, c]);
+  await approve(id);
+  ok('once the order is linked to a customer with a limit, it can be approved', (await st(id)) === 'Material Check');
 }
 {
-  await profile('Zero Ltd', 0);
-  const id = await mk('retail', '30_day', 'Quote Approved', { client: 'Zero Ltd' });
-  await throws('credit limit 0 is NOT "unlimited": approval is refused', () => approve(id), /CREDIT_LIMIT_NOT_SET/);
-  await db.query(`UPDATE client_profiles SET credit_limit = NULL WHERE client_name='Zero Ltd'`);
-  await throws('credit limit NULL is refused too', () => approve(id), /CREDIT_LIMIT_NOT_SET/);
-  ok('  …status unchanged', (await st(id)) === 'Quote Approved' && (await counted(id)) === 0);
-  await profile('Zero Ltd', 150000);
+  const c = await customer('Zero Ltd', 0);
+  const id = await mk('retail', '30_day', 'Quote Approved', { cust: c });
+  await throws('customer credit limit 0 is NOT "unlimited": approval is refused', () => approve(id), /CREDIT_LIMIT_NOT_SET/);
+  await db.query(`UPDATE customers SET credit_limit = 0.00 WHERE id=$1`, [c]);
+  ok('  …status unchanged', (await st(id)) === 'Quote Approved');
+  await setLimit(c, 150000);
   await approve(id);
-  ok('once an admin sets a limit, the same order can be approved', (await st(id)) === 'Material Check');
+  ok('once an admin sets a limit on the customer, the same order can be approved', (await st(id)) === 'Material Check');
+}
+{
+  // the limit that counts is the CUSTOMER limit, not a client profile
+  await db.exec(`CREATE TABLE IF NOT EXISTS client_profiles (client_name text PRIMARY KEY, credit_limit numeric)`);
+  await db.exec(`INSERT INTO client_profiles VALUES ('Client', 99999999) ON CONFLICT DO NOTHING`);
+  const c = await customer('Profile Ignored Ltd', 0);
+  const id = await mk('retail', '30_day', 'Quote Approved', { cust: c });
+  await throws('a limit set only on a client_profiles row does not unlock credit (the customer record is the source)', () => approve(id), /CREDIT_LIMIT_NOT_SET/);
 }
 
-// ── 7. Exposure is live outstanding credit (payments reduce it) ─────────────
+// ── 7. What a customer owes ─────────────────────────────────────────────────
 {
-  await profile('Live Ltd', 500000);
-  const a = await mk('retail', '30_day', 'Quote Approved', { client: 'Live Ltd', total: 100000 });
-  const b = await mk('retail', '30_day', 'Quote Approved', { client: 'Live Ltd', total: 80000 });
-  await approve(a); await approve(b);
-  ok('two approvals: 100,000 + 80,000 outstanding', (await exposure('Live Ltd')) === 180000, String(await exposure('Live Ltd')));
-  const p1 = await pay(a, 40000);
-  ok('a payment reduces exposure (140,000)', (await exposure('Live Ltd')) === 140000, String(await exposure('Live Ltd')));
-  await db.query(`UPDATE order_payments SET reversed_at = now() WHERE id=$1`, [p1]);
-  ok('reversing the payment restores it (180,000)', (await exposure('Live Ltd')) === 180000);
-  await pay(a, 100000);
-  ok('fully paid order drops out (80,000)', (await exposure('Live Ltd')) === 80000);
-  await pay(a, 5000);
-  ok('overpayment never makes exposure negative', (await exposure('Live Ltd')) === 80000);
-  await db.query(`UPDATE orders SET total_value = 90000 WHERE id=$1`, [b]);
-  ok('an order total change is reflected (90,000)', (await exposure('Live Ltd')) === 90000);
-  await sendBack(b, 'Quote Approved', true);
-  ok('send-back to Quote Approved withdraws the approval (0)', (await exposure('Live Ltd')) === 0 && (await counted(b)) === 0);
-  const r = await one(`SELECT release_order_credit_exposure($1) r`, [b]);
-  ok('release is idempotent', Number(r.r) === 0 && (await exposure('Live Ltd')) === 0);
-}
-{
-  await profile('Resend Ltd', 500000);
-  const id = await mk('retail', '30_day', 'Quote Approved', { client: 'Resend Ltd', total: 60000 });
-  await approve(id, 'A1');
-  await sendBack(id, 'Quote Approved', false);                    // the release call failed / was skipped
-  ok('missed release leaves it counted (the safe side)', (await exposure('Resend Ltd')) === 60000);
-  await approve(id, 'A2');
-  ok('re-approval does not double count (60,000, not 120,000)', (await exposure('Resend Ltd')) === 60000);
-}
-{
-  await profile('Stray Ltd', 500000);
-  const id = await mk('retail', '30_day', 'Deposit Paid', { client: 'Stray Ltd', total: 50000 });
-  await pay(id, 10000);
-  await adv(id, 'Material Check', { credit_approval_ref: 'SNEAK' });
-  const o = await one(`SELECT credit_approval_ref r FROM orders WHERE id=$1`, [id]);
-  ok('an approval ref on any other transition adds no exposure and is not stored', (await exposure('Stray Ltd')) === 0 && o.r === null);
-}
-{
-  await profile('Cancel Ltd', 500000);
-  const keep = await mk('retail', '30_day', 'Quote Approved', { client: 'Cancel Ltd', total: 20000 });
-  await approve(keep);
-  const id = await mk('retail', '30_day', 'Quote Approved', { client: 'Cancel Ltd', total: 30000 });
-  await approve(id);
-  await sendBack(id, 'Quote Approved', false);
-  ok('before cancelling: 50,000 outstanding', (await exposure('Cancel Ltd')) === 50000);
-  await throws('cancel without a refund reference is refused', () => adv(id, 'Cancelled / Refunded'), /REFUND_REFERENCE_REQUIRED/);
-  await adv(id, 'Cancelled / Refunded', { refund_reference: 'RF-1' });
-  ok('cancelling removes the order from exposure (20,000)', (await exposure('Cancel Ltd')) === 20000 && (await counted(id)) === 0);
+  const c = await customer('Pos Ltd', 1000000, 200000);
+  const other = await customer('Other Ltd', 1000000);
+  const inq    = await mk('retail', '30_day', 'Inquiry',        { cust: c, total: 50000 });
+  const quote  = await mk('retail', '30_day', 'Quote Approved', { cust: c, total: 60000 });
+  const dep    = await mk('retail', '50_deposit', 'Deposit Paid', { cust: c, total: 100000 });
+  await pay(dep, 40000);
+  const prod   = await mk('retail', '30_day', 'Production',     { cust: c, total: 30000 });
+  const closed = await mk('retail', '30_day', 'Closed',         { cust: c, total: 80000 });
+  await pay(closed, 80000);
+  const cancel = await mk('retail', '30_day', 'Cancelled / Refunded', { cust: c, total: 90000 });
+  const over   = await mk('retail', '30_day', 'Delivered',      { cust: c, total: 70000 });
+  await pay(over, 75000);
+  await mk('retail', '30_day', 'Production', { cust: other, total: 999999 });
+  const p = await position(c);
+  ok('enquiries and unapproved quotes are NOT counted', p.owed_on_orders === 90000 || Number(p.owed_on_orders) === 90000, JSON.stringify(p));
+  ok('owed = opening balance 200,000 + 60,000 (deposit order) + 30,000 (production) = 290,000', Number(p.outstanding) === 290000, JSON.stringify(p));
+  ok('fully paid, cancelled and overpaid orders add nothing; overpayment does not offset others', Number(p.owed_on_orders) === 90000);
+  ok('another customer\'s debt is not mixed in; limit and name are reported', Number(p.limit) === 1000000 && p.customer_name === 'Pos Ltd');
+  const px = await position(c, dep);
+  ok('the order being approved can be excluded (290,000 − 60,000 = 230,000)', Number(px.outstanding) === 230000, JSON.stringify(px));
+  await pay(dep, 30000, true);
+  ok('a reversed payment does not reduce what is owed', Number((await position(c)).outstanding) === 290000);
+  await pay(dep, 60000);
+  ok('payments reduce what is owed (290,000 − 60,000 = 230,000)', Number((await position(c)).outstanding) === 230000);
+  await db.query(`UPDATE customers SET opening_balance = -50000 WHERE id=$1`, [c]);
+  ok('a negative opening balance (customer in credit) is floored at 0, not netted against orders', Number((await position(c)).outstanding) === 30000, JSON.stringify(await position(c)));
+  ok('unknown customer returns NULL', (await position('00000000-0000-0000-0000-000000000000')) === null);
 }
 
-// ── 8. Credit limit uses outstanding, not lifetime ──────────────────────────
+// ── 8. Credit limit uses what is owed ───────────────────────────────────────
 {
-  await profile('Cap Ltd', 120000);
-  const o1 = await mk('retail', '30_day', 'Quote Approved', { client: 'Cap Ltd', total: 100000 });
-  const o2 = await mk('retail', '30_day', 'Quote Approved', { client: 'Cap Ltd', total: 50000 });
+  const c = await customer('Cap Ltd', 120000, 20000);
+  const o1 = await mk('retail', '30_day', 'Quote Approved', { cust: c, total: 80000 });
+  const o2 = await mk('retail', '30_day', 'Quote Approved', { cust: c, total: 50000 });
+  for (let i = 0; i < 5; i++) await mk('retail', '30_day', 'Quote Approved', { cust: c, total: 1000000 });   // unapproved quotes
   await approve(o1);
-  await throws('100,000 outstanding + 50,000 exceeds the 120,000 limit', () => approve(o2), /CREDIT_LIMIT_EXCEEDED/);
-  ok('  …status and exposure unchanged', (await st(o2)) === 'Quote Approved' && (await exposure('Cap Ltd')) === 100000 && (await counted(o2)) === 0);
+  ok('big unapproved quotes do not block an approval (20,000 + 80,000 = 100,000 ≤ 120,000)', (await st(o1)) === 'Material Check');
+  await throws('opening 20,000 + owed 80,000 + this 50,000 = 150,000 exceeds the 120,000 limit', () => approve(o2), /CREDIT_LIMIT_EXCEEDED/);
+  ok('  …status unchanged', (await st(o2)) === 'Quote Approved');
   await pay(o1, 40000);
   await approve(o2);
-  ok('after the client pays 40,000 the same order fits (60,000 + 50,000 = 110,000)', (await st(o2)) === 'Material Check' && (await exposure('Cap Ltd')) === 110000);
-  const o3 = await mk('retail', '30_day', 'Quote Approved', { client: 'Cap Ltd', total: 10000 });
+  ok('after the customer pays 40,000 the same order fits (20,000 + 40,000 + 50,000 = 110,000)', (await st(o2)) === 'Material Check');
+  const o3 = await mk('retail', '30_day', 'Quote Approved', { cust: c, total: 10000 });
   await approve(o3);
-  ok('an order that lands exactly on the limit is allowed (120,000)', (await exposure('Cap Ltd')) === 120000);
-  const o4 = await mk('retail', '30_day', 'Quote Approved', { client: 'Cap Ltd', total: 1 });
+  ok('an order that lands exactly on the limit is allowed (120,000)', (await st(o3)) === 'Material Check');
+  const o4 = await mk('retail', '30_day', 'Quote Approved', { cust: c, total: 1 });
   await throws('one shilling over is refused', () => approve(o4), /CREDIT_LIMIT_EXCEEDED/);
+  await setStatus(o3, 'Quote Approved');
+  await approve(o4);
+  ok('sending an order back to Quote Approved stops it counting, so room is freed (no release step needed)', (await st(o4)) === 'Material Check');
+  await setStatus(o4, 'Quote Approved');
+  await approve(o3);
+  ok('re-approving a sent-back order counts it once, not twice', (await st(o3)) === 'Material Check' && Number((await position(c)).outstanding) === 20000 + 40000 + 50000 + 10000);
+  await adv(o2, 'Production');
+  const refused = await mk('retail', '30_day', 'Quote Approved', { cust: c, total: 5 });
+  await throws('cancelled orders drop out only when actually cancelled; others keep counting', () => approve(refused), /CREDIT_LIMIT_EXCEEDED/);
 }
 {
-  await profile('Deposit Credit Ltd', 50000);
-  const id = await mk('retail', '30_day', 'Quote Approved', { client: 'Deposit Credit Ltd', total: 100000 });
+  const c = await customer('Deposit Credit Ltd', 50000);
+  const id = await mk('retail', '30_day', 'Quote Approved', { cust: c, total: 100000 });
   await pay(id, 60000);
   await approve(id);
-  ok('payments already on THIS order reduce what it adds (100,000 − 60,000 = 40,000 ≤ 50,000)', (await st(id)) === 'Material Check' && (await exposure('Deposit Credit Ltd')) === 40000);
+  ok('payments already on THIS order reduce what it adds (100,000 − 60,000 = 40,000 ≤ 50,000)', (await st(id)) === 'Material Check');
+}
+{
+  const c = await customer('Cancel Ltd', 100000);
+  const a = await mk('retail', '30_day', 'Quote Approved', { cust: c, total: 100000 });
+  await approve(a);
+  const b = await mk('retail', '30_day', 'Quote Approved', { cust: c, total: 10 });
+  await throws('customer is at their limit', () => approve(b), /CREDIT_LIMIT_EXCEEDED/);
+  await setStatus(a, 'Quote Approved');
+  const x = await mk('retail', '30_day', 'Quote Approved', { cust: c, total: 100000 });
+  await throws('cancel without a refund reference is refused', () => adv(a, 'Cancelled / Refunded'), /REFUND_REFERENCE_REQUIRED/);
+  await adv(a, 'Cancelled / Refunded', { refund_reference: 'RF-1' });
+  await approve(x);
+  ok('a cancelled order does not count against the customer', (await st(x)) === 'Material Check');
 }
 
 // ── 9. Browsers cannot write workflow / credit / payment data directly ──────
 {
-  const id = await mk('retail', 'cash_before', 'Quote Approved', { client: 'Guard Ltd', total: 5000 });
+  const id = await mk('retail', 'cash_before', 'Quote Approved', { total: 5000 });
   const upd = (role, sql) => asRole(role, () => db.query(sql, [id]));
   const lockedOrders = {
     status: `status='Production'`, payment_terms: `payment_terms='30_day'`, credit_approval_ref: `credit_approval_ref='SNEAK'`,
-    refund_reference: `refund_reference='SNEAK'`, credit_exposure_counted: `credit_exposure_counted=5`,
-    invoice_journal_entry_id: `invoice_journal_entry_id=gen_random_uuid()`, total_value: `total_value=1`,
-    client: `client='Other Ltd'`, customer_type: `customer_type='commercial'`, order_type: `order_type='repair'`,
-    invoice_number: `invoice_number='INV-FAKE'`, notes: null, // notes handled below
+    refund_reference: `refund_reference='SNEAK'`, invoice_journal_entry_id: `invoice_journal_entry_id=gen_random_uuid()`,
+    total_value: `total_value=1`, customer_id: `customer_id=NULL`, customer_type: `customer_type='commercial'`,
+    order_type: `order_type='repair'`, invoice_number: `invoice_number='INV-FAKE'`, client: `client='Other'`,
   };
   for (const [col, set] of Object.entries(lockedOrders)) {
-    if (!set) continue;
     await throws(`browser cannot write orders.${col}`, () => upd('authenticated', `UPDATE orders SET ${set} WHERE id=$1`), /ORDER_COLUMN_LOCKED/);
   }
   for (const set of [`status='Production'`, `payment_terms='30_day'`, `total_value=1`]) {
@@ -349,52 +357,52 @@ for (const [from, to] of illegal) {
   await upd('service_role', `UPDATE orders SET payment_terms='30_day' WHERE id=$1`);
   ok('service role (the API) can write payment terms', (await one(`SELECT payment_terms p FROM orders WHERE id=$1`, [id])).p === '30_day');
 
-  // inserts
   const ins = (role, cols, vals) => asRole(role, () => db.query(`INSERT INTO orders (client, ${cols}) VALUES ('New Ltd', ${vals})`));
   await ins('authenticated', `status`, `'Inquiry'`);
   ok('browser can create a fresh Inquiry order', true);
   await throws('browser cannot create an order already in Production', () => ins('authenticated', `status`, `'Production'`), /ORDER_COLUMN_LOCKED/);
   await throws('browser cannot create an order with a credit approval', () => ins('authenticated', `status, credit_approval_ref`, `'Inquiry', 'SNEAK'`), /ORDER_COLUMN_LOCKED/);
-  await throws('browser cannot create an order with exposure marked', () => ins('anon', `status, credit_exposure_counted`, `'Inquiry', 5`), /ORDER_COLUMN_LOCKED/);
   await throws('browser cannot create an order with an invoice link', () => ins('authenticated', `status, invoice_journal_entry_id`, `'Inquiry', gen_random_uuid()`), /ORDER_COLUMN_LOCKED/);
+  await throws('anon cannot create an order with a refund reference', () => ins('anon', `status, refund_reference`, `'Inquiry', 'X'`), /ORDER_COLUMN_LOCKED/);
 
-  // client profiles
-  await profile('Guard Profile Ltd', 10000, 100);
-  const cp = (role, sql) => asRole(role, () => db.query(sql));
-  for (const set of [`credit_limit=99999999`, `current_exposure=0`, `client_name='Renamed'`, `customer_type='reseller'`]) {
-    await throws(`browser cannot write client_profiles.${set.split('=')[0]}`, () => cp('authenticated', `UPDATE client_profiles SET ${set} WHERE client_name='Guard Profile Ltd'`), /CREDIT_COLUMN_LOCKED/);
+  // customers: the credit source
+  const cid = await customer('Guard Customer Ltd', 10000, 500, '2026-01-01');
+  const cu = (role, sql) => asRole(role, () => db.query(sql));
+  for (const set of [`credit_limit=99999999`, `opening_balance=0`, `opening_balance_date='2026-02-02'`, `opening_balance_date=NULL`]) {
+    await throws(`browser cannot write customers.${set.split('=')[0]}`, () => cu('authenticated', `UPDATE customers SET ${set} WHERE id='${cid}'`), /CREDIT_COLUMN_LOCKED/);
   }
-  await throws('anon cannot raise a credit limit either', () => cp('anon', `UPDATE client_profiles SET credit_limit=1 WHERE client_name='Guard Profile Ltd'`), /CREDIT_COLUMN_LOCKED/);
-  await cp('authenticated', `UPDATE client_profiles SET notes='called them' WHERE client_name='Guard Profile Ltd'`);
-  ok('browser can still edit profile notes', true);
-  await cp('authenticated', `INSERT INTO client_profiles (client_name, customer_type, credit_limit) VALUES ('Auto Created Ltd', 'commercial', 0)`);
-  ok('browser can auto-create a profile at limit 0 (what the new-order page does)', true);
-  await throws('browser cannot create a profile with a limit', () => cp('authenticated', `INSERT INTO client_profiles (client_name, credit_limit) VALUES ('Greedy Ltd', 5000)`), /CREDIT_COLUMN_LOCKED/);
-  await throws('browser cannot create a profile with exposure', () => cp('authenticated', `INSERT INTO client_profiles (client_name, current_exposure) VALUES ('Greedy2 Ltd', 1)`), /CREDIT_COLUMN_LOCKED/);
-  ok('  …and the real limit was untouched', Number((await one(`SELECT credit_limit l FROM client_profiles WHERE client_name='Guard Profile Ltd'`)).l) === 10000);
-  await asRole('service_role', () => db.query(`UPDATE client_profiles SET credit_limit=20000 WHERE client_name='Guard Profile Ltd'`));
-  ok('service role (admin API) can set a credit limit', Number((await one(`SELECT credit_limit l FROM client_profiles WHERE client_name='Guard Profile Ltd'`)).l) === 20000);
+  await throws('anon cannot raise a credit limit either', () => cu('anon', `UPDATE customers SET credit_limit=1 WHERE id='${cid}'`), /CREDIT_COLUMN_LOCKED/);
+  await cu('authenticated', `UPDATE customers SET phone='0700', notes='called' WHERE id='${cid}'`);
+  ok('browser can still edit ordinary customer fields', true);
+  await cu('authenticated', `UPDATE customers SET credit_limit=credit_limit WHERE id='${cid}'`);
+  ok('writing a credit column back to its current value is allowed', true);
+  await cu('authenticated', `INSERT INTO customers (name) VALUES ('Plain New Customer')`);
+  ok('browser can create a customer with no credit settings', true);
+  await throws('browser cannot create a customer with a credit limit', () => cu('authenticated', `INSERT INTO customers (name, credit_limit) VALUES ('Greedy', 5000)`), /CREDIT_COLUMN_LOCKED/);
+  await throws('browser cannot create a customer with an opening balance', () => cu('authenticated', `INSERT INTO customers (name, opening_balance) VALUES ('Greedy2', 1)`), /CREDIT_COLUMN_LOCKED/);
+  ok('  …and the real limit was untouched', Number((await one(`SELECT credit_limit l FROM customers WHERE id=$1`, [cid])).l) === 10000);
+  await cu('service_role', `UPDATE customers SET credit_limit=20000, opening_balance=0 WHERE id='${cid}'`);
+  ok('service role (the admin-only API) can set credit settings', Number((await one(`SELECT credit_limit l FROM customers WHERE id=$1`, [cid])).l) === 20000);
 
   // payments
   const pid = await pay(id, 1000);
-  await throws('browser cannot insert a payment (fake deposit)', () => cp('authenticated', `INSERT INTO order_payments (order_id, amount) VALUES ('${id}', 99999)`), /PAYMENT_WRITE_LOCKED/);
-  await throws('anon cannot insert a payment either', () => cp('anon', `INSERT INTO order_payments (order_id, amount) VALUES ('${id}', 99999)`), /PAYMENT_WRITE_LOCKED/);
-  await throws('browser cannot reverse or edit a payment', () => cp('authenticated', `UPDATE order_payments SET reversed_at=now(), amount=1 WHERE id=${pid}`), /PAYMENT_WRITE_LOCKED/);
-  await throws('browser cannot delete a payment', () => cp('authenticated', `DELETE FROM order_payments WHERE id=${pid}`), /PAYMENT_WRITE_LOCKED/);
+  await throws('browser cannot insert a payment (fake deposit)', () => cu('authenticated', `INSERT INTO order_payments (order_id, amount) VALUES ('${id}', 99999)`), /PAYMENT_WRITE_LOCKED/);
+  await throws('anon cannot insert a payment either', () => cu('anon', `INSERT INTO order_payments (order_id, amount) VALUES ('${id}', 99999)`), /PAYMENT_WRITE_LOCKED/);
+  await throws('browser cannot reverse or edit a payment', () => cu('authenticated', `UPDATE order_payments SET reversed_at=now(), amount=1 WHERE id=${pid}`), /PAYMENT_WRITE_LOCKED/);
+  await throws('browser cannot delete a payment', () => cu('authenticated', `DELETE FROM order_payments WHERE id=${pid}`), /PAYMENT_WRITE_LOCKED/);
   ok('  …and the payment is intact', Number((await one(`SELECT amount a FROM order_payments WHERE id=$1`, [pid])).a) === 1000);
-  await asRole('service_role', () => db.query(`INSERT INTO order_payments (order_id, amount) VALUES ('${id}', 500)`));
+  await cu('service_role', `INSERT INTO order_payments (order_id, amount) VALUES ('${id}', 500)`);
   ok('service role (the payments API) can record a payment', true);
 
   // functions
   await asRole('service_role', async () => {
-    const o2 = await mk('retail', '30_day', 'Quote Approved', { client: 'Acme' });
+    const o2 = await mk('retail', '30_day', 'Quote Approved');
     await approve(o2, 'APR-11');
     ok('advance_order_status works when called as service_role (definer rights)', (await st(o2)) === 'Material Check');
   });
   await asRole('authenticated', async () => {
     await throws('a browser session cannot call advance_order_status', () => adv(id, 'Production'), /permission denied/);
-    await throws('a browser session cannot call release_order_credit_exposure', () => db.query(`SELECT release_order_credit_exposure($1)`, [id]), /permission denied/);
-    await throws('a browser session cannot call refresh_client_exposure', () => db.query(`SELECT refresh_client_exposure('Acme')`), /permission denied/);
+    await throws('a browser session cannot call customer_credit_position', () => db.query(`SELECT customer_credit_position($1)`, [acme]), /permission denied/);
   });
 }
 
@@ -405,7 +413,7 @@ for (const [from, to] of illegal) {
   await throws('unknown order still refused', () => adv('00000000-0000-0000-0000-000000000000', 'Material Check'), /ORDER_NOT_FOUND/);
 }
 {
-  for (const fn of ['advance_order_status(uuid,text,uuid,jsonb)', 'release_order_credit_exposure(uuid)', 'refresh_client_exposure(text)', 'client_credit_outstanding(text,uuid)']) {
+  for (const fn of ['advance_order_status(uuid,text,uuid,jsonb)', 'customer_credit_position(uuid,uuid)']) {
     const r = await one(`SELECT has_function_privilege('anon','${fn}','EXECUTE') a,
                                 has_function_privilege('authenticated','${fn}','EXECUTE') u,
                                 has_function_privilege('service_role','${fn}','EXECUTE') s`);

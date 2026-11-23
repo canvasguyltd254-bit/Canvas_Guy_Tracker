@@ -1585,6 +1585,8 @@ export default function OrderFormPage() {
   const [creditRef, setCreditRef]         = useState('');
   const [creditExposure, setCreditExposure] = useState(0);
   const [creditLimit, setCreditLimit]     = useState(0);
+  // Unpaid part of THIS order, as the server counts it (total minus payments already received).
+  const [creditThisOrder, setCreditThisOrder] = useState(0);
 
   // Quote confirm
   const [quoteNum, setQuoteNum]           = useState('');
@@ -1929,15 +1931,24 @@ export default function OrderFormPage() {
         setActionError('This order is on credit terms. Only an admin or Head of Sales can approve credit and move it past Deposit Paid.');
         return;
       }
-      // Load credit exposure
-      const { data: cp } = await supabase.from('client_profiles').select('credit_limit, current_exposure').eq('client_name', order.client).maybeSingle();
-      if (!cp || !(parseFloat(cp.credit_limit) > 0)) {
-        // Fail closed (the server enforces the same rule): no limit, no credit.
-        setActionError(`${order.client} has no credit limit set, so credit cannot be approved. Ask an admin to set one (Admin → Clients), then try again.`);
+      // The customer's credit position comes from the server, calculated by the same database
+      // function that enforces the approval, so this modal cannot disagree with the check.
+      // Fails closed: no linked customer or no limit means no credit.
+      let pos;
+      try {
+        const res = await fetch(`/api/orders/${id}/credit-position`);
+        pos = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setActionError(pos.error || `Could not load the credit position (${res.status}).`);
+          return;
+        }
+      } catch {
+        setActionError('Could not load the credit position. Check your connection and try again.');
         return;
       }
-      setCreditLimit(parseFloat(cp.credit_limit));
-      setCreditExposure(cp?.current_exposure || 0);
+      setCreditLimit(pos.limit);
+      setCreditExposure(pos.owed);
+      setCreditThisOrder(pos.thisOrder);
       setCreditRef('');
       setModal('credit');
       return;
@@ -2032,21 +2043,21 @@ export default function OrderFormPage() {
   const confirmCredit = async () => {
     if (!creditRef.trim()) { setActionError('Credit approval reference is required.'); return; }
     const orderTotal = contractTotal;
-    const newExposure = creditExposure + orderTotal;
+    const newExposure = creditExposure + creditThisOrder;
 
     // head_of_sales can only approve up to their limit
     if (userRole === 'head_of_sales' && orderTotal > HEAD_OF_SALES_CREDIT_LIMIT) {
       setActionError(`Head of Sales can only approve up to KES ${HEAD_OF_SALES_CREDIT_LIMIT.toLocaleString()}. This order requires admin approval.`);
       return;
     }
-    if (creditLimit > 0 && newExposure > creditLimit) {
-      setActionError(`This order (KES ${orderTotal.toLocaleString()}) would bring ${order.client}'s exposure to KES ${newExposure.toLocaleString()}, exceeding their credit limit of KES ${creditLimit.toLocaleString()}.`);
+    if (newExposure > creditLimit) {
+      setActionError(`This order (KES ${creditThisOrder.toLocaleString()} still unpaid) would bring ${order.client}'s balance to KES ${newExposure.toLocaleString()}, over their credit limit of KES ${creditLimit.toLocaleString()}. Raise the limit on the customer's page (admin) or collect payment first.`);
       return;
     }
 
     // Credit approved: skip Deposit Paid, go to Material Check.
-    // The server reads order.total_value + client_profiles.current_exposure from DB
-    // and writes the new exposure atomically — no client-side update needed.
+    // The database re-checks everything (credit terms, approval reference, linked customer,
+    // limit and what the customer already owes) in the same transaction as the status change.
     await applyStatus('Material Check', { credit_approval_ref: creditRef.trim() });
   };
 
@@ -2777,7 +2788,7 @@ export default function OrderFormPage() {
       {modal === 'credit' && (
         <Modal title="Credit Approval Required" onClose={() => setModal(null)}>
           <div style={{ padding: '12px 14px', background: '#EDE7F6', borderRadius: '8px', marginBottom: '16px', fontSize: '13px', color: '#512DA8' }}>
-            <strong>{order.client}</strong> is a credit client ({order.payment_terms}). Deposit Paid step will be bypassed. This order goes directly to Material Check.
+            <strong>{order.client}</strong> is on credit terms ({order.payment_terms}). The Deposit Paid step will be bypassed and this order goes directly to Material Check. The check is against the customer&apos;s credit limit and what they already owe.
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '14px' }}>
             <div style={{ padding: '10px 14px', background: '#f9fafb', borderRadius: '8px' }}>
@@ -2785,16 +2796,16 @@ export default function OrderFormPage() {
               <div style={{ fontFamily: 'monospace', fontWeight: 800 }}>KES {creditLimit.toLocaleString()}</div>
             </div>
             <div style={{ padding: '10px 14px', background: '#f9fafb', borderRadius: '8px' }}>
-              <div style={{ fontSize: '10px', color: '#9ca3af', fontWeight: 700, textTransform: 'uppercase', marginBottom: '4px' }}>Current Exposure</div>
+              <div style={{ fontSize: '10px', color: '#9ca3af', fontWeight: 700, textTransform: 'uppercase', marginBottom: '4px' }}>Customer Owes Now</div>
               <div style={{ fontFamily: 'monospace', fontWeight: 800 }}>KES {creditExposure.toLocaleString()}</div>
             </div>
             <div style={{ padding: '10px 14px', background: '#fffbeb', borderRadius: '8px' }}>
-              <div style={{ fontSize: '10px', color: '#9ca3af', fontWeight: 700, textTransform: 'uppercase', marginBottom: '4px' }}>This Order</div>
-              <div style={{ fontFamily: 'monospace', fontWeight: 800 }}>KES {contractTotal.toLocaleString()}</div>
+              <div style={{ fontSize: '10px', color: '#9ca3af', fontWeight: 700, textTransform: 'uppercase', marginBottom: '4px' }}>This Order (unpaid)</div>
+              <div style={{ fontFamily: 'monospace', fontWeight: 800 }}>KES {creditThisOrder.toLocaleString()}</div>
             </div>
-            <div style={{ padding: '10px 14px', background: creditLimit > 0 && (creditExposure + contractTotal) > creditLimit ? '#fee2e2' : '#dcfce7', borderRadius: '8px' }}>
-              <div style={{ fontSize: '10px', color: '#9ca3af', fontWeight: 700, textTransform: 'uppercase', marginBottom: '4px' }}>New Exposure</div>
-              <div style={{ fontFamily: 'monospace', fontWeight: 800 }}>KES {(creditExposure + contractTotal).toLocaleString()}</div>
+            <div style={{ padding: '10px 14px', background: (creditExposure + creditThisOrder) > creditLimit ? '#fee2e2' : '#dcfce7', borderRadius: '8px' }}>
+              <div style={{ fontSize: '10px', color: '#9ca3af', fontWeight: 700, textTransform: 'uppercase', marginBottom: '4px' }}>Balance After Approval</div>
+              <div style={{ fontFamily: 'monospace', fontWeight: 800 }}>KES {(creditExposure + creditThisOrder).toLocaleString()}</div>
             </div>
           </div>
           {userRole === 'head_of_sales' && contractTotal > HEAD_OF_SALES_CREDIT_LIMIT && (

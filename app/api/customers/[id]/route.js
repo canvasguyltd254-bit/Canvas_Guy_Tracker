@@ -20,6 +20,8 @@ import {
 
 const WRITE_ROLES = ['admin', 'production_manager', 'head_of_sales', 'sales'];
 const VALID_TERMS = ['COD', '7 Days', '30 Days', '60 Days'];
+// Credit-risk settings: the order credit approval is checked against these, so only admin sets them.
+const CREDIT_FIELDS = ['credit_limit', 'opening_balance', 'opening_balance_date'];
 
 export async function GET(request, props) {
   const params = await props.params;
@@ -246,6 +248,35 @@ export async function PATCH(request, props) {
     if (!Object.keys(update).length) {
       return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 });
     }
+
+    // Credit limit and opening balance are credit-risk settings: admin only. The edit form sends
+    // every field on each save, so an unchanged value from a non-admin is simply dropped;
+    // a CHANGED value is refused.
+    if (role !== 'admin' && CREDIT_FIELDS.some(f => update[f] !== undefined)) {
+      const { data: current } = await serviceClient
+        .from('customers')
+        .select(CREDIT_FIELDS.join(', '))
+        .eq('id', params.id)
+        .single();
+      if (!current) return NextResponse.json({ error: 'Customer not found' }, { status: 404 });
+      const norm = (f, v) => (f === 'opening_balance_date'
+        ? (v === '' || v == null ? null : String(v).slice(0, 10))
+        : (v === '' || v == null ? 0 : Number(v)));
+      for (const f of CREDIT_FIELDS) {
+        if (update[f] === undefined) continue;
+        if (norm(f, update[f]) !== norm(f, current[f])) {
+          return NextResponse.json(
+            { error: 'Only an admin can change a customer\'s credit limit or opening balance.' },
+            { status: 403 },
+          );
+        }
+        delete update[f];
+      }
+      if (!Object.keys(update).length) {
+        return NextResponse.json({ success: true, data: current });
+      }
+    }
+
     if (update.name !== undefined && !update.name?.trim()) {
       return NextResponse.json({ error: 'Customer name cannot be empty' }, { status: 400 });
     }

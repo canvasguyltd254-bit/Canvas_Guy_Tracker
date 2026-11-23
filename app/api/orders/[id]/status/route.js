@@ -16,10 +16,16 @@
  *  - Backward movement (rework): ROLES_CAN_REWORK
  *  Status is validated against STATUSES + REPAIR_STATUSES.
  *
- *  Credit approval side-effect:
- *  When creditApprovalRef is present, the server reads order.total_value
- *  and client_profiles.current_exposure from DB and writes the new exposure
- *  atomically — the client never touches this field.
+ *  Extra role rules enforced here (the database enforces the rest):
+ *  - Cancel / refund: ROLES_CAN_REFUND
+ *  - Sales: only up to SALES_MAX_ADVANCE_TO (explicit allow-list)
+ *  - Credit approval (Quote Approved → Material Check): admin, or head_of_sales up to
+ *    HEAD_OF_SALES_CREDIT_LIMIT
+ *
+ *  Credit approval is checked in advance_order_status(): credit terms, approval reference,
+ *  an order linked to a customer, and that customer's credit limit (Customers screen)
+ *  against what they already owe. Nothing is stored per order; the customer's balance is
+ *  derived from order status and payments.
  */
 
 export const runtime = 'nodejs';
@@ -194,14 +200,20 @@ export async function POST(request, props) {
             { status: 422 },
           );
         }
-        if (msg.includes('CREDIT_PROFILE_REQUIRED') || msg.includes('CREDIT_LIMIT_NOT_SET')) {
+        if (msg.includes('CUSTOMER_REQUIRED')) {
           return NextResponse.json(
-            { error: 'This client has no credit limit set, so credit cannot be approved. Ask an admin to set one (Admin → Clients), then try again.' },
+            { error: 'Link this order to a customer profile (Info tab → Customer profile) so their credit limit can be checked, then try again.' },
+            { status: 422 },
+          );
+        }
+        if (msg.includes('CREDIT_LIMIT_NOT_SET')) {
+          return NextResponse.json(
+            { error: 'This customer has no credit limit set, so credit cannot be approved. An admin sets it on the customer\'s page (Credit Limit), then try again.' },
             { status: 422 },
           );
         }
         if (msg.includes('CREDIT_LIMIT_EXCEEDED')) {
-          return NextResponse.json({ error: 'This order would take the client over their credit limit (outstanding credit plus this order). An admin must raise the limit or the client must pay down first.' }, { status: 422 });
+          return NextResponse.json({ error: 'This order would take the customer over their credit limit (what they already owe plus this order). An admin must raise the limit or the customer must pay down first.' }, { status: 422 });
         }
         if (msg.includes('REFUND_REFERENCE_REQUIRED')) {
           return NextResponse.json({ error: 'A refund reference is required.' }, { status: 422 });
@@ -230,16 +242,9 @@ export async function POST(request, props) {
         console.error('POST /api/orders/[id]/status — rework update:', updateErr);
         return NextResponse.json({ error: 'Failed to update status' }, { status: 500 });
       }
-
-      // Sending a credit order back to Quote Approved withdraws its credit approval:
-      // release the exposure so re-approval counts it once, not twice. Idempotent.
-      if (newStatus === 'Quote Approved') {
-        const { error: relErr } = await serviceClient.rpc('release_order_credit_exposure', { p_order_id: orderId });
-        if (relErr) {
-          // Exposure stays over-counted (the safe side) and re-approval will not double-add it.
-          console.error('release_order_credit_exposure failed:', orderId, relErr.message);
-        }
-      }
+      // Nothing to release on send-back: a customer's exposure is derived from order status and
+      // payments (customer_credit_position), so an order back at Quote Approved stops counting
+      // by itself, and re-approval cannot count it twice.
     }
 
     // 8. Activity log

@@ -90,12 +90,25 @@ export async function PATCH(request, props) {
     // 3. Verify order exists
     const { data: existing } = await serviceClient
       .from('orders')
-      .select('id, status')
+      .select('id, status, customer_id')
       .eq('id', orderId)
       .single();
 
     if (!existing) {
       return NextResponse.json({ error: 'Order not found' }, { status: 404 });
+    }
+
+    // The customer an order is linked to carries its credit exposure. Once the order is past
+    // Quote Approved it can no longer be moved to another customer (that would move debt around).
+    if (
+      Object.prototype.hasOwnProperty.call(body, 'customer_id')
+      && (body.customer_id || null) !== (existing.customer_id || null)
+      && !['Inquiry', 'Quote Approved'].includes(existing.status)
+    ) {
+      return NextResponse.json(
+        { error: 'This order is past Quote Approved, so its customer can no longer be changed.', code: 'CUSTOMER_LOCKED' },
+        { status: 409 },
+      );
     }
 
     // 4. Suspension guard — suspended orders are read-only
