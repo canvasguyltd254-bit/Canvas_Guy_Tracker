@@ -17,8 +17,10 @@
  *    same transaction. The client never supplies total_value/subtotal/VAT —
  *    any such keys in the body are ignored.
  *  - Once the invoice is posted to accounting (invoice_journal_entry_id set)
- *    financial changes are refused with 409 INVOICE_POSTED. Metadata stays
- *    editable.
+ *    financial changes are refused with 409 INVOICE_POSTED for everyone except
+ *    an admin. An admin's edit leaves the original journal intact and posts a
+ *    correcting journal for the difference (order_invoice_corrections).
+ *    Metadata stays editable.
  *  - An edit that would drop the total below non-reversed payments is refused
  *    with 409 TOTAL_BELOW_PAYMENTS (the whole item change rolls back).
  *  - The item change (rows + audit + totals) is atomic. Metadata is a SEPARATE
@@ -57,6 +59,8 @@ const RPC_ERRORS = {
   REASON_REQUIRED:      422,
   INVALID_ITEM:         422,
   ORDER_NOT_FOUND:      404,
+  ACCOUNT_NOT_FOUND:    409,
+  UNBALANCED_JOURNAL:   409,
 };
 
 function mapRpcError(error) {
@@ -149,6 +153,8 @@ export async function PATCH(request, props) {
         p_deleted_item_ids: deletedIds,
         p_reason:           typeof body.reason === 'string' ? body.reason : null,
         p_changed_by:       user.id,
+        // Only an admin may change a posted invoice; the RPC then posts a correcting journal.
+        p_allow_posted:     role === 'admin',
       });
 
       if (error) {

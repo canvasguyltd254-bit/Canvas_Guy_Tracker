@@ -367,6 +367,8 @@ export async function GET(request, props) {
 
     return NextResponse.json({
       invoice,
+      // Only an admin may edit line items on an invoice that is already posted to accounting.
+      canEditPosted: role === 'admin',
       vatBreakdown,
       quoteHistory,
       adjustments,

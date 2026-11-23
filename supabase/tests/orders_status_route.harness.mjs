@@ -56,7 +56,7 @@ let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => { cond ? pass++ : fail++; console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '  ' + extra}`); };
 
 // ── fake service client ──
-function setup(order, { rpcError = null, rpcData = {}, payments = [], single = {} } = {}) {
+function setup(order, { rpcError = null, itemsRpcError = null, rpcData = {}, payments = [], single = {} } = {}) {
   const log = { rpc: [], updates: [], inserts: [], activities: 0 };
   globalThis.__svc = {
     from(t) {
@@ -80,7 +80,7 @@ function setup(order, { rpcError = null, rpcData = {}, payments = [], single = {
     },
     rpc(name, args) {
       log.rpc.push({ name, args });
-      return Promise.resolve({ data: rpcData[name] ?? null, error: name === 'advance_order_status' ? rpcError : null });
+      return Promise.resolve({ data: rpcData[name] ?? null, error: name === 'advance_order_status' ? rpcError : name === 'update_order_items_with_audit' ? itemsRpcError : null });
     },
   };
   return log;
@@ -255,6 +255,32 @@ for (const status of ['Inquiry', 'Quote Approved']) {
   const log = setup(order('Production'));
   const r = await patch('sales', { customer_id: 'c1', notes: 'same customer' });
   ok('saving the SAME customer_id at Production is not a re-link (200)', r.status === 200, JSON.stringify(r));
+}
+
+// ── Posted invoices: only an admin may change line items (the RPC posts the correcting journal) ──
+const itemBody = { reason: 'Only 19 delivered', items: [{ id: 'i1', category: 'Mirrors', description: 'Mirror', quantity: 19, unit_price: 22000 }] };
+for (const [role, expected] of [['admin', true], ['head_of_sales', false], ['sales', false]]) {
+  const log = setup(order('Quote Approved', { invoice_journal_entry_id: 'j1' }));
+  await patch(role, itemBody);
+  const c = log.rpc.find(x => x.name === 'update_order_items_with_audit');
+  ok(`item edit (${role}): p_allow_posted is ${expected}`, c && c.args.p_allow_posted === expected, JSON.stringify(c));
+}
+{
+  // a client cannot grant itself the switch through the body
+  const log = setup(order('Quote Approved', { invoice_journal_entry_id: 'j1' }));
+  await patch('head_of_sales', { ...itemBody, p_allow_posted: true, allow_posted: true, allowPosted: true });
+  const c = log.rpc.find(x => x.name === 'update_order_items_with_audit');
+  ok('a body flag cannot turn the admin switch on for a non-admin', c && c.args.p_allow_posted === false, JSON.stringify(c));
+}
+{
+  setup(order('Delivered', { invoice_journal_entry_id: 'j1' }));
+  const r = await patch('sales', itemBody);
+  ok('sales cannot change items on a delivered order (403)', r.status === 403, JSON.stringify(r));
+}
+for (const [msg, status] of [['INVOICE_POSTED: only an admin can correct', 409], ['ACCOUNT_NOT_FOUND: 4600', 409], ['UNBALANCED_JOURNAL: x', 409], ['TOTAL_BELOW_PAYMENTS: x', 409]]) {
+  setup(order('Quote Approved', { invoice_journal_entry_id: 'j1' }), { itemsRpcError: { message: msg } });
+  const r = await patch('admin', itemBody);
+  ok(`${msg.split(':')[0]} → ${status} with a readable message`, r.status === status && typeof r.json.error === 'string', JSON.stringify(r));
 }
 
 // ── Credit position endpoint (what the approval modal shows) ──

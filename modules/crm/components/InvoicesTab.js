@@ -91,18 +91,87 @@ function InvoiceDetailPanel({ orderId, onClose }) {
   const [err, setErr]        = useState(null);
   const [downloading, setDl] = useState(false);
   const [section, setSection]= useState('summary');
+  // Admin-only line-item editor (posted invoices are corrected with a journal, not rewritten)
+  const [editing, setEditing]   = useState(false);
+  const [draft, setDraft]       = useState({});      // itemId → { quantity, unit_price, description }
+  const [reason, setReason]     = useState('');
+  const [saving, setSaving]     = useState(false);
+  const [saveErr, setSaveErr]   = useState('');
+  const [notice, setNotice]     = useState('');
 
-  useEffect(() => {
-    setLoad(true);
-    fetch(`/api/crm/invoices/${orderId}`)
+  const load = useCallback((quiet = false) => {
+    if (!quiet) setLoad(true);
+    return fetch(`/api/crm/invoices/${orderId}`)
       .then(r => r.json())
       .then(j => {
         if (j.error) { setErr(j.error); setLoad(false); return; }
+        setErr(null);
         setData(j);
         setLoad(false);
       })
       .catch(e => { console.error('Invoice detail fetch failed:', e); setErr('Failed to load invoice'); setLoad(false); });
   }, [orderId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const startEdit = () => {
+    const d = {};
+    for (const it of (data?.vatBreakdown?.items || [])) {
+      if (it.id) d[it.id] = { quantity: String(it.quantity ?? ''), unit_price: String(it.unit_price ?? ''), description: it.description || '' };
+    }
+    setDraft(d); setReason(''); setSaveErr(''); setNotice(''); setEditing(true);
+  };
+
+  // Estimated new gross for one line: keep the line's own gross / (qty × price) ratio (VAT mode, exemptions).
+  const estGross = (it) => {
+    const d = draft[it.id];
+    if (!d) return Number(it.gross_amount || 0);
+    const q0 = Number(it.quantity), p0 = Number(it.unit_price);
+    const ratio = q0 * p0 > 0 ? Number(it.gross_amount || 0) / (q0 * p0) : 1;
+    return Math.round(Number(d.quantity || 0) * Number(d.unit_price || 0) * ratio * 100) / 100;
+  };
+
+  const saveEdit = async () => {
+    const items = (data?.vatBreakdown?.items || []).filter(it => it.id && draft[it.id]);
+    const changed = items.filter(it => {
+      const d = draft[it.id];
+      return Number(d.quantity) !== Number(it.quantity) || Number(d.unit_price) !== Number(it.unit_price) || d.description !== (it.description || '');
+    });
+    if (changed.length === 0) { setSaveErr('Nothing has changed.'); return; }
+    for (const it of changed) {
+      const d = draft[it.id];
+      if (!(Number(d.quantity) > 0) || !(Number(d.unit_price) >= 0) || !String(d.description).trim()) {
+        setSaveErr('Every changed line needs a description, a quantity above 0 and a valid price.'); return;
+      }
+    }
+    if (reason.trim().length < 3) { setSaveErr('Give a reason (e.g. "19 of 20 delivered").'); return; }
+    setSaving(true); setSaveErr('');
+    try {
+      const res = await fetch(`/api/orders/${orderId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reason: reason.trim(),
+          items: changed.map(it => ({
+            id: it.id,
+            category: it.category,
+            description: draft[it.id].description.trim(),
+            quantity: Number(draft[it.id].quantity),
+            unit_price: Number(draft[it.id].unit_price),
+          })),
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) { setSaveErr(j.error || 'Could not save the change.'); return; }
+      setEditing(false);
+      setNotice('Saved. The original invoice entry is unchanged; a correcting entry for the difference was posted to accounting.');
+      await load(true);
+    } catch (e) {
+      setSaveErr('Network error — nothing was saved.');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const handleDownloadPdf = async () => {
     if (!data?.invoice?.invoice_number) return;
@@ -219,6 +288,20 @@ function InvoiceDetailPanel({ orderId, onClose }) {
               {' '}Pricing: <strong>{vatModeLabel[vatBreakdown.pricing_mode]}</strong>
               {vatBreakdown.tax_status === 'exempt' && <Badge color="gray" style={{ marginLeft: 6 }}>Tax Exempt</Badge>}
             </div>
+            {notice && (
+              <div style={{ background: C.greenBg, color: C.green, border: `1px solid ${C.greenBd}`, borderRadius: 8, padding: '9px 12px', fontSize: 12, marginBottom: 10 }}>{notice}</div>
+            )}
+            {data.canEditPosted && !invoice.pending_invoice && !editing && (
+              <div style={{ marginBottom: 10 }}>
+                <Btn small onClick={startEdit}>✎ Edit line items</Btn>
+              </div>
+            )}
+            {editing && (
+              <div style={{ background: C.amberBg, color: C.amber, border: `1px solid ${C.amberBd}`, borderRadius: 8, padding: '9px 12px', fontSize: 12, marginBottom: 10 }}>
+                This invoice is already posted to accounting. Your change keeps the original entry and posts a correcting entry for the difference.
+                If this invoice was submitted to KRA (eTIMS), issue a credit note there as well. Totals shown below are estimates; the server recalculates VAT.
+              </div>
+            )}
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
                 <thead><tr>
@@ -227,17 +310,27 @@ function InvoiceDetailPanel({ orderId, onClose }) {
                   ))}
                 </tr></thead>
                 <tbody>
-                  {vatBreakdown.items.map((item, i) => (
+                  {vatBreakdown.items.map((item, i) => {
+                    const d = editing && item.id ? draft[item.id] : null;
+                    const inp = { border: `1px solid ${C.line}`, borderRadius: 6, padding: '4px 6px', fontSize: 12, textAlign: 'right' };
+                    return (
                     <tr key={i} style={{ background: i % 2 === 0 ? C.card : '#fafaf8' }}>
-                      <Td>{item.description}</Td>
+                      <Td>{d
+                        ? <input aria-label="Description" value={d.description} onChange={e => setDraft(p => ({ ...p, [item.id]: { ...p[item.id], description: e.target.value } }))} style={{ ...inp, textAlign: 'left', width: '100%', minWidth: 180 }} />
+                        : item.description}</Td>
                       <Td>{item.category || '—'}</Td>
-                      <Td right>{item.quantity}</Td>
-                      <Td right>{fmtKes(item.unit_price)}</Td>
+                      <Td right>{d
+                        ? <input aria-label="Quantity" type="number" min="0" step="any" value={d.quantity} onChange={e => setDraft(p => ({ ...p, [item.id]: { ...p[item.id], quantity: e.target.value } }))} style={{ ...inp, width: 70 }} />
+                        : item.quantity}</Td>
+                      <Td right>{d
+                        ? <input aria-label="Unit price" type="number" min="0" step="any" value={d.unit_price} onChange={e => setDraft(p => ({ ...p, [item.id]: { ...p[item.id], unit_price: e.target.value } }))} style={{ ...inp, width: 90 }} />
+                        : fmtKes(item.unit_price)}</Td>
                       <Td right>{fmtKes(item.net_amount)}</Td>
                       <Td right>{fmtKes(item.vat_amount)}</Td>
-                      <Td right><strong>{fmtKes(item.gross_amount)}</strong></Td>
+                      <Td right><strong>{d ? `≈ ${fmtKes(estGross(item))}` : fmtKes(item.gross_amount)}</strong></Td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
                 <tfoot>
                   <tr style={{ background: '#efede9' }}>
@@ -249,6 +342,29 @@ function InvoiceDetailPanel({ orderId, onClose }) {
                 </tfoot>
               </table>
             </div>
+            {editing && (() => {
+              const newTotal = vatBreakdown.items.reduce((s, it) => s + (it.id && draft[it.id] ? estGross(it) : Number(it.gross_amount || 0)), 0);
+              const diff = Math.round((newTotal - Number(vatBreakdown.total || 0)) * 100) / 100;
+              return (
+                <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
+                  <div style={{ fontSize: 12.5 }}>
+                    New total ≈ <strong>KES {fmtKes(newTotal)}</strong>{' '}
+                    <span style={{ color: diff < 0 ? C.red : C.muted }}>({diff > 0 ? '+' : ''}{fmtKes(diff)} vs now)</span>
+                    {' '}· Already paid KES {fmtKes(invoice.total_paid)}
+                  </div>
+                  <label style={{ fontSize: 11.5, fontWeight: 700, color: C.muted }}>
+                    Reason (required, kept in the audit trail)
+                    <input value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. 19 of 20 mirrors delivered"
+                      style={{ display: 'block', width: '100%', marginTop: 4, border: `1px solid ${C.line}`, borderRadius: 6, padding: '7px 9px', fontSize: 12.5 }} />
+                  </label>
+                  {saveErr && <div style={{ background: C.redBg, color: C.red, border: `1px solid ${C.redBd}`, borderRadius: 8, padding: '8px 12px', fontSize: 12 }}>{saveErr}</div>}
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Btn onClick={saveEdit} disabled={saving}>{saving ? 'Saving…' : 'Save correction'}</Btn>
+                    <Btn onClick={() => { setEditing(false); setSaveErr(''); }} disabled={saving}>Cancel</Btn>
+                  </div>
+                </div>
+              );
+            })()}
           </>
         )}
 
