@@ -1925,6 +1925,10 @@ export default function OrderFormPage() {
 
     // Gate: credit reseller advancing FROM Quote Approved → skip Deposit Paid
     if (order.status === 'Quote Approved' && isCredit) {
+      if (!['admin', 'head_of_sales'].includes(userRole)) {
+        setActionError('This order is on credit terms. Only an admin or Head of Sales can approve credit and move it past Deposit Paid.');
+        return;
+      }
       // Load credit exposure
       const { data: cp } = await supabase.from('client_profiles').select('credit_limit, current_exposure').eq('client_name', order.client).maybeSingle();
       setCreditLimit(cp?.credit_limit || 0);

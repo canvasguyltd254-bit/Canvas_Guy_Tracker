@@ -34,7 +34,13 @@ import {
   REWORK_TARGETS,
   ROLES_CAN_ADVANCE,
   ROLES_CAN_REWORK,
+  ROLES_CAN_REFUND,
+  SALES_MAX_ADVANCE_TO,
+  HEAD_OF_SALES_CREDIT_LIMIT,
 } from '@/modules/orders/components/constants';
+
+// Who may approve credit (skip Deposit Paid). Head of Sales is capped by order value.
+const ROLES_CAN_APPROVE_CREDIT = ['admin', 'head_of_sales'];
 
 const ALL_VALID_STATUSES = new Set([...STATUSES, ...REPAIR_STATUSES]);
 const REWORK_SOURCES = new Set(Object.keys(REWORK_TARGETS));
@@ -94,6 +100,34 @@ export async function POST(request, props) {
     } else {
       const authError = requireRole(user, role, ROLES_CAN_ADVANCE);
       if (authError) return authError;
+
+      // Refund / cancel: refund roles only (the UI hides the button, the server must enforce it).
+      if (newStatus === 'Cancelled / Refunded') {
+        const refundErr = requireRole(user, role, ROLES_CAN_REFUND);
+        if (refundErr) return refundErr;
+      } else if (role === 'sales') {
+        // Sales may advance only up to SALES_MAX_ADVANCE_TO (Deposit Paid).
+        const idx = STATUSES.indexOf(newStatus);
+        if (idx > STATUSES.indexOf(SALES_MAX_ADVANCE_TO)) {
+          return NextResponse.json(
+            { error: `Sales can advance orders only up to ${SALES_MAX_ADVANCE_TO}.` },
+            { status: 403 },
+          );
+        }
+      }
+
+      // Credit approval = skipping Deposit Paid (Quote Approved → Material Check).
+      // Admin, or Head of Sales up to the approval cap. Never Sales or production roles.
+      if (oldStatus === 'Quote Approved' && newStatus === 'Material Check') {
+        const creditErr = requireRole(user, role, ROLES_CAN_APPROVE_CREDIT);
+        if (creditErr) return creditErr;
+        if (role === 'head_of_sales' && (parseFloat(order.total_value) || 0) > HEAD_OF_SALES_CREDIT_LIMIT) {
+          return NextResponse.json(
+            { error: `Head of Sales can approve credit only up to KES ${HEAD_OF_SALES_CREDIT_LIMIT.toLocaleString('en-KE')}. This order needs an admin.` },
+            { status: 403 },
+          );
+        }
+      }
     }
 
     // 5a. Balance gate — block closing/completing with outstanding balance
@@ -149,6 +183,21 @@ export async function POST(request, props) {
         const msg = rpcErr.message || '';
         if (msg.includes('ORDER_NOT_FOUND'))  return NextResponse.json({ error: 'Order not found' }, { status: 404 });
         if (msg.includes('SAME_STATUS'))      return NextResponse.json({ error: 'Order is already in that status' }, { status: 422 });
+        if (msg.includes('INVALID_TRANSITION')) {
+          return NextResponse.json({ error: `Cannot move an order from ${oldStatus} to ${newStatus}.` }, { status: 422 });
+        }
+        if (msg.includes('DEPOSIT_PAYMENT_REQUIRED') || msg.includes('NO_UNPOSTED_PAYMENTS')) {
+          return NextResponse.json(
+            { error: 'Record a deposit payment on this order before moving it to Deposit Paid. Reversed payments do not count, and a payment that is already posted cannot be used again.' },
+            { status: 422 },
+          );
+        }
+        if (msg.includes('CREDIT_LIMIT_EXCEEDED')) {
+          return NextResponse.json({ error: 'This order would take the client over their credit limit. An admin must raise the limit first.' }, { status: 422 });
+        }
+        if (msg.includes('REFUND_REFERENCE_REQUIRED')) {
+          return NextResponse.json({ error: 'A refund reference is required.' }, { status: 422 });
+        }
         if (msg.includes('DEPOSIT_REQUIRED')) {
           return NextResponse.json(
             { error: 'This order is not on credit terms (30 day, 60 day or custom), so it cannot skip Deposit Paid. Record the deposit and advance to Deposit Paid, or change the order\'s payment terms.' },
@@ -163,21 +212,25 @@ export async function POST(request, props) {
       }
     } else {
       // Rework (backward move) — no GL side-effects; direct row update is fine.
-      const dbUpdateRaw = { status: newStatus };
-      if (refundReference)   dbUpdateRaw.refund_reference    = refundReference;
-      if (creditApprovalRef) dbUpdateRaw.credit_approval_ref = creditApprovalRef;
-
-      const STATUS_UPDATE_FIELDS = ['status', 'refund_reference', 'credit_approval_ref'];
-      const safeUpdate = pick(dbUpdateRaw, STATUS_UPDATE_FIELDS);
-
+      // Send-back changes the status only. Refund / credit references are never set here.
       const { error: updateErr } = await serviceClient
         .from('orders')
-        .update(safeUpdate)
+        .update(pick({ status: newStatus }, ['status']))
         .eq('id', orderId);
 
       if (updateErr) {
         console.error('POST /api/orders/[id]/status — rework update:', updateErr);
         return NextResponse.json({ error: 'Failed to update status' }, { status: 500 });
+      }
+
+      // Sending a credit order back to Quote Approved withdraws its credit approval:
+      // release the exposure so re-approval counts it once, not twice. Idempotent.
+      if (newStatus === 'Quote Approved') {
+        const { error: relErr } = await serviceClient.rpc('release_order_credit_exposure', { p_order_id: orderId });
+        if (relErr) {
+          // Exposure stays over-counted (the safe side) and re-approval will not double-add it.
+          console.error('release_order_credit_exposure failed:', orderId, relErr.message);
+        }
       }
     }
 
