@@ -284,7 +284,7 @@ function EmployeesTab({ userRole }) {
   // the server enforces it, this only keeps the screen honest).
   const isAdmin     = userRole === 'admin';
   const canSeeRate  = isAdmin || userRole === 'production_manager';
-  const canCreate   = canCreateEmployee(userRole);   // admin only
+  const canCreate   = canCreateEmployee(userRole);   // admin; HoS/PM add day-paid workers only
 
   const INITIAL_FORM = {
     name: '', type: 'casual', day_rate: '', monthly_salary: '', sha_amount: '300',
@@ -338,6 +338,7 @@ function EmployeesTab({ userRole }) {
       ? form
       : {
           name: form.name,
+          ...(editEmp ? {} : { type: form.type }),   // type is chosen at creation only (day-paid types)
           ...(canSeeRate && form.type !== 'permanent' ? { day_rate: form.day_rate } : {}),
         };
     const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -479,11 +480,11 @@ function EmployeesTab({ userRole }) {
             <Field label="Full Name" required>
               <input style={inputStyle} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
             </Field>
-            {isAdmin && (
+            {(isAdmin || !editEmp) && (
               <Field label="Employee Type" required>
                 <select style={inputStyle} value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
                   <option value="casual">Casual (daily)</option>
-                  <option value="permanent">Permanent (monthly)</option>
+                  {isAdmin && <option value="permanent">Permanent (monthly)</option>}
                   <option value="skilled_casual">Skilled Casual</option>
                 </select>
               </Field>
@@ -529,7 +530,8 @@ function EmployeesTab({ userRole }) {
                 <textarea style={{ ...inputStyle, height: 60, resize: 'vertical' }} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
               </Field>
             : <p style={{ fontSize: 12, color: '#6b7280', margin: '12px 0 0' }}>
-                Employee type, salary, statutory, contact and banking details are managed by an admin.
+                Salary, statutory, contact and banking details, and permanent staff, are managed by an admin
+                {!editEmp && ' — they will complete this profile before the worker can be paid.'}
               </p>
           }
           {error && <ErrorBanner message={error} onDismiss={() => setError('')} />}

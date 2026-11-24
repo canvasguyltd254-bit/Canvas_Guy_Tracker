@@ -53,11 +53,35 @@ export const ADMIN_ONLY_FIELDS = Object.freeze(['type', ...SENSITIVE_FIELDS]);
 const ADMIN_WRITE = [...OPERATIONAL_WRITE, ...ADMIN_ONLY_FIELDS];
 
 /**
- * Creating a payroll employee needs pay basis, rate/salary and statutory data,
- * all admin-only, so creation is admin-only. (A controlled temporary-worker
- * creation flow, if built later, is a separate, deliberate design.)
+ * Who may add an employee. Admin adds anyone. Head of Sales and Production Manager
+ * add DAY-PAID workers only (casual / skilled casual): name, plus day rate for the
+ * Production Manager (who can see rates). Permanent (salaried) staff carry salary and
+ * statutory data, so only an admin creates them. An employee added by someone else
+ * has no phone/bank details until an admin completes the profile.
  */
-export const canCreateEmployee = (role) => role === 'admin';
+export const CREATABLE_TYPES = Object.freeze({
+  admin: ['casual', 'permanent', 'skilled_casual'],
+  production_manager: ['casual', 'skilled_casual'],
+  head_of_sales: ['casual', 'skilled_casual'],
+});
+export const creatableTypes = (role) => CREATABLE_TYPES[role] || [];
+export const canCreateEmployee = (role) => creatableTypes(role).length > 0;
+
+/**
+ * Like partitionEmployeeWrite, but for CREATE: `type` is allowed (restricted to
+ * creatableTypes(role) by the route) because a new employee must have one.
+ */
+export function partitionEmployeeCreate(role, body = {}) {
+  const writable = new Set([...writableEmployeeFields(role), 'type']);
+  const known = new Set(ADMIN_WRITE);
+  const allowed = [];
+  const forbidden = [];
+  for (const key of Object.keys(body || {})) {
+    if (!known.has(key)) continue;
+    (writable.has(key) ? allowed : forbidden).push(key);
+  }
+  return { allowed, forbidden };
+}
 
 export function writableEmployeeFields(role) {
   switch (employeeAccessLevel(role)) {

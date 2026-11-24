@@ -7,15 +7,16 @@
  *   admin               full profile, may write every field
  *   production_manager  identity, status, day rate; may edit name/status/day_rate
  *   head_of_sales       identity and status only; may edit name/status
- * Creating an employee, changing an employee's type, and salary, statutory
- * numbers, phone, banking and notes are admin-only.
+ * Head of Sales and Production Manager may add day-paid (casual / skilled casual)
+ * employees and activate/deactivate any employee. Permanent staff, changing an
+ * employee's type, and salary, statutory numbers, phone, banking and notes are admin-only.
  * Only admin can approve/reopen payroll runs (enforced in runs routes).
  */
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import {
-  EMPLOYEE_COLUMNS, employeeAccessLevel, partitionEmployeeWrite, employeeSearchFilter, canCreateEmployee,
+  EMPLOYEE_COLUMNS, employeeAccessLevel, partitionEmployeeCreate, employeeSearchFilter, canCreateEmployee, creatableTypes,
 } from '@/shared/lib/payroll/employeeAccess';
 
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
@@ -63,23 +64,27 @@ export async function POST(request) {
     const authError = requireRole(user, role, ALLOWED_ROLES);
     if (authError) return authError;
 
-    // A payroll employee needs pay basis, rate/salary and statutory data, all
-    // admin-only; letting other roles create one would produce incomplete
-    // payroll records. Creation is therefore admin-only.
     if (!canCreateEmployee(role)) {
       return NextResponse.json(
-        { error: 'Only an admin can add payroll employees', code: 'ADMIN_ONLY' },
+        { error: 'You cannot add payroll employees', code: 'FORBIDDEN' },
         { status: 403 }
       );
     }
 
     const body = await request.json();
 
-    // (Defence in depth: admin may write every field, so this never refuses admin.)
-    const { forbidden } = partitionEmployeeWrite(role, body);
+    // Non-admins may set only name, type (day-paid types) and, for the Production
+    // Manager, day rate. Anything else (salary, statutory, phone, bank, notes) is refused.
+    const { forbidden } = partitionEmployeeCreate(role, body);
     if (forbidden.length > 0) {
       return NextResponse.json(
         { error: `Only an admin can set: ${forbidden.join(', ')}`, code: 'ADMIN_ONLY_FIELDS', fields: forbidden },
+        { status: 403 }
+      );
+    }
+    if (body.type && !creatableTypes(role).includes(body.type) && ['casual', 'permanent', 'skilled_casual'].includes(body.type)) {
+      return NextResponse.json(
+        { error: 'Only an admin can add permanent (salaried) employees', code: 'ADMIN_ONLY_TYPE' },
         { status: 403 }
       );
     }

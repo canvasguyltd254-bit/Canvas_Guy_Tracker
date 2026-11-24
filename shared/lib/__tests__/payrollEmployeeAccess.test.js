@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   EMPLOYEE_COLUMNS, SENSITIVE_FIELDS, ADMIN_ONLY_FIELDS,
   employeeAccessLevel, canSeePrivateEmployeeData, writableEmployeeFields,
-  partitionEmployeeWrite, employeeSearchFilter, canCreateEmployee,
+  partitionEmployeeWrite, employeeSearchFilter, canCreateEmployee, creatableTypes, partitionEmployeeCreate,
 } from '../payroll/employeeAccess.js';
 
 const cols = (s) => s.split(',').map(x => x.trim());
@@ -44,11 +44,26 @@ test('SENSITIVE_FIELDS matches the private-only list exactly', () => {
   assert.deepEqual([...SENSITIVE_FIELDS].sort(), [...PRIVATE_ONLY].sort());
 });
 
-test('employee creation is admin-only', () => {
-  assert.equal(canCreateEmployee('admin'), true);
-  for (const r of ['production_manager', 'head_of_sales', 'production_staff', null, undefined]) {
-    assert.equal(canCreateEmployee(r), false, String(r));
+test('admin, production manager and head of sales can add employees; nobody else', () => {
+  for (const r of ['admin', 'production_manager', 'head_of_sales']) assert.equal(canCreateEmployee(r), true, r);
+  for (const r of ['production_staff', 'sales', null, undefined]) assert.equal(canCreateEmployee(r), false, String(r));
+});
+
+test('only an admin may create permanent staff; others create day-paid types', () => {
+  assert.deepEqual(creatableTypes('admin').sort(), ['casual', 'permanent', 'skilled_casual']);
+  for (const r of ['production_manager', 'head_of_sales']) {
+    assert.deepEqual(creatableTypes(r).sort(), ['casual', 'skilled_casual']);
   }
+});
+
+test('on create, non-admins may set name/type (+ day rate for PM) and nothing private', () => {
+  assert.deepEqual(partitionEmployeeCreate('head_of_sales', { name: 'A', type: 'casual' }).forbidden, []);
+  assert.deepEqual(partitionEmployeeCreate('head_of_sales', { name: 'A', type: 'casual', day_rate: 900 }).forbidden, ['day_rate']);
+  assert.deepEqual(partitionEmployeeCreate('production_manager', { name: 'A', type: 'casual', day_rate: 900 }).forbidden, []);
+  assert.deepEqual(
+    partitionEmployeeCreate('production_manager', { name: 'A', phone: '1', bank_account: '2', monthly_salary: 3 }).forbidden.sort(),
+    ['bank_account', 'monthly_salary', 'phone']);
+  assert.deepEqual(partitionEmployeeCreate('admin', { name: 'A', type: 'permanent', phone: '1' }).forbidden, []);
 });
 
 test('employee type (pay basis) is admin-only to change', () => {

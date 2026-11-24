@@ -189,11 +189,23 @@ for (const role of ['production_manager', 'head_of_sales', 'admin']) {
   ok(`EMP SEARCH ${role}: no injected clause`, !/(^|,)bank_account\./.test(f), f);
 }
 
-// creation is admin-only
-for (const role of ['production_manager', 'head_of_sales']) {
+// creation: HoS / PM add day-paid workers only; private fields and permanent staff stay admin-only
+for (const [role, body, expectStatus, label] of [
+  ['production_manager', { name: 'New', type: 'casual', day_rate: 900 }, 201, 'PM adds a casual with day rate'],
+  ['production_manager', { name: 'New', type: 'skilled_casual' }, 201, 'PM adds a skilled casual'],
+  ['head_of_sales',      { name: 'New', type: 'casual' }, 201, 'HoS adds a casual'],
+  ['head_of_sales',      { name: 'New', type: 'casual', day_rate: 900 }, 403, 'HoS cannot set a day rate'],
+  ['production_manager', { name: 'New', type: 'permanent' }, 403, 'PM cannot add permanent staff'],
+  ['head_of_sales',      { name: 'New', type: 'permanent' }, 403, 'HoS cannot add permanent staff'],
+  ['production_manager', { name: 'New', type: 'casual', phone: '0700000000' }, 403, 'PM cannot set phone'],
+  ['production_manager', { name: 'New', type: 'casual', bank_account: '1', monthly_salary: 9 }, 403, 'PM cannot set bank/salary'],
+  ['production_staff',   { name: 'New', type: 'casual' }, 403, 'shop floor cannot add employees'],
+]) {
   const t = setup(role);
-  const r = await call(() => R.empList.POST(req('POST', { name: 'New', type: 'casual', day_rate: 900 })));
-  ok(`EMP CREATE ${role} → 403 and nothing inserted`, r.status === 403 && r.body.code === 'ADMIN_ONLY' && t.employees.length === 3, JSON.stringify(r));
+  const r = await call(() => R.empList.POST(req('POST', body)));
+  ok(`EMP CREATE: ${label} → ${expectStatus}`, r.status === expectStatus, JSON.stringify(r));
+  if (expectStatus === 403) ok(`EMP CREATE: ${label} → nothing inserted`, t.employees.length === 3);
+  if (expectStatus === 201) ok(`EMP CREATE: ${label} → response has no private fields`, hasAny(r.body.employee, EMP_PRIVATE).length === 0, JSON.stringify(r.body.employee));
 }
 let t = setup('admin');
 let r = await call(() => R.empList.POST(req('POST', { name: 'New', type: 'casual', day_rate: 900, phone: '0700000000', bank_account: '1' })));
