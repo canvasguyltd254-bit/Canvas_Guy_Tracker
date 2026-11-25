@@ -283,8 +283,12 @@ function EmployeesTab({ userRole }) {
   // What this role may see and write (mirrors shared/lib/payroll/employeeAccess.js;
   // the server enforces it, this only keeps the screen honest).
   const isAdmin     = userRole === 'admin';
-  const canSeeRate  = isAdmin || userRole === 'production_manager';
+  const isManager   = userRole === 'production_manager' || userRole === 'head_of_sales';
+  const canSeeRate  = isAdmin || isManager;
+  const canSeeContact = isAdmin || isManager;        // phone, ID, bank — day-paid workers only for managers
   const canCreate   = canCreateEmployee(userRole);   // admin; HoS/PM add day-paid workers only
+  // Managers edit day-paid workers in full; permanent staff are admin-only (activate/deactivate excepted).
+  const canEditRow  = (emp) => PAYROLL_ROLES.includes(userRole) && (isAdmin || emp.type !== 'permanent');
 
   const INITIAL_FORM = {
     name: '', type: 'casual', day_rate: '', monthly_salary: '', sha_amount: '300',
@@ -334,13 +338,11 @@ function EmployeesTab({ userRole }) {
     const method  = editEmp ? 'PATCH' : 'POST';
     const url     = editEmp ? `/api/payroll/employees/${editEmp.id}` : '/api/payroll/employees';
     // Non-admins send only the fields they may write; the server refuses anything else.
+    // Managers never send salary / SHA / NSSF (admin-only; the server refuses them).
+    const { monthly_salary, sha_amount, nssf_number, type, ...managerFields } = form;
     const payload = isAdmin
       ? form
-      : {
-          name: form.name,
-          ...(editEmp ? {} : { type: form.type }),   // type is chosen at creation only (day-paid types)
-          ...(canSeeRate && form.type !== 'permanent' ? { day_rate: form.day_rate } : {}),
-        };
+      : { ...managerFields, ...(editEmp ? {} : { type }) };   // type is chosen at creation only (day-paid types)
     const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const data    = await res.json();
     setSaving(false);
@@ -395,7 +397,7 @@ function EmployeesTab({ userRole }) {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
                   <thead>
                     <tr style={{ background: LIGHT, borderBottom: `2px solid ${BORDER}` }}>
-                      {['#', 'Name', 'Type', canSeeRate && 'Rate', isAdmin && 'SHA', isAdmin && 'Phone', 'Status', ''].filter(h => h !== false).map(h => (
+                      {['#', 'Name', 'Type', canSeeRate && 'Rate', isAdmin && 'SHA', canSeeContact && 'Phone', 'Status', ''].filter(h => h !== false).map(h => (
                         <th key={h} style={{ textAlign: 'left', padding: '10px 12px', fontWeight: 600, color: '#374151', fontSize: 12 }}>{h}</th>
                       ))}
                     </tr>
@@ -414,14 +416,14 @@ function EmployeesTab({ userRole }) {
                           </td>
                         )}
                         {isAdmin && <td style={{ padding: '10px 12px', fontSize: 13 }}>KES {fmt(emp.sha_amount)}</td>}
-                        {isAdmin && <td style={{ padding: '10px 12px', fontSize: 13, color: '#6b7280' }}>{emp.phone || '—'}</td>}
+                        {canSeeContact && <td style={{ padding: '10px 12px', fontSize: 13, color: '#6b7280' }}>{emp.phone || (emp.phone === undefined ? '' : '—')}</td>}
                         <td style={{ padding: '10px 12px' }}>
                           <Badge label={emp.is_active ? 'Active' : 'Inactive'} bg={emp.is_active ? '#dcfce7' : '#f3f4f6'} color={emp.is_active ? GREEN : '#6b7280'} />
                         </td>
                         <td style={{ padding: '10px 12px' }}>
                           {canEdit && (
                             <div style={{ display: 'flex', gap: 6 }}>
-                              <Btn onClick={() => openEdit(emp)} variant="secondary" small>Edit</Btn>
+                              {canEditRow(emp) && <Btn onClick={() => openEdit(emp)} variant="secondary" small>Edit</Btn>}
                               <Btn onClick={() => toggleActive(emp)} variant={emp.is_active ? 'danger' : 'success'} small>
                                 {emp.is_active ? 'Deactivate' : 'Activate'}
                               </Btn>
@@ -450,11 +452,11 @@ function EmployeesTab({ userRole }) {
                     <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Type</span><br /><StatusBadge status={emp.type} /></div>
                     {canSeeRate && <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Rate</span><br /><span style={{ fontWeight: 600 }}>{emp.type === 'permanent' ? (isAdmin ? `KES ${fmt(emp.monthly_salary)}/mo` : '—') : `KES ${fmt(emp.day_rate)}/day`}</span></div>}
                     {isAdmin && <div><span style={{ color: '#9ca3af', fontSize: 11 }}>SHA</span><br />KES {fmt(emp.sha_amount)}</div>}
-                    {isAdmin && <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Phone</span><br />{emp.phone || '—'}</div>}
+                    {canSeeContact && emp.phone !== undefined && <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Phone</span><br />{emp.phone || '—'}</div>}
                   </div>
                   {canEdit && (
                     <div style={{ display: 'flex', gap: 8 }}>
-                      <Btn onClick={() => openEdit(emp)} variant="secondary" small style={{ flex: 1 }}>Edit</Btn>
+                      {canEditRow(emp) && <Btn onClick={() => openEdit(emp)} variant="secondary" small style={{ flex: 1 }}>Edit</Btn>}
                       <Btn onClick={() => toggleActive(emp)} variant={emp.is_active ? 'danger' : 'success'} small style={{ flex: 1 }}>
                         {emp.is_active ? 'Deactivate' : 'Activate'}
                       </Btn>
@@ -501,19 +503,23 @@ function EmployeesTab({ userRole }) {
                   </Field>
                 ))
             }
-            {isAdmin && <>
+            {isAdmin && (
               <Field label="SHA Deduction (KES)">
                 <input type="number" style={inputStyle} value={form.sha_amount} onChange={e => setForm(f => ({ ...f, sha_amount: e.target.value }))} />
               </Field>
+            )}
+            {canSeeContact && <>
               <Field label="M-Pesa Phone">
                 <input style={inputStyle} value={form.phone} placeholder="07xx…" onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
               </Field>
               <Field label="ID Number">
                 <input style={inputStyle} value={form.id_number} onChange={e => setForm(f => ({ ...f, id_number: e.target.value }))} />
               </Field>
-              <Field label="NSSF Number">
-                <input style={inputStyle} value={form.nssf_number} onChange={e => setForm(f => ({ ...f, nssf_number: e.target.value }))} />
-              </Field>
+              {isAdmin && (
+                <Field label="NSSF Number">
+                  <input style={inputStyle} value={form.nssf_number} onChange={e => setForm(f => ({ ...f, nssf_number: e.target.value }))} />
+                </Field>
+              )}
               <Field label="Hire Date">
                 <input type="date" style={inputStyle} value={form.hire_date} onChange={e => setForm(f => ({ ...f, hire_date: e.target.value }))} />
               </Field>
@@ -525,15 +531,16 @@ function EmployeesTab({ userRole }) {
               </Field>
             </>}
           </div>
-          {isAdmin
-            ? <Field label="Notes">
-                <textarea style={{ ...inputStyle, height: 60, resize: 'vertical' }} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
-              </Field>
-            : <p style={{ fontSize: 12, color: '#6b7280', margin: '12px 0 0' }}>
-                Salary, statutory, contact and banking details, and permanent staff, are managed by an admin
-                {!editEmp && ' — they will complete this profile before the worker can be paid.'}
-              </p>
-          }
+          {canSeeContact && (
+            <Field label="Notes">
+              <textarea style={{ ...inputStyle, height: 60, resize: 'vertical' }} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+            </Field>
+          )}
+          {!isAdmin && (
+            <p style={{ fontSize: 12, color: '#6b7280', margin: '12px 0 0' }}>
+              Monthly salary, SHA, NSSF and permanent staff are managed by an admin.
+            </p>
+          )}
           {error && <ErrorBanner message={error} onDismiss={() => setError('')} />}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
             <Btn variant="secondary" onClick={() => setShowForm(false)}>Cancel</Btn>

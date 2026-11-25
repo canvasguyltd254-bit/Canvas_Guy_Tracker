@@ -2,14 +2,13 @@
  * GET  /api/payroll/employees  — list employees (with filters)
  * POST /api/payroll/employees  — create employee
  *
- * Access: admin, head_of_sales, production_manager — with different visibility
- * (see shared/lib/payroll/employeeAccess.js):
- *   admin               full profile, may write every field
- *   production_manager  identity, status, day rate; may edit name/status/day_rate
- *   head_of_sales       identity and status only; may edit name/status
- * Head of Sales and Production Manager may add day-paid (casual / skilled casual)
- * employees and activate/deactivate any employee. Permanent staff, changing an
- * employee's type, and salary, statutory numbers, phone, banking and notes are admin-only.
+ * Access: admin, head_of_sales, production_manager (see shared/lib/payroll/employeeAccess.js):
+ *   admin                          full profile, may write every field
+ *   production_manager / head_of_sales
+ *                                  add and edit day-paid (casual / skilled casual) workers in
+ *                                  full: rate, phone, ID, bank/paybill, hire date, notes; and
+ *                                  activate/deactivate anyone. NOT monthly salary, SHA, NSSF,
+ *                                  permanent staff (shown as identity + status only).
  * Only admin can approve/reopen payroll runs (enforced in runs routes).
  */
 
@@ -17,6 +16,7 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import {
   EMPLOYEE_COLUMNS, employeeAccessLevel, partitionEmployeeCreate, employeeSearchFilter, canCreateEmployee, creatableTypes,
+  serializeEmployee,
 } from '@/shared/lib/payroll/employeeAccess';
 
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
@@ -51,7 +51,8 @@ export async function GET(request) {
       return NextResponse.json({ error: 'Failed to fetch employees' }, { status: 500 });
     }
 
-    return NextResponse.json({ employees: data || [] });
+    // A manager sees permanent staff as identity + status only.
+    return NextResponse.json({ employees: (data || []).map(e => serializeEmployee(role, e)) });
   } catch (err) {
     console.error('GET /api/payroll/employees unexpected:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -73,8 +74,8 @@ export async function POST(request) {
 
     const body = await request.json();
 
-    // Non-admins may set only name, type (day-paid types) and, for the Production
-    // Manager, day rate. Anything else (salary, statutory, phone, bank, notes) is refused.
+    // Managers may set everything needed to pay a day-paid worker (rate, phone, ID, bank,
+    // paybill). Only monthly salary, SHA and NSSF, and the permanent type, are admin-only.
     const { forbidden } = partitionEmployeeCreate(role, body);
     if (forbidden.length > 0) {
       return NextResponse.json(

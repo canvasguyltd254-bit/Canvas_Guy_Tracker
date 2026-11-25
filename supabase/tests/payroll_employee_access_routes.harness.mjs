@@ -171,14 +171,26 @@ const ok = (name, cond, extra = '') => { cond ? pass++ : fail++; console.log(`${
 const call = async (fn) => { const res = await fn(); let body = null; try { body = await res.clone().json(); } catch {} return { status: res.status, body }; };
 
 // ════════ EMPLOYEE DIRECTORY ════════
-for (const [role, expectPrivate, expectDayRate] of [['admin', true, true], ['production_manager', false, true], ['head_of_sales', false, false]]) {
+// Policy: managers (production_manager, head_of_sales) work with day-paid workers in full
+// (rate, phone, ID, bank) but never see/write monthly salary, SHA, NSSF; permanent staff are
+// shown to them as identity + status only and cannot be edited by them (except activate/deactivate).
+const EMP_ADMIN_ONLY = ['monthly_salary', 'sha_amount', 'nssf_number'];
+const EMP_WORKER = ['day_rate', 'piece_rate', 'phone', 'id_number', 'bank_account', 'bank_name', 'bank_branch', 'paybill_number', 'hire_date', 'notes'];
+for (const role of ['admin', 'production_manager', 'head_of_sales']) {
   setup(role);
   const { body } = await call(() => R.empList.GET(req('GET', null, 'http://x/api/payroll/employees')));
   const emp = body.employees[0];
+  const perm = body.employees.find(e => e.type === 'permanent');
   ok(`EMP LIST ${role}: identity + status visible`, emp.name === 'Jane' && emp.employee_num === 'EMP-001' && emp.type === 'casual' && emp.is_active === true);
-  ok(`EMP LIST ${role}: day_rate ${expectDayRate ? 'visible' : 'hidden'}`, ('day_rate' in emp) === expectDayRate);
-  ok(`EMP LIST ${role}: private fields ${expectPrivate ? 'visible' : 'ABSENT'}`,
-    expectPrivate ? EMP_PRIVATE.every(k => k in emp) : hasAny(emp, EMP_PRIVATE).length === 0, JSON.stringify(hasAny(emp, EMP_PRIVATE)));
+  ok(`EMP LIST ${role}: worker pay details visible`, EMP_WORKER.every(k => k in emp), JSON.stringify(emp));
+  if (role === 'admin') {
+    ok('EMP LIST admin: salary, SHA, NSSF visible', EMP_ADMIN_ONLY.every(k => k in emp));
+    ok('EMP LIST admin: permanent staff full row', EMP_PRIVATE.every(k => k in perm));
+  } else {
+    ok(`EMP LIST ${role}: salary, SHA, NSSF ABSENT`, hasAny(emp, EMP_ADMIN_ONLY).length === 0, JSON.stringify(hasAny(emp, EMP_ADMIN_ONLY)));
+    ok(`EMP LIST ${role}: permanent staff reduced to identity + status`,
+      perm && ['id', 'employee_num', 'name', 'type', 'is_active'].every(k => k in perm) && hasAny(perm, [...EMP_PRIVATE, 'day_rate']).length === 0, JSON.stringify(perm));
+  }
   ok(`EMP LIST ${role}: no select('*') on employees`, !log.selects.some(([t, s]) => t === 'employees' && s.trim() === '*'));
 }
 for (const role of ['production_manager', 'head_of_sales', 'admin']) {
@@ -189,23 +201,25 @@ for (const role of ['production_manager', 'head_of_sales', 'admin']) {
   ok(`EMP SEARCH ${role}: no injected clause`, !/(^|,)bank_account\./.test(f), f);
 }
 
-// creation: HoS / PM add day-paid workers only; private fields and permanent staff stay admin-only
+// creation: managers add day-paid workers with full pay details; salary/SHA/NSSF and permanent staff stay admin-only
 for (const [role, body, expectStatus, label] of [
-  ['production_manager', { name: 'New', type: 'casual', day_rate: 900 }, 201, 'PM adds a casual with day rate'],
+  ['production_manager', { name: 'New', type: 'casual', day_rate: 900, phone: '0700000000', id_number: '1', bank_account: '5' }, 201, 'PM adds a casual with phone, ID, bank and rate'],
   ['production_manager', { name: 'New', type: 'skilled_casual' }, 201, 'PM adds a skilled casual'],
-  ['head_of_sales',      { name: 'New', type: 'casual' }, 201, 'HoS adds a casual'],
-  ['head_of_sales',      { name: 'New', type: 'casual', day_rate: 900 }, 403, 'HoS cannot set a day rate'],
+  ['head_of_sales',      { name: 'New', type: 'casual', day_rate: 900, phone: '0700000000', paybill_number: '4040' }, 201, 'HoS adds a casual with phone and rate'],
   ['production_manager', { name: 'New', type: 'permanent' }, 403, 'PM cannot add permanent staff'],
   ['head_of_sales',      { name: 'New', type: 'permanent' }, 403, 'HoS cannot add permanent staff'],
-  ['production_manager', { name: 'New', type: 'casual', phone: '0700000000' }, 403, 'PM cannot set phone'],
-  ['production_manager', { name: 'New', type: 'casual', bank_account: '1', monthly_salary: 9 }, 403, 'PM cannot set bank/salary'],
+  ['production_manager', { name: 'New', type: 'casual', monthly_salary: 9 }, 403, 'PM cannot set monthly salary'],
+  ['head_of_sales',      { name: 'New', type: 'casual', sha_amount: 1, nssf_number: 'x' }, 403, 'HoS cannot set SHA/NSSF'],
   ['production_staff',   { name: 'New', type: 'casual' }, 403, 'shop floor cannot add employees'],
 ]) {
   const t = setup(role);
   const r = await call(() => R.empList.POST(req('POST', body)));
   ok(`EMP CREATE: ${label} → ${expectStatus}`, r.status === expectStatus, JSON.stringify(r));
   if (expectStatus === 403) ok(`EMP CREATE: ${label} → nothing inserted`, t.employees.length === 3);
-  if (expectStatus === 201) ok(`EMP CREATE: ${label} → response has no private fields`, hasAny(r.body.employee, EMP_PRIVATE).length === 0, JSON.stringify(r.body.employee));
+  if (expectStatus === 201) {
+    ok(`EMP CREATE: ${label} → saved and no salary/SHA/NSSF in response`,
+      t.employees.length === 4 && (!body.phone || t.employees[3].phone === body.phone) && hasAny(r.body.employee, EMP_ADMIN_ONLY).length === 0, JSON.stringify(r.body.employee));
+  }
 }
 let t = setup('admin');
 let r = await call(() => R.empList.POST(req('POST', { name: 'New', type: 'casual', day_rate: 900, phone: '0700000000', bank_account: '1' })));
@@ -215,31 +229,39 @@ ok('EMP CREATE admin may create with private fields and sees them', r.status ===
 for (const role of ['production_manager', 'head_of_sales']) {
   setup(role);
   r = await call(() => R.empDetail.GET(req('GET'), P('e1')));
-  ok(`EMP DETAIL ${role}: no private fields`, hasAny(r.body.employee, EMP_PRIVATE).length === 0, JSON.stringify(hasAny(r.body.employee, EMP_PRIVATE)));
+  ok(`EMP DETAIL ${role}: worker details yes, salary/SHA/NSSF no`, EMP_WORKER.every(k => k in r.body.employee) && hasAny(r.body.employee, EMP_ADMIN_ONLY).length === 0, JSON.stringify(r.body.employee));
   ok(`EMP DETAIL ${role}: documents empty and employee_documents never queried`, r.body.documents.length === 0 && !log.tablesRead.includes('employee_documents'));
+  setup(role);
+  r = await call(() => R.empDetail.GET(req('GET'), P('e3')));
+  ok(`EMP DETAIL ${role}: permanent employee shows identity + status only`, hasAny(r.body.employee, [...EMP_PRIVATE, 'day_rate']).length === 0, JSON.stringify(r.body.employee));
 }
 setup('admin');
 r = await call(() => R.empDetail.GET(req('GET'), P('e1')));
 ok('EMP DETAIL admin: full profile + documents', EMP_PRIVATE.every(k => k in r.body.employee) && r.body.documents.length === 1);
 
-// updates: type and sensitive fields admin-only
-for (const [role, body, expect, label] of [
-  ['production_manager', { type: 'permanent' }, 403, 'PM cannot change employee type'],
-  ['head_of_sales',      { type: 'permanent' }, 403, 'HoS cannot change employee type'],
-  ['production_manager', { bank_account: '555' }, 403, 'PM cannot change bank_account'],
-  ['production_manager', { monthly_salary: 1 }, 403, 'PM cannot change monthly_salary'],
-  ['production_manager', { day_rate: 1100, phone: '' }, 403, 'PM mixing allowed + forbidden refuses whole request'],
-  ['head_of_sales',      { day_rate: 1 }, 403, 'HoS cannot change day_rate'],
-  ['production_manager', { day_rate: 1100 }, 200, 'PM can change day_rate'],
-  ['production_manager', { name: 'Jane K' }, 200, 'PM can rename'],
-  ['head_of_sales',      { is_active: false }, 200, 'HoS can still deactivate'],
-  ['admin',              { type: 'permanent', phone: '0799', sha_amount: 400 }, 200, 'admin can change type and private fields'],
+// updates
+for (const [role, id, body, expect, label] of [
+  ['production_manager', 'e1', { type: 'permanent' }, 403, 'PM cannot make a worker permanent'],
+  ['head_of_sales',      'e1', { type: 'permanent' }, 403, 'HoS cannot make a worker permanent'],
+  ['production_manager', 'e1', { monthly_salary: 1 }, 403, 'PM cannot change monthly_salary'],
+  ['head_of_sales',      'e1', { sha_amount: 1 }, 403, 'HoS cannot change SHA'],
+  ['production_manager', 'e1', { day_rate: 1100, nssf_number: 'z' }, 403, 'PM mixing allowed + forbidden refuses whole request'],
+  ['production_manager', 'e3', { phone: '0799' }, 403, 'PM cannot edit a permanent employee'],
+  ['head_of_sales',      'e3', { bank_account: '1' }, 403, 'HoS cannot edit a permanent employee'],
+  ['production_manager', 'e1', { day_rate: 1100 }, 200, 'PM can change day_rate'],
+  ['head_of_sales',      'e1', { day_rate: 1200, phone: '0799', bank_account: '555', bank_name: 'Equity' }, 200, 'HoS can complete phone, bank and rate'],
+  ['production_manager', 'e1', { name: 'Jane K', type: 'skilled_casual' }, 200, 'PM can rename and switch between day-paid types'],
+  ['head_of_sales',      'e1', { is_active: false }, 200, 'HoS can deactivate'],
+  ['production_manager', 'e3', { is_active: false }, 200, 'PM can deactivate permanent staff'],
+  ['admin',              'e1', { type: 'permanent', phone: '0799', sha_amount: 400 }, 200, 'admin can change type and private fields'],
 ]) {
   t = setup(role);
-  r = await call(() => R.empDetail.PATCH(req('PATCH', body), P('e1')));
+  const before = JSON.stringify(t.employees.find(e => e.id === id));
+  r = await call(() => R.empDetail.PATCH(req('PATCH', body), P(id)));
   ok(`EMP PATCH: ${label}`, r.status === expect, JSON.stringify(r));
-  if (expect === 403) ok(`EMP PATCH: ${label} → data unchanged`, t.employees[0].type === 'casual' && t.employees[0].bank_account === '999' && t.employees[0].monthly_salary === 30000 && t.employees[0].day_rate === 1000);
-  if (expect === 200 && role !== 'admin') ok(`EMP PATCH: ${label} → response has no private data`, hasAny(r.body.employee, EMP_PRIVATE).length === 0);
+  if (expect === 403) ok(`EMP PATCH: ${label} → data unchanged`, JSON.stringify(t.employees.find(e => e.id === id)) === before);
+  if (expect === 200 && role !== 'admin') ok(`EMP PATCH: ${label} → response has no salary/SHA/NSSF`, hasAny(r.body.employee, EMP_ADMIN_ONLY).length === 0);
+  if (expect === 200 && role !== 'admin' && body.phone) ok(`EMP PATCH: ${label} → stored`, t.employees[0].phone === body.phone && t.employees[0].bank_account === body.bank_account);
 }
 t = setup('production_manager');
 r = await call(() => R.empDetail.DELETE(req('DELETE'), P('e1')));

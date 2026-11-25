@@ -3,10 +3,9 @@
  * PATCH  /api/payroll/employees/:id  — update employee
  * DELETE /api/payroll/employees/:id  — deactivate only (never hard-delete; history is permanent)
  *
- * Access: admin, head_of_sales, production_manager — with different visibility
- * (see shared/lib/payroll/employeeAccess.js). Pay basis (type), salary, statutory
- * numbers, phone, banking, notes and employee documents are admin-only, for reads
- * and writes.
+ * Access: admin, head_of_sales, production_manager (see shared/lib/payroll/employeeAccess.js).
+ * Managers edit day-paid workers in full (incl. phone and bank details); monthly salary,
+ * SHA, NSSF, permanent staff records and employee documents are admin-only.
  * Only admin can approve/reopen payroll runs (enforced in runs routes).
  */
 
@@ -14,6 +13,7 @@ import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import {
   EMPLOYEE_COLUMNS, employeeAccessLevel, canSeePrivateEmployeeData, partitionEmployeeWrite,
+  serializeEmployee, canEditEmployeeRecord,
 } from '@/shared/lib/payroll/employeeAccess';
 
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
@@ -47,7 +47,7 @@ export async function GET(request, props) {
       docs = data || [];
     }
 
-    return NextResponse.json({ employee: emp, documents: docs });
+    return NextResponse.json({ employee: serializeEmployee(role, emp), documents: docs });
   } catch (err) {
     console.error('GET /api/payroll/employees/[id] unexpected:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -72,6 +72,14 @@ export async function PATCH(request, props) {
         { error: `Only an admin can change: ${forbidden.join(', ')}`, code: 'ADMIN_ONLY_FIELDS', fields: forbidden },
         { status: 403 }
       );
+    }
+
+    // Managers cannot edit permanent staff (other than activate/deactivate) or make anyone permanent.
+    if (role !== 'admin') {
+      const { data: current } = await serviceClient.from('employees').select('id, type').eq('id', params.id).single();
+      if (!current) return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
+      const gate = canEditEmployeeRecord(role, current, body);
+      if (!gate.ok) return NextResponse.json({ error: gate.error, code: 'ADMIN_ONLY_RECORD' }, { status: 403 });
     }
 
     const NUMERIC_FIELDS = new Set(['day_rate', 'monthly_salary', 'piece_rate', 'sha_amount']);
@@ -115,7 +123,7 @@ export async function PATCH(request, props) {
       created_by:    user.id,
     });
 
-    return NextResponse.json({ employee: emp });
+    return NextResponse.json({ employee: serializeEmployee(role, emp) });
   } catch (err) {
     console.error('PATCH /api/payroll/employees/[id] unexpected:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
