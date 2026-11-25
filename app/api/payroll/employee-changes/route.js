@@ -25,7 +25,7 @@ export async function GET(request) {
 
     let q = serviceClient
       .from('employee_change_requests')
-      .select('id, employee_id, changes, reason, status, requested_by, requested_by_name, requested_by_role, requested_at, decided_by_name, decided_at, decision_note, employees(employee_num, name, type)')
+      .select('id, employee_id, kind, changes, reason, status, requested_by, requested_by_name, requested_by_role, requested_at, decided_by_name, decided_at, decision_note, employees(employee_num, name, type)')
       .order('requested_at', { ascending: false })
       .limit(200);
     if (status !== 'all') q = q.eq('status', status);

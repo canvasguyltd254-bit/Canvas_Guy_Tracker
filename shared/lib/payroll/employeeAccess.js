@@ -23,7 +23,7 @@ export const EMPLOYEE_COLUMNS = Object.freeze({
   full:
     'id, employee_num, name, type, is_active, day_rate, monthly_salary, piece_rate, sha_amount, ' +
     'nssf_number, id_number, phone, bank_account, bank_name, bank_branch, paybill_number, ' +
-    'hire_date, notes, created_at, created_by',
+    'hire_date, notes, created_at, created_by, onboarding_status',
 });
 
 export const MANAGER_ROLES = Object.freeze(['production_manager', 'head_of_sales']);
@@ -80,12 +80,14 @@ export function splitEmployeeUpdate(role, body = {}) {
 
 /** Normalise a value for comparison/storage: '' / undefined → null, numeric fields → number. */
 export function normaliseEmployeeValue(field, value) {
+  if (typeof value === 'string') value = value.trim();
   if (value === '' || value === undefined || value === null) return null;
   if (NUMERIC_FIELDS.includes(field)) {
+    if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+(\.\d{1,2})?$/.test(value))) return NaN;
     const n = Number(value);
-    return Number.isFinite(n) ? n : NaN;
+    return Number.isFinite(n) && n >= 0 && n <= 99999999.99 && Number(n.toFixed(2)) === n ? n : NaN;
   }
-  return typeof value === 'string' ? value.trim() : value;
+  return typeof value === 'string' ? value : NaN;
 }
 
 /**
@@ -101,7 +103,7 @@ export function diffEmployeeChanges(current, body, fields) {
     const prev = normaliseEmployeeValue(f, current?.[f]);
     if (prev === next) continue;
     if (f === 'name' && !next) { invalid.push(f); continue; }
-    changes[f] = { old: prev, new: next };
+    changes[f] = { old: Number.isNaN(prev) || !NUMERIC_FIELDS.includes(f) ? current?.[f] ?? null : prev, new: next };
   }
   return { changes, invalid };
 }

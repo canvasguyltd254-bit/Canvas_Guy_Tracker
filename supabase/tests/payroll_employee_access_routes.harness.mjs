@@ -95,6 +95,7 @@ function makeDb(tables) {
       is() { return api; }, order() { return api; }, limit() { return api; }, range() { return api; },
       or(s) { log.ors.push(s); return api; },
       single() { single = true; return api; },
+      maybeSingle() { single = true; return api; },
       then(res, rej) { return Promise.resolve(run()).then(res, rej); },
     };
     function run() {
@@ -121,6 +122,17 @@ function makeDb(tables) {
     rpc: async (name, args) => {
       log.rpc.push({ name, args });
       if (name === 'next_employee_num') return { data: 'EMP-099', error: null };
+      if (name === 'approve_payroll_run') return { data: { total_gross: 5400, total_deductions: 475, total_net: 4925, employee_count: 1 }, error: null };
+      if (name === 'submit_employee_onboarding') {
+        const data = { ...args.p_fields, id: 'new', created_by: args.p_actor, is_active: false, onboarding_status: 'pending' };
+        tables.employees.push(data);
+        tables.employee_change_requests.push({ employee_id: data.id, kind: 'onboarding', status: 'pending' });
+        return { data, error: null };
+      }
+      if (name === 'approve_employee_change' && globalThis.__rpcError === 'STALE_OUTCOME') {
+        tables.employee_change_requests[0].status = 'stale';
+        return { data: { status: 'stale' }, error: null };
+      }
       return { data: { ok: true }, error: globalThis.__rpcError ? { message: globalThis.__rpcError } : null };
     },
   };
@@ -134,7 +146,7 @@ const ENTRY_MONEY = ['snapshot_day_rate', 'snapshot_salary', 'snapshot_sha', 'ov
 const RUN_MONEY = ['total_gross', 'total_deductions', 'total_net', 'approved_by', 'approved_at', 'approved_by_name', 'reopen_reason'];
 
 const mkEmp = () => ({
-  id: 'e1', employee_num: 'EMP-001', name: 'Jane', type: 'casual', is_active: true, day_rate: 1000,
+  id: 'e1', employee_num: 'EMP-001', name: 'Jane', type: 'casual', is_active: true, onboarding_status: 'approved', day_rate: 1000,
   monthly_salary: 30000, piece_rate: 50, sha_amount: 300, nssf_number: 'N-1', id_number: '12345678',
   phone: '0712345678', bank_account: '999', bank_name: 'KCB', bank_branch: 'Nairobi', paybill_number: '4040',
   hire_date: '2024-01-01', notes: 'secret note', created_at: '2024-01-01', created_by: 'u0',
@@ -214,6 +226,8 @@ for (const [role, body, expectStatus, label] of [
   ['production_staff',   { name: 'New', type: 'casual' }, 403, 'shop floor cannot add employees'],
   ['head_of_sales',      { type: 'casual' }, 400, 'name is required'],
   ['head_of_sales',      { name: 'X', type: 'bogus' }, 400, 'type must be valid'],
+  ['head_of_sales',      { name: 'X', type: 'casual', day_rate: -1 }, 400, 'negative rate refused'],
+  ['head_of_sales',      { name: 'X', type: 'casual', hire_date: '2026-02-30' }, 400, 'impossible date refused'],
 ]) {
   const t = setup(role);
   const r = await call(() => R.empList.POST(req('POST', body)));
@@ -221,13 +235,18 @@ for (const [role, body, expectStatus, label] of [
   if (expectStatus !== 201) ok(`EMP CREATE: ${label} → nothing inserted`, t.employees.length === 3);
   if (expectStatus === 201) {
     ok(`EMP CREATE: ${label} → saved as sent`, t.employees.length === 4 && (!body.phone || t.employees[3].phone === body.phone) && t.employees[3].created_by === 'u1', JSON.stringify(t.employees[3]));
-    const a = t.payroll_activities.find(x => x.activity_type === 'created');
-    ok(`EMP CREATE: ${label} → logged with who and the payment details`, a && a.description.includes(role) && !!a.new_value, JSON.stringify(a));
+    ok(`EMP CREATE: ${label} → atomic onboarding RPC, pending and inactive`,
+      log.rpc.some(x => x.name === 'submit_employee_onboarding' && x.args.p_role === role)
+      && r.body.employee.onboarding_status === 'pending' && r.body.employee.is_active === false);
   }
 }
 let t = setup('admin');
 let r = await call(() => R.empList.POST(req('POST', { name: 'New', type: 'casual', day_rate: 900, phone: '0700000000', bank_account: '1' })));
-ok('EMP CREATE admin works as before', r.status === 201 && r.body.employee.phone === '0700000000' && t.employees[3].bank_account === '1');
+ok('EMP CREATE admin also submits for approval', r.status === 201 && r.body.employee.onboarding_status === 'pending' && t.employees[3].bank_account === '1');
+r = await call(() => R.empDetail.PATCH(req('PATCH', { is_active: true }), P('new')));
+ok('Even admin cannot activate outside onboarding approval', r.status === 409 && !t.employees[3].is_active);
+r = await call(() => R.entries.POST(req('POST', { employee_id: 'new' }), P('r1')));
+ok('Even admin cannot add a pending employee to payroll', r.status === 422 && r.body.code === 'EMPLOYEE_ONBOARDING_REQUIRED' && t.payroll_entries.length === 1);
 
 // detail + documents
 for (const role of ['production_manager', 'head_of_sales']) {
@@ -278,7 +297,7 @@ for (const role of ['production_manager', 'head_of_sales']) {
   ok(`${role} can deactivate directly`, r.status === 200 && t.employees[0].is_active === false && t.employee_change_requests.length === 0, JSON.stringify(r));
   t = setup(role);
   r = await call(() => R.empDetail.PATCH(req('PATCH', { is_active: false, day_rate: 1300, reason: 'rate' }), P('e1')));
-  ok(`${role}: is_active applied now, rate only requested`, r.status === 202 && t.employees[0].is_active === false && Number(t.employees[0].day_rate) === 1000 && t.employee_change_requests.length === 1, JSON.stringify(r));
+  ok(`${role}: mixed update refused without writing anything`, r.status === 422 && t.employees[0].is_active === true && Number(t.employees[0].day_rate) === 1000 && t.employee_change_requests.length === 0, JSON.stringify(r));
   // role cannot sneak a decision through the PATCH body
   t = setup(role);
   r = await call(() => R.empDetail.PATCH(req('PATCH', { status: 'approved', created_by: 'x', id: 'zzz', reason: 'sneak' }), P('e1')));
@@ -316,7 +335,7 @@ r = await decide('c1', { action: 'reject', note: 'number not verified' });
 ok('DECIDE admin: reject with a reason calls reject_employee_change', r.status === 200 && log.rpc[0].name === 'reject_employee_change' && log.rpc[0].args.p_note === 'number not verified');
 r = await decide('c1', { action: 'maybe' });
 ok('DECIDE admin: unknown action → 400', r.status === 400);
-for (const [err, status, code] of [['NOT_PENDING: already approved', 409, 'NOT_PENDING'], ['REQUEST_NOT_FOUND', 404, undefined], ['STALE_REQUEST: phone has changed', 409, 'STALE_REQUEST'], ['INVALID_FIELD: id', 422, 'INVALID_VALUE']]) {
+for (const [err, status, code] of [['NOT_PENDING: already approved', 409, 'NOT_PENDING'], ['REQUEST_NOT_FOUND', 404, undefined], ['STALE_OUTCOME', 409, 'STALE_REQUEST'], ['INVALID_FIELD: id', 422, 'INVALID_VALUE']]) {
   t = setup('admin'); globalThis.__rpcError = err;
   t.employee_change_requests.push({ id: 'c1', status: 'pending' });
   r = await decide('c1', { action: 'approve' });
@@ -426,7 +445,7 @@ r = await call(runCalls['batches GET']);
 ok('ADMIN batches GET: allowed', r.status !== 403);
 setup('admin');
 res = await R.approve.POST(req('POST', {}), P('r1'));
-ok('ADMIN approve reaches the handler (not 403)', res.status !== 403);
+ok('ADMIN approve reaches the handler and succeeds', res.status === 200);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

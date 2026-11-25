@@ -35,6 +35,10 @@ await db.exec(`
     activity_type text NOT NULL, description text NOT NULL, old_value text, new_value text,
     created_at timestamptz DEFAULT now(), created_by uuid);
   GRANT ALL ON employees, payroll_activities TO anon, authenticated, service_role;
+  CREATE TABLE payroll_entries (employee_id uuid REFERENCES employees(id));
+  CREATE SEQUENCE employee_num_seq;
+  CREATE FUNCTION next_employee_num() RETURNS text LANGUAGE sql AS
+    $$ SELECT 'TEST-' || nextval('employee_num_seq') $$;
 `);
 
 await db.exec(mig); ok('migration applies', true);
@@ -58,7 +62,7 @@ const row = id => one(`SELECT * FROM employees WHERE id=$1`, [id]);
   ok('browser roles have no access to employees; service_role does', !p.s && !p.u && !p.a && p.sr, JSON.stringify(p));
   const q = await one(`SELECT has_table_privilege('authenticated','employee_change_requests','SELECT') s, has_table_privilege('authenticated','employee_change_requests','INSERT') i,
                               has_table_privilege('service_role','employee_change_requests','DELETE') d, has_table_privilege('service_role','employee_change_requests','UPDATE') u`);
-  ok('requests table: browsers locked out; service_role can update but never delete', !q.s && !q.i && !q.d && q.u, JSON.stringify(q));
+  ok('requests table: browsers locked out; service_role cannot directly decide or delete', !q.s && !q.i && !q.d && !q.u, JSON.stringify(q));
   const f = await one(`SELECT has_function_privilege('authenticated','approve_employee_change(uuid,uuid,text,text)','EXECUTE') a,
                               has_function_privilege('service_role','approve_employee_change(uuid,uuid,text,text)','EXECUTE') s`);
   ok('only service_role can approve', !f.a && f.s, JSON.stringify(f));
@@ -94,10 +98,36 @@ const row = id => one(`SELECT * FROM employees WHERE id=$1`, [id]);
   const e = await emp();
   const id = await request(e, { day_rate: { old: 1000, new: 1500 }, phone: { old: '0712345678', new: '0700' } });
   await db.query(`UPDATE employees SET phone='0788888888' WHERE id=$1`, [e.id]);   // someone changed the phone since
-  await throws('STALE_REQUEST when a field changed since the request was made', () => approve(id), /STALE_REQUEST/);
+  ok('stale outcome when a field changed since the request was made', (await approve(id)).rows[0].r.status === 'stale');
   const a = await row(e.id);
   ok('…and NOTHING from the request was applied (not even the rate)', Number(a.day_rate) === 1000 && a.phone === '0788888888');
-  ok('…the request is still pending so the admin can reject it', (await one(`SELECT status FROM employee_change_requests WHERE id=$1`, [id])).status === 'pending');
+  ok('…the stale decision is persisted', (await one(`SELECT status FROM employee_change_requests WHERE id=$1`, [id])).status === 'stale');
+}
+
+const submit = (name, pay = 1000) => one(
+  `SELECT submit_employee_onboarding($1, $2, 'Manager', 'production_manager') e`,
+  [JSON.stringify({ name, type: 'casual', day_rate: pay, sha_amount: 0 }), U]);
+{
+  const { e } = await submit('Pending worker');
+  const req = await one(`SELECT id, kind FROM employee_change_requests WHERE employee_id=$1`, [e.id]);
+  ok('creation is inactive and has an onboarding request', !e.is_active && e.onboarding_status === 'pending' && req.kind === 'onboarding');
+  ok('creation has an audit entry', !!await one(`SELECT id FROM payroll_activities WHERE entity_id=$1 AND activity_type='created'`, [e.id]));
+  await throws('pending worker cannot be activated directly', () => db.query(`UPDATE employees SET is_active=true WHERE id=$1`, [e.id]), /employees_onboarding_valid/);
+  await throws('pending worker cannot enter payroll', () => db.query(`INSERT INTO payroll_entries VALUES ($1)`, [e.id]), /EMPLOYEE_ONBOARDING_REQUIRED/);
+  await throws('an onboarding record cannot be deleted by deleting the employee', () => db.query(`DELETE FROM employees WHERE id=$1`, [e.id]), /foreign key/);
+  await approve(req.id);
+  await db.query(`INSERT INTO payroll_entries VALUES ($1)`, [e.id]);
+  ok('approval activates the worker and allows payroll', (await row(e.id)).is_active && (await row(e.id)).onboarding_status === 'approved');
+  const { e: rejected } = await submit('Rejected worker');
+  const rr = await one(`SELECT id FROM employee_change_requests WHERE employee_id=$1`, [rejected.id]);
+  await db.query(`SELECT reject_employee_change($1,$2,'Admin','not verified')`, [rr.id, A]);
+  await throws('rejected worker still cannot enter payroll', () => db.query(`UPDATE payroll_entries SET employee_id=$1 WHERE employee_id=$2`, [rejected.id, e.id]), /EMPLOYEE_ONBOARDING_REQUIRED/);
+  await throws('negative pay rejected on submission', () => submit('Bad rate', -1), /employees_pay_values_valid/);
+  const neg = await request(e, { day_rate: { old: 1000, new: -10 } });
+  await throws('negative pay rejected on approval', () => approve(neg), /employees_pay_values_valid/);
+  await db.exec(`ALTER TABLE payroll_activities ADD CHECK (activity_type <> 'created') NOT VALID`);
+  await throws('failed audit aborts onboarding', () => submit('Audit failure'), /check constraint/);
+  ok('failed audit leaves no employee', !await one(`SELECT id FROM employees WHERE name='Audit failure'`));
 }
 
 // ── field whitelist ─────────────────────────────────────────────────────────

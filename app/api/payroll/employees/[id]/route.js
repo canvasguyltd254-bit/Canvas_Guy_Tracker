@@ -17,6 +17,7 @@ import {
   EMPLOYEE_COLUMNS, employeeAccessLevel, canSeeEmployeeDocuments,
   splitEmployeeUpdate, diffEmployeeChanges, normaliseEmployeeValue,
 } from '@/shared/lib/payroll/employeeAccess';
+import { isValidIsoDate } from '@/shared/lib/isoDate';
 
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 const DATE_FIELDS = new Set(['hire_date']);
@@ -70,11 +71,30 @@ export async function PATCH(request, props) {
     const authError = requireRole(user, role, ALLOWED_ROLES);
     if (authError) return authError;
 
-    const body = await request.json();
+    let body;
+    try { body = await request.json(); } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }); }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: 'Expected an employee object' }, { status: 400 });
+    }
     const { direct, requested } = splitEmployeeUpdate(role, body);
 
     if (direct.length === 0 && requested.length === 0) {
       return NextResponse.json({ error: 'No updatable fields provided' }, { status: 400 });
+    }
+    if (direct.length && requested.length) {
+      return NextResponse.json({ error: 'Save activation separately from a change request.', code: 'MIXED_UPDATE' }, { status: 422 });
+    }
+    if (direct.includes('is_active') && typeof body.is_active !== 'boolean') {
+      return NextResponse.json({ error: 'is_active must be a boolean' }, { status: 400 });
+    }
+    const { data: current, error: currentError } = await serviceClient
+      .from('employees').select(EMPLOYEE_COLUMNS.full).eq('id', params.id).single();
+    if (currentError && currentError.code !== 'PGRST116') {
+      return NextResponse.json({ error: 'Failed to load employee' }, { status: 500 });
+    }
+    if (!current) return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
+    if (current.onboarding_status !== 'approved') {
+      return NextResponse.json({ error: 'This employee is not approved for payroll.', code: 'EMPLOYEE_ONBOARDING_REQUIRED' }, { status: 409 });
     }
 
     // ── Direct updates (admin: everything; manager: is_active only) ─────────
@@ -84,7 +104,9 @@ export async function PATCH(request, props) {
       for (const key of direct) {
         const val = body[key];
         updates[key] = key === 'is_active' ? !!val : normaliseEmployeeValue(key, val);
-        if (Number.isNaN(updates[key])) {
+        if (Number.isNaN(updates[key]) || (key === 'sha_amount' && updates[key] === null)
+          || (key === 'type' && !['casual', 'permanent', 'skilled_casual'].includes(updates[key]))
+          || (DATE_FIELDS.has(key) && updates[key] !== null && !isValidIsoDate(updates[key]))) {
           return NextResponse.json({ error: `Invalid value for ${key}` }, { status: 400 });
         }
         if (key === 'name' && !updates[key]) {
@@ -126,22 +148,16 @@ export async function PATCH(request, props) {
         );
       }
 
-      const { data: current } = await serviceClient
-        .from('employees')
-        .select(EMPLOYEE_COLUMNS.full)
-        .eq('id', params.id)
-        .single();
-      if (!current) return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
-
       const { changes, invalid } = diffEmployeeChanges(current, body, requested);
       if (invalid.length > 0) {
         return NextResponse.json({ error: `Invalid value for: ${invalid.join(', ')}`, code: 'INVALID_VALUE' }, { status: 400 });
       }
-      if (body.type !== undefined && !['casual', 'permanent', 'skilled_casual'].includes(changes.type?.new ?? current.type)) {
+      if (changes.type && !['casual', 'permanent', 'skilled_casual'].includes(changes.type.new)) {
         return NextResponse.json({ error: 'Invalid employee type', code: 'INVALID_VALUE' }, { status: 400 });
       }
       for (const f of Object.keys(changes)) {
-        if (DATE_FIELDS.has(f) && changes[f].new && Number.isNaN(Date.parse(changes[f].new))) {
+        if ((DATE_FIELDS.has(f) && changes[f].new !== null && !isValidIsoDate(changes[f].new))
+          || (f === 'sha_amount' && changes[f].new === null)) {
           return NextResponse.json({ error: `Invalid date for ${f}`, code: 'INVALID_VALUE' }, { status: 400 });
         }
       }

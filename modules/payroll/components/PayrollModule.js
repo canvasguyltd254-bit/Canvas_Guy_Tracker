@@ -292,7 +292,9 @@ function EmployeesTab({ userRole }) {
   const canSeeContact = isAdmin || isManager;        // phone, ID, bank
   const canCreate   = canCreateEmployee(userRole);   // admin, HoS and PM add employees with every field
   // After creation only an admin edits directly; a manager's edit is a change request an admin approves.
-  const canEditRow  = () => PAYROLL_ROLES.includes(userRole);
+  const canEditRow  = (emp) => PAYROLL_ROLES.includes(userRole) && emp.onboarding_status === 'approved';
+  const employeeStatus = (emp) => emp.onboarding_status === 'pending' ? 'Awaiting approval'
+    : emp.onboarding_status === 'rejected' ? 'Rejected' : emp.is_active ? 'Active' : 'Inactive';
   const pendingFor  = (id) => requests.filter(r => r.employee_id === id);
 
   const INITIAL_FORM = {
@@ -330,7 +332,9 @@ function EmployeesTab({ userRole }) {
     if (action === 'reject') {
       note = window.prompt('Reason for rejecting this change?') || '';
       if (note.trim().length < 3) return;
-    } else if (!window.confirm(`Approve this change to ${req.employees?.name || 'this employee'}? It takes effect immediately.`)) {
+    } else if (!window.confirm(req.kind === 'onboarding'
+      ? `Approve ${req.employees?.name || 'this employee'} for payroll? Verify their identity, pay and payment details first.`
+      : `Approve this change to ${req.employees?.name || 'this employee'}? It takes effect immediately.`)) {
       return;
     }
     setDeciding(req.id);
@@ -385,7 +389,8 @@ function EmployeesTab({ userRole }) {
     setSaving(false);
     if (!res.ok) { setError(data.error || 'Save failed'); return; }
     setShowForm(false);
-    if (res.status === 202) setNotice('Change logged. It takes effect when an admin approves it.');
+    if (method === 'POST') setNotice('Employee submitted for approval. They cannot enter payroll until approved.');
+    else if (res.status === 202) setNotice('Change logged. It takes effect when an admin approves it.');
     load(); loadRequests();
   }
 
@@ -418,6 +423,7 @@ function EmployeesTab({ userRole }) {
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
                   <div style={{ fontSize: 13 }}>
                     <strong>{r.employees?.name || 'Employee'}</strong>{' '}
+                    {r.kind === 'onboarding' && <Badge label="New employee" bg="#fef3c7" color="#b45309" />}{' '}
                     <span style={{ color: '#9ca3af', fontFamily: 'monospace', fontSize: 12 }}>{r.employees?.employee_num}</span>
                   </div>
                   <div style={{ fontSize: 11.5, color: '#6b7280' }}>
@@ -430,8 +436,7 @@ function EmployeesTab({ userRole }) {
                       <span style={{ color: '#6b7280', display: 'inline-block', minWidth: 110 }}>
                         {FIELD_LABELS[f] || f}{PAYMENT_FIELDS.includes(f) && <span title="Affects pay or where it is sent" style={{ color: '#b45309' }}> ●</span>}
                       </span>
-                      <span style={{ textDecoration: 'line-through', color: '#9ca3af' }}>{String(v.old ?? '—')}</span>
-                      {' → '}
+                      {r.kind !== 'onboarding' && <><span style={{ textDecoration: 'line-through', color: '#9ca3af' }}>{String(v.old ?? '—')}</span>{' → '}</>}
                       <strong>{String(v.new ?? '—')}</strong>
                     </div>
                   ))}
@@ -502,11 +507,11 @@ function EmployeesTab({ userRole }) {
                         {canSeeContact && <td style={{ padding: '10px 12px', fontSize: 13 }}>KES {fmt(emp.sha_amount)}</td>}
                         {canSeeContact && <td style={{ padding: '10px 12px', fontSize: 13, color: '#6b7280' }}>{emp.phone || '—'}</td>}
                         <td style={{ padding: '10px 12px' }}>
-                          <Badge label={emp.is_active ? 'Active' : 'Inactive'} bg={emp.is_active ? '#dcfce7' : '#f3f4f6'} color={emp.is_active ? GREEN : '#6b7280'} />
-                          {pendingFor(emp.id).length > 0 && <span style={{ marginLeft: 6 }}><Badge label="Change pending" bg="#fef3c7" color="#b45309" /></span>}
+                          <Badge label={employeeStatus(emp)} bg={emp.is_active ? '#dcfce7' : '#f3f4f6'} color={emp.is_active ? GREEN : '#6b7280'} />
+                          {canEditRow(emp) && pendingFor(emp.id).length > 0 && <span style={{ marginLeft: 6 }}><Badge label="Change pending" bg="#fef3c7" color="#b45309" /></span>}
                         </td>
                         <td style={{ padding: '10px 12px' }}>
-                          {canEdit && (
+                          {canEdit && canEditRow(emp) && (
                             <div style={{ display: 'flex', gap: 6 }}>
                               {canEditRow(emp) && <Btn onClick={() => openEdit(emp)} variant="secondary" small>{isAdmin ? 'Edit' : 'Request change'}</Btn>}
                               <Btn onClick={() => toggleActive(emp)} variant={emp.is_active ? 'danger' : 'success'} small>
@@ -531,7 +536,7 @@ function EmployeesTab({ userRole }) {
                       <div style={{ fontWeight: 700, fontSize: 15, color: '#1a1a1a' }}>{emp.name}</div>
                       <div style={{ fontSize: 12, color: '#9ca3af', fontFamily: 'monospace' }}>{emp.employee_num}</div>
                     </div>
-                    <Badge label={emp.is_active ? 'Active' : 'Inactive'} bg={emp.is_active ? '#dcfce7' : '#f3f4f6'} color={emp.is_active ? GREEN : '#6b7280'} />
+                    <Badge label={employeeStatus(emp)} bg={emp.is_active ? '#dcfce7' : '#f3f4f6'} color={emp.is_active ? GREEN : '#6b7280'} />
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px', fontSize: 13, marginBottom: 10 }}>
                     <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Type</span><br /><StatusBadge status={emp.type} /></div>
@@ -539,7 +544,7 @@ function EmployeesTab({ userRole }) {
                     {canSeeContact && <div><span style={{ color: '#9ca3af', fontSize: 11 }}>SHA</span><br />KES {fmt(emp.sha_amount)}</div>}
                     {canSeeContact && <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Phone</span><br />{emp.phone || '—'}</div>}
                   </div>
-                  {canEdit && (
+                  {canEdit && canEditRow(emp) && (
                     <div style={{ display: 'flex', gap: 8 }}>
                       {canEditRow(emp) && <Btn onClick={() => openEdit(emp)} variant="secondary" small style={{ flex: 1 }}>{isAdmin ? 'Edit' : 'Request change'}</Btn>}
                       <Btn onClick={() => toggleActive(emp)} variant={emp.is_active ? 'danger' : 'success'} small style={{ flex: 1 }}>
@@ -569,6 +574,7 @@ function EmployeesTab({ userRole }) {
               an admin approves it before it takes effect (this includes rates, phone, bank details, SHA and NSSF).
             </div>
           )}
+          {!editEmp && <p style={{ fontSize: 13, color: '#6b7280' }}>An admin must approve this employee before they can be added to payroll.</p>}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <Field label="Full Name" required>
               <input style={inputStyle} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
@@ -625,7 +631,7 @@ function EmployeesTab({ userRole }) {
           {error && <ErrorBanner message={error} onDismiss={() => setError('')} />}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
             <Btn variant="secondary" onClick={() => setShowForm(false)}>Cancel</Btn>
-            <Btn onClick={save} loading={saving}>{editEmp ? (isAdmin ? 'Save Changes' : 'Submit for approval') : 'Create Employee'}</Btn>
+            <Btn onClick={save} loading={saving}>{editEmp && isAdmin ? 'Save Changes' : 'Submit for approval'}</Btn>
           </div>
         </Modal>
       )}

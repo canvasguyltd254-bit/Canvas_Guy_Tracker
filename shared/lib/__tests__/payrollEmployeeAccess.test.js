@@ -8,6 +8,15 @@ import {
 
 const cols = (s) => s.split(',').map(x => x.trim());
 
+test('pay fields accept zero but reject negatives, non-finite values, coercions and sub-cent amounts', () => {
+  for (const key of ['day_rate', 'monthly_salary', 'piece_rate', 'sha_amount']) {
+    assert.equal(normaliseEmployeeValue(key, '0'), 0);
+    for (const bad of [-1, Infinity, NaN, true, [], '1e3', 1.001, 100000000]) {
+      assert.ok(Number.isNaN(normaliseEmployeeValue(key, bad)), `${key}: ${bad}`);
+    }
+  }
+});
+
 test('admin and both managers see the full profile; shop floor and unknown roles get nothing', () => {
   for (const r of ['admin', 'production_manager', 'head_of_sales']) {
     assert.equal(employeeAccessLevel(r), 'full', r);

@@ -79,11 +79,11 @@ let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => { cond ? pass++ : fail++; console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '  ' + extra}`); };
 
 const EMP = {
-  cas:  { id: 'e-cas',  name: 'Cas',  type: 'casual',         is_active: true, day_rate: 1000, sha_amount: 300 },
-  perm: { id: 'e-perm', name: 'Perm', type: 'permanent',      is_active: true, monthly_salary: 30000, sha_amount: 300 },
-  sk:   { id: 'e-sk',   name: 'Sk',   type: 'skilled_casual', is_active: true, day_rate: 1500, sha_amount: 300 },
-  temp: { id: 'e-temp', name: 'Tmp',  type: 'temporary',      is_active: true, day_rate: 1200, sha_amount: 0 },
-  off:  { id: 'e-off',  name: 'Off',  type: 'casual',         is_active: false },
+  cas:  { id: 'e-cas',  name: 'Cas',  type: 'casual',         is_active: true, onboarding_status: 'approved', day_rate: 1000, sha_amount: 300 },
+  perm: { id: 'e-perm', name: 'Perm', type: 'permanent',      is_active: true, onboarding_status: 'approved', monthly_salary: 30000, sha_amount: 300 },
+  sk:   { id: 'e-sk',   name: 'Sk',   type: 'skilled_casual', is_active: true, onboarding_status: 'approved', day_rate: 1500, sha_amount: 300 },
+  temp: { id: 'e-temp', name: 'Tmp',  type: 'temporary',      is_active: true, onboarding_status: 'approved', day_rate: 1200, sha_amount: 0 },
+  off:  { id: 'e-off',  name: 'Off',  type: 'casual',         is_active: false, onboarding_status: 'approved' },
 };
 function fresh(runType, existingEntries = []) {
   const tables = {

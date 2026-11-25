@@ -75,7 +75,7 @@ export async function POST(request, props) {
     // to the client except the entry snapshot built below)
     const { data: emp, error: empErr } = await serviceClient
       .from('employees')
-      .select('id, name, type, is_active, day_rate, monthly_salary, sha_amount')
+      .select('id, name, type, is_active, onboarding_status, day_rate, monthly_salary, sha_amount')
       .eq('id', employee_id)
       .single();
 
@@ -83,6 +83,9 @@ export async function POST(request, props) {
       return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
     }
 
+    if (emp.onboarding_status !== 'approved') {
+      return NextResponse.json({ error: 'An admin must approve this employee before they can enter payroll.', code: 'EMPLOYEE_ONBOARDING_REQUIRED' }, { status: 422 });
+    }
     if (!emp.is_active) {
       return NextResponse.json({ error: 'Cannot add inactive employee to payroll' }, { status: 400 });
     }
@@ -148,6 +151,9 @@ export async function POST(request, props) {
 
     if (insertErr) {
       console.error('POST entries insert error:', insertErr.message);
+      if (insertErr.message?.includes('EMPLOYEE_ONBOARDING_REQUIRED')) {
+        return NextResponse.json({ error: 'An admin must approve this employee before they can enter payroll.', code: 'EMPLOYEE_ONBOARDING_REQUIRED' }, { status: 422 });
+      }
       // The database trigger is the backstop for the check above.
       if (/RUN_TYPE_MISMATCH/.test(insertErr.message || '')) {
         return NextResponse.json({ error: 'Employee type does not match this run', code: 'RUN_TYPE_MISMATCH' }, { status: 422 });

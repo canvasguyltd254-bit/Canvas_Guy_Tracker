@@ -3,7 +3,7 @@
  * POST /api/payroll/employees  — create employee
  *
  * Access: admin, head_of_sales, production_manager (see shared/lib/payroll/employeeAccess.js).
- * All three see the full profile (phone search included) and may ADD an employee with every field.
+ * All three see full profiles and may submit new employees for admin approval.
  * After that only an admin edits directly; a manager's change is a request an admin approves
  * (PATCH /api/payroll/employees/:id → /api/payroll/employee-changes).
  * Only admin can approve/reopen payroll runs (enforced in runs routes).
@@ -12,8 +12,9 @@
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import {
-  EMPLOYEE_COLUMNS, employeeAccessLevel, employeeSearchFilter, canCreateEmployee,
+  EMPLOYEE_COLUMNS, employeeAccessLevel, employeeSearchFilter, canCreateEmployee, REQUESTABLE_FIELDS, normaliseEmployeeValue,
 } from '@/shared/lib/payroll/employeeAccess';
+import { isValidIsoDate } from '@/shared/lib/isoDate';
 
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
 
@@ -67,94 +68,58 @@ export async function POST(request) {
       );
     }
 
-    const body = await request.json();
+    let body;
+    try { body = await request.json(); } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }); }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ error: 'Expected an employee object' }, { status: 400 });
+    }
 
     // Admin and managers add an employee with every field. After this, a manager can only
     // REQUEST changes (PATCH → employee_change_requests); the creation is logged below.
 
-    const {
-      name, type, day_rate, monthly_salary, piece_rate,
-      sha_amount, nssf_number, id_number,
-      phone, bank_account, bank_name, bank_branch, paybill_number,
-      hire_date, notes,
-    } = body;
-
-    if (!name?.trim()) {
+    const fields = Object.fromEntries(REQUESTABLE_FIELDS.map(key => [key, normaliseEmployeeValue(key, body[key])]));
+    const bad = REQUESTABLE_FIELDS.find(key => Number.isNaN(fields[key]));
+    if (bad || (fields.hire_date && !isValidIsoDate(fields.hire_date))) {
+      return NextResponse.json({ error: 'Invalid value for ' + (bad || 'hire_date') }, { status: 400 });
+    }
+    if (!fields.name) {
       return NextResponse.json({ error: 'Employee name is required' }, { status: 400 });
     }
-    if (!type || !['casual', 'permanent', 'skilled_casual'].includes(type)) {
+    if (!['casual', 'permanent', 'skilled_casual'].includes(fields.type)) {
       return NextResponse.json({ error: 'Invalid employee type' }, { status: 400 });
     }
 
     // Look up the active SHA rule rather than relying on a manually entered amount
     let sha_from_rule = null;
-    const { data: shaRule } = await serviceClient
+    const { data: shaRule, error: shaError } = await serviceClient
       .from('statutory_rules')
       .select('fixed_amount, rate')
       .eq('rule_type', 'sha')
       .is('effective_to', null)
       .order('effective_from', { ascending: false })
       .limit(1)
-      .single();
+      .maybeSingle();
+
+    if (shaError && fields.sha_amount === null) {
+      return NextResponse.json({ error: 'Could not load the SHA default' }, { status: 500 });
+    }
 
     if (shaRule) {
       sha_from_rule = shaRule.fixed_amount ?? 0;
     }
 
-    // sha_amount from request overrides rule (allows per-employee overrides), falls back to rule, then 0
-    const resolved_sha = sha_amount !== undefined && sha_amount !== ''
-      ? Number(sha_amount)
-      : (sha_from_rule ?? 0);
-
-    // Generate employee_num via DB function
-    const { data: numData, error: numErr } = await serviceClient.rpc('next_employee_num');
-    if (numErr) {
-      return NextResponse.json({ error: 'Failed to generate employee number' }, { status: 500 });
-    }
-
-    const { data: emp, error: insertErr } = await serviceClient
-      .from('employees')
-      .insert({
-        employee_num:    numData,
-        name:            name.trim(),
-        type,
-        day_rate:        day_rate        ? Number(day_rate)        : null,
-        monthly_salary:  monthly_salary  ? Number(monthly_salary)  : null,
-        piece_rate:      piece_rate      ? Number(piece_rate)       : null,
-        sha_amount:      resolved_sha,
-        nssf_number:     nssf_number     || null,
-        id_number:       id_number       || null,
-        phone:           phone           || null,
-        bank_account:    bank_account    || null,
-        bank_name:       bank_name       || null,
-        bank_branch:     bank_branch     || null,
-        paybill_number:  paybill_number  || null,
-        hire_date:       hire_date       || null,
-        notes:           notes           || null,
-        created_by:      user.id,
-      })
-      .select(EMPLOYEE_COLUMNS[employeeAccessLevel(role)])
-      .single();
-
-    if (insertErr) {
-      console.error('POST /api/payroll/employees insert error:', insertErr.message);
-      return NextResponse.json({ error: 'Failed to create employee' }, { status: 500 });
-    }
-
-    await serviceClient.from('payroll_activities').insert({
-      entity_type:   'employee',
-      entity_id:     emp.id,
-      activity_type: 'created',
-      description:   `Employee ${emp.employee_num} ${emp.name} (${emp.type}) created by ${displayName} (${role})`,
-      // what the payment details were at creation, so a later change request has a visible baseline
-      new_value:     JSON.stringify({
-        day_rate: emp.day_rate, monthly_salary: emp.monthly_salary, piece_rate: emp.piece_rate, sha_amount: emp.sha_amount,
-        phone: emp.phone, bank_account: emp.bank_account, bank_name: emp.bank_name, paybill_number: emp.paybill_number,
-      }),
-      created_by:    user.id,
+    fields.sha_amount ??= sha_from_rule ?? 0;
+    const { data: emp, error: insertErr } = await serviceClient.rpc('submit_employee_onboarding', {
+      p_fields: fields, p_actor: user.id, p_name: displayName || null, p_role: role,
     });
 
-    return NextResponse.json({ employee: emp }, { status: 201 });
+    if (insertErr || !emp) {
+      console.error('POST /api/payroll/employees onboarding failed:', insertErr?.code);
+      return NextResponse.json({ error: 'Failed to submit employee for approval' }, { status: 500 });
+    }
+
+    const employee = Object.fromEntries(EMPLOYEE_COLUMNS.full.split(', ').map(key => [key, emp[key]]));
+    return NextResponse.json({ employee, message: 'Employee submitted for admin approval.' }, { status: 201 });
   } catch (err) {
     console.error('POST /api/payroll/employees unexpected:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
