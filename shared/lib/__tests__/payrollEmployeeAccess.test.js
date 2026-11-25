@@ -1,53 +1,37 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  EMPLOYEE_COLUMNS, SENSITIVE_FIELDS, ADMIN_ONLY_FIELDS,
-  employeeAccessLevel, canSeePrivateEmployeeData, writableEmployeeFields,
-  partitionEmployeeWrite, employeeSearchFilter, canCreateEmployee, creatableTypes, partitionEmployeeCreate,
-  serializeEmployee, canEditEmployeeRecord,
+  EMPLOYEE_COLUMNS, REQUESTABLE_FIELDS, PAYMENT_FIELDS,
+  employeeAccessLevel, canSeeEmployeeProfile, canSeeEmployeeDocuments, canDecideEmployeeChange,
+  canCreateEmployee, splitEmployeeUpdate, diffEmployeeChanges, normaliseEmployeeValue, employeeSearchFilter,
 } from '../payroll/employeeAccess.js';
 
 const cols = (s) => s.split(',').map(x => x.trim());
-const ADMIN_ONLY = ['monthly_salary', 'sha_amount', 'nssf_number'];
-const WORKER_DETAILS = ['day_rate', 'piece_rate', 'phone', 'id_number', 'bank_account', 'bank_name', 'bank_branch', 'paybill_number', 'hire_date', 'notes'];
 
-test('access levels by role; shop floor and unknown roles get nothing', () => {
-  assert.equal(employeeAccessLevel('admin'), 'private');
-  assert.equal(employeeAccessLevel('production_manager'), 'manager');
-  assert.equal(employeeAccessLevel('head_of_sales'), 'manager');
+test('admin and both managers see the full profile; shop floor and unknown roles get nothing', () => {
+  for (const r of ['admin', 'production_manager', 'head_of_sales']) {
+    assert.equal(employeeAccessLevel(r), 'full', r);
+    assert.equal(canSeeEmployeeProfile(r), true, r);
+  }
   for (const r of ['production_staff', 'sales', 'viewer', '', null, undefined]) {
     assert.equal(employeeAccessLevel(r), null, String(r));
+    assert.equal(canSeeEmployeeProfile(r), false, String(r));
   }
 });
 
-test('no select-star anywhere, and every column list is explicit', () => {
-  for (const v of Object.values(EMPLOYEE_COLUMNS)) assert.ok(!v.includes('*'));
+test('column list is explicit (no select-star) and carries phone, bank, rate, salary, SHA, NSSF', () => {
+  assert.ok(!EMPLOYEE_COLUMNS.full.includes('*'));
+  const c = cols(EMPLOYEE_COLUMNS.full);
+  for (const f of ['phone', 'bank_account', 'paybill_number', 'day_rate', 'monthly_salary', 'sha_amount', 'nssf_number']) assert.ok(c.includes(f), f);
 });
 
-test('managers see worker pay details (phone, bank, rate) but never salary, SHA or NSSF', () => {
-  const c = cols(EMPLOYEE_COLUMNS.manager);
-  for (const f of WORKER_DETAILS) assert.ok(c.includes(f), f);
-  for (const f of ADMIN_ONLY) assert.ok(!c.includes(f), `${f} must not reach a manager`);
-});
-
-test('admin sees every field', () => {
-  const c = cols(EMPLOYEE_COLUMNS.private);
-  for (const f of [...WORKER_DETAILS, ...ADMIN_ONLY]) assert.ok(c.includes(f), f);
-});
-
-test('permanent staff are reduced to identity + status for managers, untouched for admin', () => {
-  const perm = { id: 1, employee_num: 'E1', name: 'P', type: 'permanent', is_active: true, phone: '07', bank_account: '9', day_rate: 1 };
-  for (const r of ['production_manager', 'head_of_sales']) {
-    assert.deepEqual(serializeEmployee(r, perm), { id: 1, employee_num: 'E1', name: 'P', type: 'permanent', is_active: true });
+test('employee documents and change decisions are admin-only', () => {
+  assert.equal(canSeeEmployeeDocuments('admin'), true);
+  assert.equal(canDecideEmployeeChange('admin'), true);
+  for (const r of ['production_manager', 'head_of_sales', 'production_staff', null]) {
+    assert.equal(canSeeEmployeeDocuments(r), false, String(r));
+    assert.equal(canDecideEmployeeChange(r), false, String(r));
   }
-  assert.deepEqual(serializeEmployee('admin', perm), perm);
-  const casual = { ...perm, type: 'casual' };
-  assert.deepEqual(serializeEmployee('head_of_sales', casual), casual);
-});
-
-test('SENSITIVE_FIELDS (admin-only writes) are exactly salary, SHA and NSSF', () => {
-  assert.deepEqual([...SENSITIVE_FIELDS].sort(), [...ADMIN_ONLY].sort());
-  assert.deepEqual([...ADMIN_ONLY_FIELDS].sort(), [...ADMIN_ONLY].sort());
 });
 
 test('admin, production manager and head of sales can add employees; nobody else', () => {
@@ -55,69 +39,66 @@ test('admin, production manager and head of sales can add employees; nobody else
   for (const r of ['production_staff', 'sales', null, undefined]) assert.equal(canCreateEmployee(r), false, String(r));
 });
 
-test('only an admin may create permanent staff; others create day-paid types', () => {
-  assert.deepEqual(creatableTypes('admin').sort(), ['casual', 'permanent', 'skilled_casual']);
+test('updates: admin applies directly; managers apply only is_active, everything else is a request', () => {
+  const body = { name: 'A', phone: '07', day_rate: 1, is_active: false, reason: 'x', bogus: 1 };
+  assert.deepEqual(splitEmployeeUpdate('admin', body).requested, []);
+  assert.deepEqual(splitEmployeeUpdate('admin', body).direct.sort(), ['day_rate', 'is_active', 'name', 'phone']);
   for (const r of ['production_manager', 'head_of_sales']) {
-    assert.deepEqual(creatableTypes(r).sort(), ['casual', 'skilled_casual']);
+    const s = splitEmployeeUpdate(r, body);
+    assert.deepEqual(s.direct, ['is_active']);
+    assert.deepEqual(s.requested.sort(), ['day_rate', 'name', 'phone']);
   }
+  assert.deepEqual(splitEmployeeUpdate('production_staff', body), { direct: [], requested: [] });
 });
 
-test('managers may write all worker details on create/edit; salary, SHA, NSSF refused', () => {
-  for (const r of ['production_manager', 'head_of_sales']) {
-    const w = writableEmployeeFields(r);
-    for (const f of [...WORKER_DETAILS, 'name', 'is_active', 'type']) assert.ok(w.includes(f), `${r} ${f}`);
-    for (const f of ADMIN_ONLY) assert.ok(!w.includes(f), `${r} must not write ${f}`);
-    assert.deepEqual(partitionEmployeeCreate(r, { name: 'A', type: 'casual', phone: '07', bank_account: '1', day_rate: 900 }).forbidden, []);
-    assert.deepEqual(partitionEmployeeCreate(r, { name: 'A', monthly_salary: 3, sha_amount: 1, nssf_number: 'x' }).forbidden.sort(), [...ADMIN_ONLY].sort());
+test('every requestable field is covered and is_active is not requestable', () => {
+  assert.ok(!REQUESTABLE_FIELDS.includes('is_active'));
+  for (const f of ['name', 'type', 'day_rate', 'monthly_salary', 'piece_rate', 'sha_amount', 'nssf_number', 'phone',
+    'bank_account', 'bank_name', 'bank_branch', 'paybill_number', 'id_number', 'hire_date', 'notes']) {
+    assert.ok(REQUESTABLE_FIELDS.includes(f), f);
   }
-  assert.deepEqual(writableEmployeeFields('production_staff'), []);
-  for (const f of ADMIN_ONLY) assert.ok(writableEmployeeFields('admin').includes(f), `admin ${f}`);
+  for (const f of ['phone', 'bank_account', 'paybill_number', 'day_rate', 'sha_amount', 'nssf_number']) assert.ok(PAYMENT_FIELDS.includes(f), f);
 });
 
-test('managers cannot edit permanent staff (except activate/deactivate) or make anyone permanent', () => {
-  for (const r of ['production_manager', 'head_of_sales']) {
-    assert.equal(canEditEmployeeRecord(r, { type: 'permanent' }, { is_active: false }).ok, true);
-    assert.equal(canEditEmployeeRecord(r, { type: 'permanent' }, { phone: '07' }).ok, false);
-    assert.equal(canEditEmployeeRecord(r, { type: 'permanent' }, { bank_account: '1' }).ok, false);
-    assert.equal(canEditEmployeeRecord(r, { type: 'casual' }, { phone: '07', bank_account: '1' }).ok, true);
-    assert.equal(canEditEmployeeRecord(r, { type: 'casual' }, { type: 'permanent' }).ok, false);
-    assert.equal(canEditEmployeeRecord(r, { type: 'casual' }, { type: 'skilled_casual' }).ok, true);
-  }
-  assert.equal(canEditEmployeeRecord('admin', { type: 'permanent' }, { phone: '07' }).ok, true);
+test('normalise: blank → null, numeric fields → numbers, junk → NaN, text trimmed', () => {
+  assert.equal(normaliseEmployeeValue('phone', ''), null);
+  assert.equal(normaliseEmployeeValue('phone', ' 0712 '), '0712');
+  assert.equal(normaliseEmployeeValue('day_rate', '1200'), 1200);
+  assert.equal(normaliseEmployeeValue('day_rate', '1000.00'), 1000);
+  assert.equal(normaliseEmployeeValue('sha_amount', 0), 0);
+  assert.ok(Number.isNaN(normaliseEmployeeValue('day_rate', 'abc')));
 });
 
-test('partition reports forbidden keys even when the value is empty', () => {
-  const r = partitionEmployeeWrite('production_manager', { name: 'A', day_rate: 900, sha_amount: '', monthly_salary: 5, bogus: 1 });
-  assert.deepEqual(r.allowed.sort(), ['day_rate', 'name']);
-  assert.deepEqual(r.forbidden.sort(), ['monthly_salary', 'sha_amount']);
+test('diff: only real changes are returned, with old and new; unchanged and blank≡null are ignored', () => {
+  const cur = { name: 'Jane', day_rate: '1000.00', phone: '0712345678', bank_account: null, sha_amount: 0 };
+  const { changes, invalid } = diffEmployeeChanges(cur,
+    { name: 'Jane', day_rate: 1200, phone: '0799', bank_account: '', sha_amount: '0' },
+    ['name', 'day_rate', 'phone', 'bank_account', 'sha_amount']);
+  assert.deepEqual(changes, { day_rate: { old: 1000, new: 1200 }, phone: { old: '0712345678', new: '0799' } });
+  assert.deepEqual(invalid, []);
 });
 
-test('partition: admin may write everything, unknown keys ignored', () => {
-  const r = partitionEmployeeWrite('admin', { name: 'A', phone: '07', id_number: '1', evil: 'x' });
-  assert.deepEqual(r.forbidden, []);
-  assert.deepEqual(r.allowed.sort(), ['id_number', 'name', 'phone']);
+test('diff: invalid numbers and an emptied name are reported, not queued', () => {
+  const { changes, invalid } = diffEmployeeChanges({ name: 'Jane', day_rate: 1000 }, { name: ' ', day_rate: 'abc' }, ['name', 'day_rate']);
+  assert.deepEqual(changes, {});
+  assert.deepEqual(invalid.sort(), ['day_rate', 'name']);
 });
 
-test('search: phone matching is admin only', () => {
-  assert.match(employeeSearchFilter('admin', 'john'), /phone\.ilike/);
-  assert.doesNotMatch(employeeSearchFilter('production_manager', 'john'), /phone/);
-  assert.doesNotMatch(employeeSearchFilter('head_of_sales', 'john'), /phone/);
+test('search: phone matching for everyone who can see the profile, not for others', () => {
+  for (const r of ['admin', 'production_manager', 'head_of_sales']) assert.match(employeeSearchFilter(r, 'john'), /phone\.ilike/, r);
+  assert.doesNotMatch(employeeSearchFilter('production_staff', 'john'), /phone/);
 });
 
 test('search: filter syntax in the term cannot add its own filters', () => {
   const f = employeeSearchFilter('production_manager', 'x,bank_account.ilike.%1%),(id_number.eq.5');
   const clauses = f.split(',');
-  assert.equal(clauses.length, 2);                // only name + employee_num: no injected clause
+  assert.equal(clauses.length, 3);                // name + employee_num + phone only: no injected clause
   assert.match(clauses[0], /^name\.ilike\.%[^,()*\\"]*%$/);
   assert.match(clauses[1], /^employee_num\.ilike\.%[^,()*\\"]*%$/);
+  assert.match(clauses[2], /^phone\.ilike\.%[^,()*\\"]*%$/);
   assert.ok(!/[()]/.test(f));
   assert.equal(employeeSearchFilter('admin', '   '), null);
   assert.equal(employeeSearchFilter('admin', undefined), null);
   const long = employeeSearchFilter('admin', 'a'.repeat(500));
   assert.ok(long.includes('a'.repeat(60)) && !long.includes('a'.repeat(61)), 'search term capped at 60 chars');
-});
-
-test('canSeePrivateEmployeeData is admin only', () => {
-  assert.equal(canSeePrivateEmployeeData('admin'), true);
-  for (const r of ['production_manager', 'head_of_sales', 'production_staff', null]) assert.equal(canSeePrivateEmployeeData(r), false);
 });

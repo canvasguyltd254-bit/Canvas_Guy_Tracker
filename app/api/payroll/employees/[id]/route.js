@@ -4,19 +4,22 @@
  * DELETE /api/payroll/employees/:id  — deactivate only (never hard-delete; history is permanent)
  *
  * Access: admin, head_of_sales, production_manager (see shared/lib/payroll/employeeAccess.js).
- * Managers edit day-paid workers in full (incl. phone and bank details); monthly salary,
- * SHA, NSSF, permanent staff records and employee documents are admin-only.
- * Only admin can approve/reopen payroll runs (enforced in runs routes).
+ *   admin     edits directly.
+ *   managers  activate/deactivate directly; every other change is saved as a CHANGE REQUEST
+ *             (202, status 'pending') that an admin approves in /api/payroll/employee-changes.
+ *             The request records the old value, so the approver sees old → new.
+ * Employee documents are admin-only.
  */
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import {
-  EMPLOYEE_COLUMNS, employeeAccessLevel, canSeePrivateEmployeeData, partitionEmployeeWrite,
-  serializeEmployee, canEditEmployeeRecord,
+  EMPLOYEE_COLUMNS, employeeAccessLevel, canSeeEmployeeDocuments,
+  splitEmployeeUpdate, diffEmployeeChanges, normaliseEmployeeValue,
 } from '@/shared/lib/payroll/employeeAccess';
 
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
+const DATE_FIELDS = new Set(['hire_date']);
 
 export async function GET(request, props) {
   const params = await props.params;
@@ -25,7 +28,6 @@ export async function GET(request, props) {
     const authError = requireRole(user, role, ALLOWED_ROLES);
     if (authError) return authError;
 
-    // Only the columns this role may see are fetched (never select('*')).
     const { data: emp, error } = await serviceClient
       .from('employees')
       .select(EMPLOYEE_COLUMNS[employeeAccessLevel(role)])
@@ -36,9 +38,8 @@ export async function GET(request, props) {
       return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
     }
 
-    // Employee documents (ID copies, contracts, …) are admin-only.
     let docs = [];
-    if (canSeePrivateEmployeeData(role)) {
+    if (canSeeEmployeeDocuments(role)) {
       const { data } = await serviceClient
         .from('employee_documents')
         .select('*')
@@ -47,7 +48,15 @@ export async function GET(request, props) {
       docs = data || [];
     }
 
-    return NextResponse.json({ employee: serializeEmployee(role, emp), documents: docs });
+    // Pending change requests for this employee (so the screen can show "awaiting approval").
+    const { data: pending } = await serviceClient
+      .from('employee_change_requests')
+      .select('id, changes, reason, requested_by_name, requested_at')
+      .eq('employee_id', params.id)
+      .eq('status', 'pending')
+      .order('requested_at', { ascending: false });
+
+    return NextResponse.json({ employee: emp, documents: docs, pendingChanges: pending || [] });
   } catch (err) {
     console.error('GET /api/payroll/employees/[id] unexpected:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -62,68 +71,123 @@ export async function PATCH(request, props) {
     if (authError) return authError;
 
     const body = await request.json();
+    const { direct, requested } = splitEmployeeUpdate(role, body);
 
-    // Role-based write whitelist. Pay, statutory, contact and banking fields are
-    // admin-only; a request that includes any of them from another role is
-    // refused outright (UI hiding alone is not a control).
-    const { allowed, forbidden } = partitionEmployeeWrite(role, body);
-    if (forbidden.length > 0) {
-      return NextResponse.json(
-        { error: `Only an admin can change: ${forbidden.join(', ')}`, code: 'ADMIN_ONLY_FIELDS', fields: forbidden },
-        { status: 403 }
-      );
-    }
-
-    // Managers cannot edit permanent staff (other than activate/deactivate) or make anyone permanent.
-    if (role !== 'admin') {
-      const { data: current } = await serviceClient.from('employees').select('id, type').eq('id', params.id).single();
-      if (!current) return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
-      const gate = canEditEmployeeRecord(role, current, body);
-      if (!gate.ok) return NextResponse.json({ error: gate.error, code: 'ADMIN_ONLY_RECORD' }, { status: 403 });
-    }
-
-    const NUMERIC_FIELDS = new Set(['day_rate', 'monthly_salary', 'piece_rate', 'sha_amount']);
-    const DATE_FIELDS    = new Set(['hire_date']);
-
-    const updates = {};
-    for (const key of allowed) {
-      if (!(key in body)) continue;
-      const val = body[key];
-      if (NUMERIC_FIELDS.has(key)) {
-        updates[key] = val === '' || val === null || val === undefined ? null : parseFloat(val);
-      } else if (DATE_FIELDS.has(key)) {
-        updates[key] = val === '' || val === null || val === undefined ? null : val;
-      } else {
-        updates[key] = val;
-      }
-    }
-
-    if (Object.keys(updates).length === 0) {
+    if (direct.length === 0 && requested.length === 0) {
       return NextResponse.json({ error: 'No updatable fields provided' }, { status: 400 });
     }
 
-    const { data: emp, error } = await serviceClient
-      .from('employees')
-      .update(updates)
-      .eq('id', params.id)
-      .select(EMPLOYEE_COLUMNS[employeeAccessLevel(role)])
-      .single();
+    // ── Direct updates (admin: everything; manager: is_active only) ─────────
+    let emp = null;
+    if (direct.length > 0) {
+      const updates = {};
+      for (const key of direct) {
+        const val = body[key];
+        updates[key] = key === 'is_active' ? !!val : normaliseEmployeeValue(key, val);
+        if (Number.isNaN(updates[key])) {
+          return NextResponse.json({ error: `Invalid value for ${key}` }, { status: 400 });
+        }
+        if (key === 'name' && !updates[key]) {
+          return NextResponse.json({ error: 'Name cannot be empty' }, { status: 400 });
+        }
+      }
 
-    if (error) {
-      console.error('PATCH /api/payroll/employees/[id] error:', error.message);
-      return NextResponse.json({ error: 'Failed to update employee' }, { status: 500 });
+      const { data, error } = await serviceClient
+        .from('employees')
+        .update(updates)
+        .eq('id', params.id)
+        .select(EMPLOYEE_COLUMNS[employeeAccessLevel(role)])
+        .single();
+
+      if (error || !data) {
+        console.error('PATCH /api/payroll/employees/[id] error:', error?.message);
+        return NextResponse.json({ error: 'Failed to update employee' }, { status: 500 });
+      }
+      emp = data;
+
+      await serviceClient.from('payroll_activities').insert({
+        entity_type:   'employee',
+        entity_id:     params.id,
+        activity_type: 'updated',
+        description:   `Employee ${emp.name} updated by ${displayName}`,
+        new_value:     JSON.stringify(Object.keys(updates)),
+        created_by:    user.id,
+      });
     }
 
-    await serviceClient.from('payroll_activities').insert({
-      entity_type:   'employee',
-      entity_id:     params.id,
-      activity_type: 'updated',
-      description:   `Employee ${emp.name} updated by ${displayName}`,
-      new_value:     JSON.stringify(Object.keys(updates)),
-      created_by:    user.id,
-    });
+    // ── Manager changes → request for admin approval ────────────────────────
+    let changeRequest = null;
+    if (requested.length > 0) {
+      const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+      if (reason.length < 3) {
+        return NextResponse.json(
+          { error: 'Give a reason for the change (the admin will see it when approving)', code: 'REASON_REQUIRED' },
+          { status: 422 },
+        );
+      }
 
-    return NextResponse.json({ employee: serializeEmployee(role, emp) });
+      const { data: current } = await serviceClient
+        .from('employees')
+        .select(EMPLOYEE_COLUMNS.full)
+        .eq('id', params.id)
+        .single();
+      if (!current) return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
+
+      const { changes, invalid } = diffEmployeeChanges(current, body, requested);
+      if (invalid.length > 0) {
+        return NextResponse.json({ error: `Invalid value for: ${invalid.join(', ')}`, code: 'INVALID_VALUE' }, { status: 400 });
+      }
+      if (body.type !== undefined && !['casual', 'permanent', 'skilled_casual'].includes(changes.type?.new ?? current.type)) {
+        return NextResponse.json({ error: 'Invalid employee type', code: 'INVALID_VALUE' }, { status: 400 });
+      }
+      for (const f of Object.keys(changes)) {
+        if (DATE_FIELDS.has(f) && changes[f].new && Number.isNaN(Date.parse(changes[f].new))) {
+          return NextResponse.json({ error: `Invalid date for ${f}`, code: 'INVALID_VALUE' }, { status: 400 });
+        }
+      }
+
+      if (Object.keys(changes).length === 0) {
+        if (direct.length === 0) {
+          return NextResponse.json({ error: 'Nothing has changed', code: 'NO_CHANGE' }, { status: 400 });
+        }
+      } else {
+        const { data: reqRow, error: reqErr } = await serviceClient
+          .from('employee_change_requests')
+          .insert({
+            employee_id:       params.id,
+            changes,
+            reason,
+            status:            'pending',
+            requested_by:      user.id,
+            requested_by_name: displayName || null,
+            requested_by_role: role,
+          })
+          .select('id, changes, reason, status, requested_at')
+          .single();
+
+        if (reqErr || !reqRow) {
+          console.error('PATCH /api/payroll/employees/[id] request error:', reqErr?.message);
+          return NextResponse.json({ error: 'Failed to log the change request' }, { status: 500 });
+        }
+        changeRequest = reqRow;
+
+        await serviceClient.from('payroll_activities').insert({
+          entity_type:   'employee',
+          entity_id:     params.id,
+          activity_type: 'change_requested',
+          description:   `Change to ${current.employee_num} ${current.name} requested by ${displayName} (${role}): ${Object.keys(changes).join(', ')} — ${reason}`,
+          old_value:     JSON.stringify(Object.fromEntries(Object.entries(changes).map(([k, v]) => [k, v.old]))),
+          new_value:     JSON.stringify(Object.fromEntries(Object.entries(changes).map(([k, v]) => [k, v.new]))),
+          created_by:    user.id,
+        });
+      }
+      if (!emp) emp = current;
+    }
+
+    return NextResponse.json(
+      { employee: emp, ...(changeRequest ? { changeRequest, message: 'Change logged. It takes effect when an admin approves it.' } : {}) },
+      { status: changeRequest ? 202 : 200 },
+    );
   } catch (err) {
     console.error('PATCH /api/payroll/employees/[id] unexpected:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

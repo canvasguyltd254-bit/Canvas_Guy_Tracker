@@ -6,7 +6,7 @@ import { C, PageHeader, TabBar } from '@/shared/ui/ds';
 import { createClient } from '@/shared/supabase/client';
 import { isTypeAllowedInRun } from '@/shared/lib/payroll/runTypes';
 import { payrollTabsFor, canSeePayrollMoney } from '@/shared/lib/payroll/payrollAccess';
-import { canCreateEmployee } from '@/shared/lib/payroll/employeeAccess';
+import { canCreateEmployee, diffEmployeeChanges, REQUESTABLE_FIELDS, PAYMENT_FIELDS, FIELD_LABELS } from '@/shared/lib/payroll/employeeAccess';
 import TemporaryWorkersTab from './TemporaryWorkersTab';
 
 const supabase = createClient();
@@ -279,16 +279,21 @@ function EmployeesTab({ userRole }) {
   const [showForm, setShowForm] = useState(false);
   const [editEmp, setEditEmp] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [requests, setRequests] = useState([]);       // pending change requests
+  const [reason, setReason] = useState('');             // manager's reason for a change request
+  const [notice, setNotice] = useState('');
+  const [deciding, setDeciding] = useState(null);       // request id being approved/rejected
 
   // What this role may see and write (mirrors shared/lib/payroll/employeeAccess.js;
   // the server enforces it, this only keeps the screen honest).
   const isAdmin     = userRole === 'admin';
   const isManager   = userRole === 'production_manager' || userRole === 'head_of_sales';
   const canSeeRate  = isAdmin || isManager;
-  const canSeeContact = isAdmin || isManager;        // phone, ID, bank — day-paid workers only for managers
-  const canCreate   = canCreateEmployee(userRole);   // admin; HoS/PM add day-paid workers only
-  // Managers edit day-paid workers in full; permanent staff are admin-only (activate/deactivate excepted).
-  const canEditRow  = (emp) => PAYROLL_ROLES.includes(userRole) && (isAdmin || emp.type !== 'permanent');
+  const canSeeContact = isAdmin || isManager;        // phone, ID, bank
+  const canCreate   = canCreateEmployee(userRole);   // admin, HoS and PM add employees with every field
+  // After creation only an admin edits directly; a manager's edit is a change request an admin approves.
+  const canEditRow  = () => PAYROLL_ROLES.includes(userRole);
+  const pendingFor  = (id) => requests.filter(r => r.employee_id === id);
 
   const INITIAL_FORM = {
     name: '', type: 'casual', day_rate: '', monthly_salary: '', sha_amount: '300',
@@ -311,14 +316,44 @@ function EmployeesTab({ userRole }) {
 
   useEffect(() => { load(); }, [load]);
 
-  function openNew() { setForm(INITIAL_FORM); setEditEmp(null); setShowForm(true); }
+  const loadRequests = useCallback(async () => {
+    try {
+      const res = await fetch('/api/payroll/employee-changes?status=pending');
+      const data = await res.json();
+      setRequests(data.requests || []);
+    } catch { /* the list is informational; the screen still works */ }
+  }, []);
+  useEffect(() => { loadRequests(); }, [loadRequests]);
+
+  async function decide(req, action) {
+    let note = '';
+    if (action === 'reject') {
+      note = window.prompt('Reason for rejecting this change?') || '';
+      if (note.trim().length < 3) return;
+    } else if (!window.confirm(`Approve this change to ${req.employees?.name || 'this employee'}? It takes effect immediately.`)) {
+      return;
+    }
+    setDeciding(req.id);
+    const res = await fetch(`/api/payroll/employee-changes/${req.id}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, note }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setDeciding(null);
+    if (!res.ok) setError(data.error || 'Could not record the decision');
+    else setNotice(action === 'approve' ? 'Change approved and applied.' : 'Change rejected.');
+    loadRequests(); load();
+  }
+
+  function openNew() { setReason(''); setForm(INITIAL_FORM); setEditEmp(null); setShowForm(true); }
   function openEdit(emp) {
+    setReason('');
     setForm({
       name:           emp.name || '',
       type:           emp.type || 'casual',
-      day_rate:       emp.day_rate || '',
-      monthly_salary: emp.monthly_salary || '',
-      sha_amount:     emp.sha_amount || '300',
+      day_rate:       emp.day_rate ?? '',
+      monthly_salary: emp.monthly_salary ?? '',
+      sha_amount:     emp.sha_amount ?? '',
       phone:          emp.phone || '',
       id_number:      emp.id_number || '',
       nssf_number:    emp.nssf_number || '',
@@ -337,18 +372,21 @@ function EmployeesTab({ userRole }) {
     setError('');
     const method  = editEmp ? 'PATCH' : 'POST';
     const url     = editEmp ? `/api/payroll/employees/${editEmp.id}` : '/api/payroll/employees';
-    // Non-admins send only the fields they may write; the server refuses anything else.
-    // Managers never send salary / SHA / NSSF (admin-only; the server refuses them).
-    const { monthly_salary, sha_amount, nssf_number, type, ...managerFields } = form;
-    const payload = isAdmin
-      ? form
-      : { ...managerFields, ...(editEmp ? {} : { type }) };   // type is chosen at creation only (day-paid types)
+    let payload = form;
+    if (editEmp && !isAdmin) {
+      // A manager's edit is a change request: send only what changed, plus the reason.
+      const { changes } = diffEmployeeChanges(editEmp, form, REQUESTABLE_FIELDS);
+      if (Object.keys(changes).length === 0) { setSaving(false); setError('Nothing has changed.'); return; }
+      if (reason.trim().length < 3) { setSaving(false); setError('Give a reason — the admin sees it when approving.'); return; }
+      payload = { reason: reason.trim(), ...Object.fromEntries(Object.entries(changes).map(([k, v]) => [k, v.new ?? ''])) };
+    }
     const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const data    = await res.json();
     setSaving(false);
     if (!res.ok) { setError(data.error || 'Save failed'); return; }
     setShowForm(false);
-    load();
+    if (res.status === 202) setNotice('Change logged. It takes effect when an admin approves it.');
+    load(); loadRequests();
   }
 
   async function toggleActive(emp) {
@@ -364,12 +402,58 @@ function EmployeesTab({ userRole }) {
   return (
     <div>
       <ErrorBanner message={error} onDismiss={() => setError('')} />
+      {notice && (
+        <div onClick={() => setNotice('')} style={{ background: '#dcfce7', color: GREEN, border: '1px solid #bbf7d0', borderRadius: 8, padding: '9px 12px', fontSize: 13, marginBottom: 12, cursor: 'pointer' }}>{notice}</div>
+      )}
+
+      {/* Change requests: admin approves; managers can see what is waiting */}
+      {requests.length > 0 && (
+        <Card style={{ marginBottom: 16, padding: '12px 14px', border: '1px solid #fcd34d', background: '#fffbeb' }}>
+          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>
+            {isAdmin ? `Change requests awaiting your approval (${requests.length})` : `Change requests waiting for admin approval (${requests.length})`}
+          </div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {requests.map(r => (
+              <div key={r.id} style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '10px 12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
+                  <div style={{ fontSize: 13 }}>
+                    <strong>{r.employees?.name || 'Employee'}</strong>{' '}
+                    <span style={{ color: '#9ca3af', fontFamily: 'monospace', fontSize: 12 }}>{r.employees?.employee_num}</span>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: '#6b7280' }}>
+                    by {r.requested_by_name || 'unknown'} · {new Date(r.requested_at).toLocaleString('en-KE', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gap: 3, marginBottom: 6 }}>
+                  {Object.entries(r.changes || {}).map(([f, v]) => (
+                    <div key={f} style={{ fontSize: 13 }}>
+                      <span style={{ color: '#6b7280', display: 'inline-block', minWidth: 110 }}>
+                        {FIELD_LABELS[f] || f}{PAYMENT_FIELDS.includes(f) && <span title="Affects pay or where it is sent" style={{ color: '#b45309' }}> ●</span>}
+                      </span>
+                      <span style={{ textDecoration: 'line-through', color: '#9ca3af' }}>{String(v.old ?? '—')}</span>
+                      {' → '}
+                      <strong>{String(v.new ?? '—')}</strong>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ fontSize: 12.5, color: '#374151', marginBottom: isAdmin ? 8 : 0 }}>Reason: {r.reason}</div>
+                {isAdmin && (
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <Btn small variant="success" loading={deciding === r.id} onClick={() => decide(r, 'approve')}>Approve</Btn>
+                    <Btn small variant="danger" disabled={deciding === r.id} onClick={() => decide(r, 'reject')}>Reject</Btn>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {/* Toolbar */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
         <input
           style={{ ...inputStyle, width: 220 }}
-          placeholder={isAdmin ? 'Search name or phone…' : 'Search name or number…'}
+          placeholder="Search name, number or phone…"
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
@@ -397,7 +481,7 @@ function EmployeesTab({ userRole }) {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
                   <thead>
                     <tr style={{ background: LIGHT, borderBottom: `2px solid ${BORDER}` }}>
-                      {['#', 'Name', 'Type', canSeeRate && 'Rate', isAdmin && 'SHA', canSeeContact && 'Phone', 'Status', ''].filter(h => h !== false).map(h => (
+                      {['#', 'Name', 'Type', canSeeRate && 'Rate', canSeeContact && 'SHA', canSeeContact && 'Phone', 'Status', ''].filter(h => h !== false).map(h => (
                         <th key={h} style={{ textAlign: 'left', padding: '10px 12px', fontWeight: 600, color: '#374151', fontSize: 12 }}>{h}</th>
                       ))}
                     </tr>
@@ -411,19 +495,20 @@ function EmployeesTab({ userRole }) {
                         {canSeeRate && (
                           <td style={{ padding: '10px 12px', fontSize: 13 }}>
                             {emp.type === 'permanent'
-                              ? (isAdmin ? `KES ${fmt(emp.monthly_salary)}/mo` : '—')
+                              ? `KES ${fmt(emp.monthly_salary)}/mo`
                               : `KES ${fmt(emp.day_rate)}/day`}
                           </td>
                         )}
-                        {isAdmin && <td style={{ padding: '10px 12px', fontSize: 13 }}>KES {fmt(emp.sha_amount)}</td>}
-                        {canSeeContact && <td style={{ padding: '10px 12px', fontSize: 13, color: '#6b7280' }}>{emp.phone || (emp.phone === undefined ? '' : '—')}</td>}
+                        {canSeeContact && <td style={{ padding: '10px 12px', fontSize: 13 }}>KES {fmt(emp.sha_amount)}</td>}
+                        {canSeeContact && <td style={{ padding: '10px 12px', fontSize: 13, color: '#6b7280' }}>{emp.phone || '—'}</td>}
                         <td style={{ padding: '10px 12px' }}>
                           <Badge label={emp.is_active ? 'Active' : 'Inactive'} bg={emp.is_active ? '#dcfce7' : '#f3f4f6'} color={emp.is_active ? GREEN : '#6b7280'} />
+                          {pendingFor(emp.id).length > 0 && <span style={{ marginLeft: 6 }}><Badge label="Change pending" bg="#fef3c7" color="#b45309" /></span>}
                         </td>
                         <td style={{ padding: '10px 12px' }}>
                           {canEdit && (
                             <div style={{ display: 'flex', gap: 6 }}>
-                              {canEditRow(emp) && <Btn onClick={() => openEdit(emp)} variant="secondary" small>Edit</Btn>}
+                              {canEditRow(emp) && <Btn onClick={() => openEdit(emp)} variant="secondary" small>{isAdmin ? 'Edit' : 'Request change'}</Btn>}
                               <Btn onClick={() => toggleActive(emp)} variant={emp.is_active ? 'danger' : 'success'} small>
                                 {emp.is_active ? 'Deactivate' : 'Activate'}
                               </Btn>
@@ -450,13 +535,13 @@ function EmployeesTab({ userRole }) {
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px', fontSize: 13, marginBottom: 10 }}>
                     <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Type</span><br /><StatusBadge status={emp.type} /></div>
-                    {canSeeRate && <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Rate</span><br /><span style={{ fontWeight: 600 }}>{emp.type === 'permanent' ? (isAdmin ? `KES ${fmt(emp.monthly_salary)}/mo` : '—') : `KES ${fmt(emp.day_rate)}/day`}</span></div>}
-                    {isAdmin && <div><span style={{ color: '#9ca3af', fontSize: 11 }}>SHA</span><br />KES {fmt(emp.sha_amount)}</div>}
-                    {canSeeContact && emp.phone !== undefined && <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Phone</span><br />{emp.phone || '—'}</div>}
+                    {canSeeRate && <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Rate</span><br /><span style={{ fontWeight: 600 }}>{emp.type === 'permanent' ? `KES ${fmt(emp.monthly_salary)}/mo` : `KES ${fmt(emp.day_rate)}/day`}</span></div>}
+                    {canSeeContact && <div><span style={{ color: '#9ca3af', fontSize: 11 }}>SHA</span><br />KES {fmt(emp.sha_amount)}</div>}
+                    {canSeeContact && <div><span style={{ color: '#9ca3af', fontSize: 11 }}>Phone</span><br />{emp.phone || '—'}</div>}
                   </div>
                   {canEdit && (
                     <div style={{ display: 'flex', gap: 8 }}>
-                      {canEditRow(emp) && <Btn onClick={() => openEdit(emp)} variant="secondary" small style={{ flex: 1 }}>Edit</Btn>}
+                      {canEditRow(emp) && <Btn onClick={() => openEdit(emp)} variant="secondary" small style={{ flex: 1 }}>{isAdmin ? 'Edit' : 'Request change'}</Btn>}
                       <Btn onClick={() => toggleActive(emp)} variant={emp.is_active ? 'danger' : 'success'} small style={{ flex: 1 }}>
                         {emp.is_active ? 'Deactivate' : 'Activate'}
                       </Btn>
@@ -477,74 +562,70 @@ function EmployeesTab({ userRole }) {
 
       {/* Add/Edit Modal */}
       {showForm && (
-        <Modal title={editEmp ? `Edit: ${editEmp.name}` : 'Add Employee'} onClose={() => setShowForm(false)} width={560}>
+        <Modal title={editEmp ? (isAdmin ? `Edit: ${editEmp.name}` : `Request change: ${editEmp.name}`) : 'Add Employee'} onClose={() => setShowForm(false)} width={560}>
+          {editEmp && !isAdmin && (
+            <div style={{ background: '#fffbeb', border: '1px solid #fcd34d', color: '#92400e', borderRadius: 8, padding: '9px 12px', fontSize: 12.5, marginBottom: 12 }}>
+              Changes to an existing employee are not applied straight away. Change what is needed and give a reason;
+              an admin approves it before it takes effect (this includes rates, phone, bank details, SHA and NSSF).
+            </div>
+          )}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <Field label="Full Name" required>
               <input style={inputStyle} value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
             </Field>
-            {(isAdmin || !editEmp) && (
-              <Field label="Employee Type" required>
-                <select style={inputStyle} value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
-                  <option value="casual">Casual (daily)</option>
-                  {isAdmin && <option value="permanent">Permanent (monthly)</option>}
-                  <option value="skilled_casual">Skilled Casual</option>
-                </select>
-              </Field>
-            )}
-            {form.type !== 'permanent'
-              ? (canSeeRate && (
-                  <Field label="Day Rate (KES)">
-                    <input type="number" style={inputStyle} value={form.day_rate} onChange={e => setForm(f => ({ ...f, day_rate: e.target.value }))} />
-                  </Field>
-                ))
-              : (isAdmin && (
-                  <Field label="Monthly Salary (KES)">
-                    <input type="number" style={inputStyle} value={form.monthly_salary} onChange={e => setForm(f => ({ ...f, monthly_salary: e.target.value }))} />
-                  </Field>
-                ))
-            }
-            {isAdmin && (
-              <Field label="SHA Deduction (KES)">
-                <input type="number" style={inputStyle} value={form.sha_amount} onChange={e => setForm(f => ({ ...f, sha_amount: e.target.value }))} />
-              </Field>
-            )}
-            {canSeeContact && <>
-              <Field label="M-Pesa Phone">
-                <input style={inputStyle} value={form.phone} placeholder="07xx…" onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
-              </Field>
-              <Field label="ID Number">
-                <input style={inputStyle} value={form.id_number} onChange={e => setForm(f => ({ ...f, id_number: e.target.value }))} />
-              </Field>
-              {isAdmin && (
-                <Field label="NSSF Number">
-                  <input style={inputStyle} value={form.nssf_number} onChange={e => setForm(f => ({ ...f, nssf_number: e.target.value }))} />
-                </Field>
-              )}
-              <Field label="Hire Date">
-                <input type="date" style={inputStyle} value={form.hire_date} onChange={e => setForm(f => ({ ...f, hire_date: e.target.value }))} />
-              </Field>
-              <Field label="Bank Account">
-                <input style={inputStyle} value={form.bank_account} onChange={e => setForm(f => ({ ...f, bank_account: e.target.value }))} />
-              </Field>
-              <Field label="Bank Name">
-                <input style={inputStyle} value={form.bank_name} onChange={e => setForm(f => ({ ...f, bank_name: e.target.value }))} />
-              </Field>
-            </>}
-          </div>
-          {canSeeContact && (
-            <Field label="Notes">
-              <textarea style={{ ...inputStyle, height: 60, resize: 'vertical' }} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+            <Field label="Employee Type" required>
+              <select style={inputStyle} value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
+                <option value="casual">Casual (daily)</option>
+                <option value="permanent">Permanent (monthly)</option>
+                <option value="skilled_casual">Skilled Casual</option>
+              </select>
             </Field>
-          )}
-          {!isAdmin && (
-            <p style={{ fontSize: 12, color: '#6b7280', margin: '12px 0 0' }}>
-              Monthly salary, SHA, NSSF and permanent staff are managed by an admin.
-            </p>
+            {form.type !== 'permanent'
+              ? (
+                <Field label="Day Rate (KES)">
+                  <input type="number" style={inputStyle} value={form.day_rate} onChange={e => setForm(f => ({ ...f, day_rate: e.target.value }))} />
+                </Field>
+              )
+              : (
+                <Field label="Monthly Salary (KES)">
+                  <input type="number" style={inputStyle} value={form.monthly_salary} onChange={e => setForm(f => ({ ...f, monthly_salary: e.target.value }))} />
+                </Field>
+              )
+            }
+            <Field label="SHA Deduction (KES)">
+              <input type="number" style={inputStyle} value={form.sha_amount} onChange={e => setForm(f => ({ ...f, sha_amount: e.target.value }))} />
+            </Field>
+            <Field label="M-Pesa Phone">
+              <input style={inputStyle} value={form.phone} placeholder="07xx…" onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
+            </Field>
+            <Field label="ID Number">
+              <input style={inputStyle} value={form.id_number} onChange={e => setForm(f => ({ ...f, id_number: e.target.value }))} />
+            </Field>
+            <Field label="NSSF Number">
+              <input style={inputStyle} value={form.nssf_number} onChange={e => setForm(f => ({ ...f, nssf_number: e.target.value }))} />
+            </Field>
+            <Field label="Hire Date">
+              <input type="date" style={inputStyle} value={form.hire_date} onChange={e => setForm(f => ({ ...f, hire_date: e.target.value }))} />
+            </Field>
+            <Field label="Bank Account">
+              <input style={inputStyle} value={form.bank_account} onChange={e => setForm(f => ({ ...f, bank_account: e.target.value }))} />
+            </Field>
+            <Field label="Bank Name">
+              <input style={inputStyle} value={form.bank_name} onChange={e => setForm(f => ({ ...f, bank_name: e.target.value }))} />
+            </Field>
+          </div>
+          <Field label="Notes">
+            <textarea style={{ ...inputStyle, height: 60, resize: 'vertical' }} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+          </Field>
+          {editEmp && !isAdmin && (
+            <Field label="Reason for the change" required>
+              <input style={inputStyle} value={reason} placeholder="e.g. rate review, new M-Pesa number" onChange={e => setReason(e.target.value)} />
+            </Field>
           )}
           {error && <ErrorBanner message={error} onDismiss={() => setError('')} />}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
             <Btn variant="secondary" onClick={() => setShowForm(false)}>Cancel</Btn>
-            <Btn onClick={save} loading={saving}>{editEmp ? 'Save Changes' : 'Create Employee'}</Btn>
+            <Btn onClick={save} loading={saving}>{editEmp ? (isAdmin ? 'Save Changes' : 'Submit for approval') : 'Create Employee'}</Btn>
           </div>
         </Modal>
       )}

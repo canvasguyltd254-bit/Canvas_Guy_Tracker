@@ -2,21 +2,17 @@
  * GET  /api/payroll/employees  — list employees (with filters)
  * POST /api/payroll/employees  — create employee
  *
- * Access: admin, head_of_sales, production_manager (see shared/lib/payroll/employeeAccess.js):
- *   admin                          full profile, may write every field
- *   production_manager / head_of_sales
- *                                  add and edit day-paid (casual / skilled casual) workers in
- *                                  full: rate, phone, ID, bank/paybill, hire date, notes; and
- *                                  activate/deactivate anyone. NOT monthly salary, SHA, NSSF,
- *                                  permanent staff (shown as identity + status only).
+ * Access: admin, head_of_sales, production_manager (see shared/lib/payroll/employeeAccess.js).
+ * All three see the full profile (phone search included) and may ADD an employee with every field.
+ * After that only an admin edits directly; a manager's change is a request an admin approves
+ * (PATCH /api/payroll/employees/:id → /api/payroll/employee-changes).
  * Only admin can approve/reopen payroll runs (enforced in runs routes).
  */
 
 import { NextResponse } from 'next/server';
 import { getAuthContext, requireRole, serviceClient } from '@/shared/lib/api-auth';
 import {
-  EMPLOYEE_COLUMNS, employeeAccessLevel, partitionEmployeeCreate, employeeSearchFilter, canCreateEmployee, creatableTypes,
-  serializeEmployee,
+  EMPLOYEE_COLUMNS, employeeAccessLevel, employeeSearchFilter, canCreateEmployee,
 } from '@/shared/lib/payroll/employeeAccess';
 
 const ALLOWED_ROLES = ['admin', 'head_of_sales', 'production_manager'];
@@ -51,8 +47,7 @@ export async function GET(request) {
       return NextResponse.json({ error: 'Failed to fetch employees' }, { status: 500 });
     }
 
-    // A manager sees permanent staff as identity + status only.
-    return NextResponse.json({ employees: (data || []).map(e => serializeEmployee(role, e)) });
+    return NextResponse.json({ employees: data || [] });
   } catch (err) {
     console.error('GET /api/payroll/employees unexpected:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -74,21 +69,8 @@ export async function POST(request) {
 
     const body = await request.json();
 
-    // Managers may set everything needed to pay a day-paid worker (rate, phone, ID, bank,
-    // paybill). Only monthly salary, SHA and NSSF, and the permanent type, are admin-only.
-    const { forbidden } = partitionEmployeeCreate(role, body);
-    if (forbidden.length > 0) {
-      return NextResponse.json(
-        { error: `Only an admin can set: ${forbidden.join(', ')}`, code: 'ADMIN_ONLY_FIELDS', fields: forbidden },
-        { status: 403 }
-      );
-    }
-    if (body.type && !creatableTypes(role).includes(body.type) && ['casual', 'permanent', 'skilled_casual'].includes(body.type)) {
-      return NextResponse.json(
-        { error: 'Only an admin can add permanent (salaried) employees', code: 'ADMIN_ONLY_TYPE' },
-        { status: 403 }
-      );
-    }
+    // Admin and managers add an employee with every field. After this, a manager can only
+    // REQUEST changes (PATCH → employee_change_requests); the creation is logged below.
 
     const {
       name, type, day_rate, monthly_salary, piece_rate,
@@ -163,7 +145,12 @@ export async function POST(request) {
       entity_type:   'employee',
       entity_id:     emp.id,
       activity_type: 'created',
-      description:   `Employee ${emp.employee_num} ${emp.name} (${emp.type}) created by ${displayName}`,
+      description:   `Employee ${emp.employee_num} ${emp.name} (${emp.type}) created by ${displayName} (${role})`,
+      // what the payment details were at creation, so a later change request has a visible baseline
+      new_value:     JSON.stringify({
+        day_rate: emp.day_rate, monthly_salary: emp.monthly_salary, piece_rate: emp.piece_rate, sha_amount: emp.sha_amount,
+        phone: emp.phone, bank_account: emp.bank_account, bank_name: emp.bank_name, paybill_number: emp.paybill_number,
+      }),
       created_by:    user.id,
     });
 
